@@ -27,6 +27,8 @@ vi.mock('../../../../electron/claudeCodeEnvironment', () => ({
 
 import { ClaudeCodeProvider } from '../ClaudeCodeProvider';
 import { BaseAgentProvider } from '../BaseAgentProvider';
+import { TranscriptRuntime } from '../../transcript/TranscriptRuntime';
+import type { RawMessage } from '../../transcript/TranscriptTransformer';
 
 type TrustStatus = {
   trusted: boolean;
@@ -194,5 +196,110 @@ describe('ClaudeCodeProvider canUseTool with a PreToolUse hook ask', () => {
     expect(result).toMatchObject({ behavior: 'deny' });
     expect(requestToolPermission).toHaveBeenCalledTimes(1);
     expect(requestToolPermission).toHaveBeenCalledWith(expect.objectContaining({ toolInput: { command }, requiresUserDecision: 'hook-ask' }));
+  });
+});
+
+// #375: reconstruct the prompt from raw provider rows, including after cache eviction.
+describe('ClaudeCodeProvider approvals during settings lookup', () => {
+  afterEach(() => {
+    BaseAgentProvider.setTrustChecker(null);
+    ClaudeCodeProvider.setClaudeSettingsPatternSaver(null);
+    ClaudeCodeProvider.setClaudeSettingsPatternChecker(null);
+    vi.restoreAllMocks();
+  });
+
+  it('records the released approval so the waiting prompt stays answered after reload', async () => {
+    let releaseLookup!: (approved: boolean) => void;
+    const checker = vi.fn<() => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockImplementationOnce(() => new Promise(resolve => { releaseLookup = resolve; }));
+    trustIs({ trusted: true, mode: 'ask' });
+    ClaudeCodeProvider.setClaudeSettingsPatternSaver(async () => {});
+    ClaudeCodeProvider.setClaudeSettingsPatternChecker(checker);
+    const provider = new ClaudeCodeProvider();
+    vi.spyOn((provider as any).permissionService, 'pollForPermissionResponse').mockResolvedValue(undefined);
+    const rows: RawMessage[] = [];
+    vi.spyOn(provider as any, 'logAgentMessage').mockImplementation(async (...args: unknown[]) => {
+      const [sessionId, source, direction, content] = args as [string, RawMessage['source'], RawMessage['direction'], string];
+      rows.push({ id: rows.length + 1, sessionId, source, direction, content, createdAt: new Date() });
+    });
+    const pending = vi.fn();
+    provider.on('toolPermission:pending', pending);
+    const ask = () => (provider as any).handleToolPermissionWithService(
+      'mcp__serena__find_symbol', {}, { signal: new AbortController().signal },
+      'session', '/project', '/project', undefined, undefined, false,
+    );
+    const first = ask();
+    await vi.waitFor(() => expect(pending).toHaveBeenCalledTimes(1));
+    const second = ask();
+    await vi.waitFor(() => expect(checker).toHaveBeenCalledTimes(2));
+    const prompts = rows.map(row => JSON.parse(row.content));
+    expect(prompts).toHaveLength(2);
+    const releasedId = prompts[1].id;
+    const runtime = new TranscriptRuntime({
+      getMessages: async (sessionId, afterId = 0) => rows.filter(row => row.sessionId === sessionId && row.id > afterId),
+    });
+    await runtime.getCanonicalEvents('session', 'claude-code');
+    provider.resolveToolPermission(prompts[0].id, { decision: 'allow', scope: 'always' }, 'session');
+    await first;
+    releaseLookup(false);
+    expect(await second).toMatchObject({ behavior: 'allow' });
+    expect(pending).toHaveBeenCalledTimes(1);
+
+    await runtime.processNewMessages('session', 'claude-code');
+    for (const reload of [false, true]) {
+      if (reload) await runtime.forceReparseSession('session', 'claude-code');
+      const events = await runtime.getCanonicalEvents('session', 'claude-code');
+      const released = events.find(event => event.eventType === 'tool_call' && event.providerToolCallId === releasedId);
+      expect(released?.payload).toMatchObject({ status: 'completed' });
+      expect(JSON.parse((released?.payload as any).result)).toMatchObject({ decision: 'allow', scope: 'session' });
+    }
+    expect(rows.filter(row => {
+      const message = JSON.parse(row.content);
+      return message.type === 'nimbalyst_tool_result' && message.tool_use_id === releasedId;
+    })).toHaveLength(1);
+  });
+});
+
+describe('ClaudeCodeProvider AskUserQuestion dismissal', () => {
+  type AskInternals = {
+    handleSystemInit: (chunk: unknown, sessionId: string | undefined, hideMessages: boolean) => Generator<unknown>;
+    handleAskUserQuestion: (
+      sessionId: string | undefined,
+      input: unknown,
+      options: { signal: AbortSignal },
+      toolUseID?: string,
+    ) => Promise<{ behavior: string; updatedInput?: any; message?: string }>;
+    pendingAskUserQuestions: Map<string, unknown>;
+  };
+
+  async function dismissAfterInit(capabilities: string[] | undefined) {
+    const provider = new ClaudeCodeProvider();
+    const internals = provider as unknown as AskInternals;
+    [...internals.handleSystemInit({ type: 'system', subtype: 'init', capabilities }, undefined, true)];
+    const result = internals.handleAskUserQuestion(
+      undefined,
+      { questions: [{ question: 'Ship it?', header: 'Ship', options: [], multiSelect: false }] },
+      { signal: new AbortController().signal },
+      'toolu_dismiss',
+    );
+    await vi.waitFor(() => expect(internals.pendingAskUserQuestions.has('toolu_dismiss')).toBe(true));
+    const rejected = provider.rejectAskUserQuestion('toolu_dismiss', new Error('User cancelled'));
+    return Object.assign(await result, { rejected });
+  }
+
+  it('answers a cancelled question with unanswered=dismissed when init advertises the capability', async () => {
+    const result = await dismissAfterInit(['interrupt_receipt_v1', 'ask_user_question_unanswered_v1']);
+    expect(result.behavior).toBe('allow');
+    expect(result.updatedInput.annotations).toEqual({ 'Ship it?': { unanswered: 'dismissed' } });
+    // Tells the cancel IPC not to abort the turn that will read this answer.
+    expect(result.rejected).toBe('dismissed');
+  });
+
+  it('keeps denying a cancelled question on a CLI whose init has no capabilities', async () => {
+    const result = await dismissAfterInit(undefined);
+    expect(result.behavior).toBe('deny');
+    expect(result.message).toBe('User cancelled');
+    expect(result.rejected).toBeUndefined();
   });
 });

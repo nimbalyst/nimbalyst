@@ -16,6 +16,7 @@ import type { CustomToolWidgetProps } from './index';
 import { FullscreenModal } from '../FullscreenModal';
 import { ZoomableImageSurface } from '../ZoomableImageSurface';
 import { useEditorScreenshotImage } from './editorScreenshotImage';
+import { useRememberedImageHeight } from './rememberedImageHeight';
 import { useTranscriptImageGallery } from '../transcriptImageGalleryContext';
 import { screenshotFileName, screenshotImageKey } from '../../utils/transcriptImages';
 
@@ -79,6 +80,7 @@ export const EditorScreenshotWidget: React.FC<CustomToolWidgetProps> = ({
   const [showLightbox, setShowLightbox] = useState(false);
   const gallery = useTranscriptImageGallery();
   const { parsedResult, imageSrc, loading: loadingPersistedFile, persistedLoadError } = useEditorScreenshotImage(message, readFile);
+  const imageHeight = useRememberedImageHeight(screenshotImageKey(message.id));
 
   const tool = message.toolCall;
   if (!tool) return null;
@@ -117,19 +119,23 @@ export const EditorScreenshotWidget: React.FC<CustomToolWidgetProps> = ({
       </div>
 
       {/* Large inline image preview */}
-      {imageSrc && !loadingPersistedFile && (
-        <button
-          className="w-full p-0 m-0 border-0 border-t border-nim bg-nim-tertiary cursor-pointer overflow-hidden block transition-opacity duration-200 hover:opacity-90"
-          onClick={openLightbox}
-          title="Click to enlarge"
-        >
-          <img
-            src={imageSrc}
-            alt={fileName}
-            className="w-full max-h-[400px] object-contain object-top-left"
-          />
-        </button>
-      )}
+      <div ref={imageHeight.ref} style={imageHeight.style} className="editor-screenshot-preview">
+        {imageSrc && !loadingPersistedFile && (
+          <button
+            className="w-full p-0 m-0 border-0 border-t border-nim bg-nim-tertiary cursor-pointer overflow-hidden block transition-opacity duration-200 hover:opacity-90"
+            onClick={openLightbox}
+            title="Click to enlarge"
+          >
+            <img
+              src={imageSrc}
+              alt={fileName}
+              className="w-full max-h-[400px] object-contain object-top-left"
+              onLoad={imageHeight.onImageLoad}
+              onError={imageHeight.onImageError}
+            />
+          </button>
+        )}
+      </div>
 
       {errorMessage && (
         <div className="mx-2 mb-2 p-2 bg-[color-mix(in_srgb,var(--nim-error)_10%,transparent)] border border-[color-mix(in_srgb,var(--nim-error)_30%,transparent)] rounded text-nim-error text-xs leading-relaxed">

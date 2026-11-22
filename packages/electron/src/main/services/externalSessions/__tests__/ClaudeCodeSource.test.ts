@@ -471,3 +471,60 @@ it("pairs initial first-prompt titles with fallback provenance", async () => {
     titleKind: "fallback",
   });
 });
+
+it("imports the conversation when /rename was the first command (#1826)", async () => {
+  // The root entry (parentUuid null) is a CLI `system` local_command entry,
+  // followed by an isMeta user reminder; the real conversation chains after.
+  const file = path.join(dir, encodeWorkspaceDir(cwd), "parent.jsonl");
+  await write(file, [
+    {
+      parentUuid: null,
+      isSidechain: false,
+      type: "system",
+      subtype: "local_command",
+      content:
+        "<local-command-stdout>Session renamed to: My Session</local-command-stdout>",
+      commandRun: { command: "rename", args: "My Session" },
+      level: "info",
+      sessionId: "parent",
+      cwd,
+      timestamp,
+      uuid: "sys1",
+    },
+    {
+      parentUuid: "sys1",
+      isSidechain: false,
+      isMeta: true,
+      type: "user",
+      sessionId: "parent",
+      cwd,
+      timestamp,
+      uuid: "meta1",
+      message: {
+        role: "user",
+        content:
+          "<system-reminder>The session is named My Session</system-reminder>",
+      },
+    },
+    { ...entry("u1", "real prompt"), parentUuid: "meta1" },
+    {
+      parentUuid: "u1",
+      type: "assistant",
+      sessionId: "parent",
+      cwd,
+      timestamp,
+      uuid: "a1",
+      message: {
+        role: "assistant",
+        model: "claude-opus-4-7",
+        content: [{ type: "text", text: "answer" }],
+      },
+    },
+  ]);
+  const [ref] = await source.discover(cwd);
+  expect(ref).toMatchObject({ externalId: "parent", title: "real prompt..." });
+  const read = await source.readSince(ref, null);
+  const bodies = read.messages.map((m) => JSON.parse(m.content));
+  expect(bodies.some((b) => b.prompt === "real prompt")).toBe(true);
+  expect(bodies.some((b) => b.type === "assistant")).toBe(true);
+});

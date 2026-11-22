@@ -17,6 +17,7 @@ import {
   $insertNodes,
   $parseSerializedNode,
   defineExtension,
+  type PasteCommandType,
 } from 'lexical';
 import { $generateNodesFromDOM } from '@lexical/html';
 import type { Transformer } from '@lexical/markdown';
@@ -150,8 +151,10 @@ export const MarkdownPasteExtension = defineExtension({
   register: (editor, config) => {
     return editor.registerCommand(
       PASTE_COMMAND,
-      (event: ClipboardEvent) => {
-        const clipboardData = event.clipboardData;
+      (event: PasteCommandType) => {
+        // PASTE_COMMAND also carries InputEvent/KeyboardEvent; only
+        // ClipboardEvent has clipboardData.
+        const clipboardData = 'clipboardData' in event ? event.clipboardData : null;
         if (!clipboardData) {
           return false;
         }

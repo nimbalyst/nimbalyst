@@ -22,6 +22,35 @@ final class DeviceRosterTests: XCTestCase {
     }
 
     @MainActor
+    func testConnectionStatusTracksSelectedComputerAndReconnect() {
+        let roster = PassthroughSubject<[DeviceInfo], Never>()
+        let navigation = WorkspaceNavigationState()
+        navigation.observeHosts(source: roster, publisher: roster.eraseToAnyPublisher())
+        defer { navigation.stopObservingHosts() }
+        roster.send([device("old", online: false, seenDaysAgo: 0), device("live", online: true, seenDaysAgo: 0)])
+        XCTAssertTrue(navigation.isSelectedHostConnected)
+        navigation.hostDeviceId = "old"
+        XCTAssertFalse(navigation.isSelectedHostConnected, "Another online computer must not make this selection green")
+        roster.send([device("old", online: true, seenDaysAgo: 0)])
+        XCTAssertTrue(navigation.isSelectedHostConnected)
+        roster.send([])
+        XCTAssertFalse(navigation.isSelectedHostConnected)
+        XCTAssertEqual(navigation.hostDeviceId, "old", "Reconnection preserves selection")
+    }
+
+    @MainActor
+    func testDefaultHostSkipsOfflineInventoryWithoutReplacingExplicitSelection() {
+        let navigation = WorkspaceNavigationState()
+        let offline = device("old", online: false, seenDaysAgo: 0)
+        let online = device("live", online: true, seenDaysAgo: 0)
+        navigation.adoptDefaultHost(from: [offline, online])
+        XCTAssertEqual(navigation.hostDeviceId, "live")
+        navigation.hostDeviceId = "old"
+        navigation.adoptDefaultHost(from: [offline, online])
+        XCTAssertEqual(navigation.hostDeviceId, "old", "Do not redirect an explicit computer selection")
+    }
+
+    @MainActor
     func testSessionListIsUnfilteredWithOneComputerAndKeepsTheAnswerWhileReconnecting() {
         let roster = PassthroughSubject<[DeviceInfo], Never>()
         let navigation = WorkspaceNavigationState()

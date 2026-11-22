@@ -32,7 +32,7 @@ vi.mock('../../../file/WorkspaceEventBus', () => ({
   addGitignoreBypass: vi.fn(),
 }));
 
-import { extractFilePathsFromCommand, HooklessAgentFileWatcher } from '../HooklessAgentFileWatcher';
+import { extractFilePathsFromCommand, HooklessAgentFileWatcher, setShellWindowLifecycle } from '../HooklessAgentFileWatcher';
 import { FileSnapshotCache } from '../../../file/FileSnapshotCache';
 import { workspaceFileAttributionPolicy } from '../../WorkspaceFileAttributionPolicy';
 
@@ -57,6 +57,50 @@ describe('HooklessAgentFileWatcher attribution modes', () => {
 
     await watcher.stopForSession('app-server-session');
     expect(workspaceFileAttributionPolicy.isDisabled('app-server-session', '/workspace')).toBe(false);
+  });
+
+  // Claude Code Bash edits come only from hook windows. The command scraper
+  // linked files that `cat` merely named, and missed heredoc edits entirely.
+  it('registers shell-window sessions with the hook tracker and never scrapes their commands', async () => {
+    const root = await fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), 'hookless-shell-')));
+    const file = path.join(root, 'named.ts');
+    await fs.promises.writeFile(file, 'content');
+    const lifecycle = { register: vi.fn(async () => {}), release: vi.fn(async () => {}) };
+    setShellWindowLifecycle(lifecycle);
+    try {
+      const watcher = new HooklessAgentFileWatcher();
+      // Inject the entry so the test does not start chokidar.
+      (watcher as any).watchers.set('claude-session', {
+        cache: new FileSnapshotCache(), watcher: { stop: vi.fn() }, workspacePath: root, attributionMode: 'shell-window',
+      });
+      await watcher.ensureForSession('claude-session', root, { attributionMode: 'shell-window' });
+      expect(lifecycle.register).toHaveBeenCalledWith('claude-session', root);
+
+      await expect(
+        watcher.trackBashEditsFromCommand({ id: 'claude-session' } as never, root, `sed -i '' 's/a/b/' ${file}`, 'bash-1'),
+      ).resolves.toBe(false);
+
+      await watcher.stopForSession('claude-session');
+      expect(lifecycle.release).toHaveBeenCalledWith('claude-session');
+      expect(workspaceFileAttributionPolicy.isShellWindow('claude-session')).toBe(false);
+
+      // A turn that starts while a slow stop is still releasing keeps the
+      // policy it set; the old stop must not clear it afterwards.
+      let finishRelease!: () => void;
+      lifecycle.release.mockImplementationOnce(() => new Promise<void>((resolve) => { finishRelease = resolve; }));
+      (watcher as any).watchers.set('claude-session', {
+        cache: new FileSnapshotCache(), watcher: { stop: vi.fn() }, workspacePath: root, attributionMode: 'shell-window',
+      });
+      const stop = watcher.stopForSession('claude-session');
+      const restart = watcher.ensureForSession('claude-session', root, { attributionMode: 'disabled' });
+      finishRelease();
+      await Promise.all([stop, restart]);
+      expect(workspaceFileAttributionPolicy.isDisabled('claude-session', root)).toBe(true);
+      await watcher.stopForSession('claude-session');
+    } finally {
+      setShellWindowLifecycle(undefined);
+      await fs.promises.rm(root, { recursive: true, force: true });
+    }
   });
 });
 

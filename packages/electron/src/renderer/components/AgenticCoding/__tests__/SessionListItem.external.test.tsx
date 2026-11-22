@@ -10,7 +10,7 @@ vi.mock('../../../store', async () => {
 });
 vi.mock('../../../store/atoms/sessions', async () => {
   const { atom } = await import('jotai');
-  return { sessionRegistryAtom: atom(new Map()), convertToWorkstreamAtom: atom(null, () => {}) };
+  return { sessionRegistryAtom: atom(new Map()), pendingSessionRenameAtom: atom(null), createWorkstreamAtom: atom(null, () => {}) };
 });
 vi.mock('../../../store/atoms/teamInbox', async () => {
   const { atom } = await import('jotai'); const value = atom(false);

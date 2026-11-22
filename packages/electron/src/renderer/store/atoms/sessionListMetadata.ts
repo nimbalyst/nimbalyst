@@ -27,6 +27,7 @@ export function sessionListMetadata(
     childCount: s.childCount || 0,
     descendantCount: s.descendantCount || 0,
     uncommittedCount: s.uncommittedCount || 0,
+    ...(s.userWorkstream === true && { userWorkstream: true }),
     // Kanban board phase and tags from metadata JSONB
     ...(s.phase && { phase: s.phase }),
     ...(s.tags && { tags: s.tags }),

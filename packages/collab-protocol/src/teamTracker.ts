@@ -327,6 +327,8 @@ export interface TrackerSyncRequestMessage {
 }
 
 export interface TrackerMutationRequestMessage {
+  /** Server revision seen when this edit was queued; required for recovered items. */
+  expectedSyncId?: number;
   type: 'trackerMutation';
   clientMutationId: string;
   itemId: string;
@@ -486,6 +488,7 @@ export interface TrackerDeltaMessage {
 }
 
 export type TrackerMutationRejectCode =
+  | 'recoveryConflict'
   | 'staleKeyEpoch'
   | 'rotationLocked'
   | 'forbidden'

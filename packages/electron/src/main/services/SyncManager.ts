@@ -21,7 +21,7 @@ import { app } from 'electron';
 import * as os from 'os';
 import { getProjectFileSyncService } from './ProjectFileSyncService';
 import { startProjectFileSync, stopAllProjectFileSync } from '../file/WorkspaceWatcher';
-import { windowStates } from '../window/WindowManager';
+import { listOpenWorkspacePaths } from '../window/windowState';
 import { createProjectConfigSync } from './sync/projectConfigSync';
 import { projectConfigSources } from './sync/projectConfigSources';
 import { nextMobileSettingsVersion } from './sync/mobileSettingsVersion';
@@ -36,6 +36,7 @@ import { timeStartupPhase } from '../utils/startupTiming';
 import { resolveWorkspaceAttachmentStagingDirectory } from './attachments/attachmentStagingRoot';
 // Side effect: registers the mobile-sync image compressor and display_to_user image loader.
 import './sync/mobileSyncImages';
+import { aesGcmDecrypt } from '@nimbalyst/runtime/sync/aesGcm';
 
 function loadSyncModule() {
   return syncModule;
@@ -69,13 +70,14 @@ const state: SyncManagerState = {
 let incrementalSyncInFlight = false;
 let lastIncrementalSyncAt = 0;
 /** A forced pass (project selection changed) arrived while another was running; run it after. */
-let incrementalSyncRerun = false;
+let incrementalSyncRerun: 'all' | 'missing' | null = null;
 
 function finishIncrementalSync(): void {
   incrementalSyncInFlight = false;
   if (!incrementalSyncRerun) return;
-  incrementalSyncRerun = false;
-  void triggerIncrementalSync({ force: true });
+  const onlyMissing = incrementalSyncRerun === 'missing';
+  incrementalSyncRerun = null;
+  void triggerIncrementalSync({ force: true, onlyMissing });
 }
 const MIN_INCREMENTAL_SYNC_INTERVAL = 5000; // 5 seconds minimum between syncs
 
@@ -683,6 +685,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
               results.forEach((result, index) => {
                 if (result.status === 'rejected') logger.main.warn(`[SyncManager] Failed to refresh mobile device ${operations[index]}:`, result.reason);
               });
+              if (state.provider === provider) await triggerIncrementalSync({ force: true, onlyMissing: true });
             } catch (error) {
               logger.main.warn('[SyncManager] Failed to refresh mobile device settings or project config:', error);
             }
@@ -704,12 +707,11 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         // The workspace watcher's startProjectFileSync call at window-open time
         // likely ran before sync was ready (isSyncEnabled() was false), so we
         // need to retry now that sync is fully initialized.
-        for (const ws of windowStates.values()) {
-          if (ws.workspacePath) {
-            startProjectFileSync(ws.workspacePath).catch(err => {
-              logger.main.warn('[SyncManager] Failed to start project file sync for workspace:', err);
-            });
-          }
+        // Every rail project, not only each window's first one.
+        for (const workspacePath of listOpenWorkspacePaths()) {
+          startProjectFileSync(workspacePath).catch(err => {
+            logger.main.warn('[SyncManager] Failed to start project file sync for workspace:', err);
+          });
         }
       } catch (err) {
         logger.main.warn('[SyncManager] ProjectFileSyncService failed to initialize (non-fatal):', err);
@@ -867,7 +869,7 @@ export async function reinitializeSync(baseStore: SessionStore): Promise<Session
  * more rather than being dropped: the running pass may have read the old
  * selection.
  */
-export async function triggerIncrementalSync(options: { force?: boolean } = {}): Promise<void> {
+export async function triggerIncrementalSync(options: { force?: boolean; onlyMissing?: boolean } = {}): Promise<void> {
   const provider = state.provider;
   if (!provider) {
     logger.main.warn('[SyncManager] Cannot trigger sync - provider not initialized');
@@ -881,7 +883,9 @@ export async function triggerIncrementalSync(options: { force?: boolean } = {}):
 
   // Skip if a sync is already in flight
   if (incrementalSyncInFlight) {
-    if (options.force) incrementalSyncRerun = true;
+    if (options.force) {
+      incrementalSyncRerun = !options.onlyMissing || incrementalSyncRerun === 'all' ? 'all' : 'missing';
+    }
     logger.main.debug('[SyncManager] Incremental sync already in flight, skipping');
     return;
   }
@@ -921,7 +925,7 @@ export async function triggerIncrementalSync(options: { force?: boolean } = {}):
     }
 
     // See the startup path: absence only means "republish" over proven coverage.
-    if (serverIndex.complete === false) {
+    if (state.provider !== provider || serverIndex.complete === false) {
       logger.main.warn('[SyncManager] Server index coverage is incomplete; skipping incremental sync this cycle');
       return;
     }
@@ -935,6 +939,7 @@ export async function triggerIncrementalSync(options: { force?: boolean } = {}):
       isMidTurn: isSessionMidTurn,
       backfill: transcriptBackfill,
       warn: (message, error) => logger.main.warn(message, error),
+      onlyMissing: options.onlyMissing,
     });
     if (result.indexOnlySessions.length > 0 || result.sessionsNeedingMessageSync.length > 0) {
       logger.main.info(`[SyncManager] triggered sync: ${result.sessionsNeedingIndexUpdate.length} need index update, ${result.sessionsNeedingMessageSync.length} need message sync, ${result.indexOnlySessions.length} index-only`);
@@ -1124,11 +1129,7 @@ export async function decryptMobileAttachments(
       const iv = Buffer.from(att.iv, 'base64');
 
       // Decrypt using AES-GCM (same format as iOS CryptoManager: ciphertext + tag concatenated)
-      const decrypted = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv },
-        key,
-        ciphertext,
-      );
+      const decrypted = await aesGcmDecrypt(key, iv, ciphertext);
 
       const imageBuffer = Buffer.from(decrypted);
       const result = await attachmentService.saveAttachment(

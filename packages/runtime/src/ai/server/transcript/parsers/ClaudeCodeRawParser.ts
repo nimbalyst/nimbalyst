@@ -19,7 +19,7 @@ import type {
   CanonicalEventDescriptor,
 } from './IRawMessageParser';
 import { stagedAttachmentRegistry } from '../../attachments/stagedAttachmentRegistry';
-import { isBackgroundedToolAck, isInteractiveWidgetTool } from '../../interactivePromptTools';
+import { isBackgroundedToolAck, isInteractiveWidgetTool, stripMcpPrefix } from '../../interactivePromptTools';
 
 const ATTACHMENT_DENY_MESSAGE = 'File is in a directory that is denied by your permission settings.';
 
@@ -400,6 +400,11 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
       } else if (parsed.type === 'git_commit_proposal_response' && parsed.proposalId) {
         const responseDescriptors = await this.parseGitCommitProposalResponse(parsed, context);
         descriptors.push(...responseDescriptors);
+      } else if (
+        (parsed.type === 'ask_user_question_response' && typeof parsed.questionId === 'string')
+        || (parsed.type === 'request_user_input_response' && typeof parsed.promptId === 'string')
+      ) {
+        descriptors.push(...await this.parseQuestionResponse(parsed, context));
       } else if (parsed.type === 'nimbalyst_tool_result') {
         const results = await this.parseToolResult({
           tool_use_id: parsed.tool_use_id || parsed.id,
@@ -649,7 +654,10 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
     // with the same ID that was processed before this nimbalyst_tool_use message.
     // Check in-memory map first, then fall back to DB lookup (covers the case
     // where the assistant tool_use was processed in a prior incremental batch).
-    if (parsed.id) {
+    // Exception (#1890): the commit proposal's host row carries arguments the
+    // SDK row lacks (targetWorktree, repoPath); processDescriptor merges them
+    // into the existing event instead of creating a second one.
+    if (parsed.id && parsed.name !== 'developer_git_commit_proposal') {
       if (context.hasToolCall(parsed.id)) return [];
       const existing = await context.findByProviderToolCallId(parsed.id);
       if (existing) return [];
@@ -711,6 +719,50 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
       status: isCommitted ? 'completed' : 'error',
       result: JSON.stringify(resultPayload),
       isError: !isCommitted,
+    }];
+  }
+
+  // Persisted when the user answers an AskUserQuestion / PromptForUserInput
+  // card, keyed by that card's own id. Normally the waiting MCP call also
+  // writes a tool_result, but when no live waiter took the answer (stale card,
+  // interrupted turn, app restart) the response row is the only record and the
+  // answered card would reopen on every reload. Complete only the card the row
+  // names, only if it is the matching question tool, and only while it has no
+  // result yet: a real tool_result always wins, whichever arrives first.
+  private async parseQuestionResponse(
+    parsed: any,
+    context: ParseContext,
+  ): Promise<CanonicalEventDescriptor[]> {
+    const isForm = parsed.type === 'request_user_input_response';
+    const cardId: string = isForm ? parsed.promptId : parsed.questionId;
+    const existing = await context.findByProviderToolCallId(cardId);
+    const payload = existing?.payload as Record<string, any> | undefined;
+    if (!payload) return [];
+
+    const bareName = typeof payload.toolName === 'string' ? stripMcpPrefix(payload.toolName) : '';
+    const matchesTool = isForm
+      ? bareName === 'PromptForUserInput' || bareName === 'RequestUserInput'
+      : bareName === 'AskUserQuestion';
+    if (!matchesTool) return [];
+    // A backgrounded (#1341) acknowledgement is not a result: the projector
+    // blanks it and the card stays answerable, so the answer still closes it.
+    const hasResult = payload.result !== undefined && payload.result !== null && payload.result !== '';
+    if (hasResult && !isBackgroundedToolAck(payload.result)) return [];
+
+    const cancelled = parsed.cancelled === true;
+    const answers = parsed.answers && typeof parsed.answers === 'object' ? parsed.answers : {};
+    return [{
+      type: 'tool_call_completed',
+      providerToolCallId: cardId,
+      status: cancelled ? 'error' : 'completed',
+      result: JSON.stringify({
+        answers: cancelled ? {} : answers,
+        cancelled,
+        ...(typeof parsed.reason === 'string' ? { reason: parsed.reason } : {}),
+        ...(typeof parsed.respondedBy === 'string' ? { respondedBy: parsed.respondedBy } : {}),
+        ...(typeof parsed.respondedAt === 'number' ? { respondedAt: parsed.respondedAt } : {}),
+      }),
+      isError: cancelled,
     }];
   }
 

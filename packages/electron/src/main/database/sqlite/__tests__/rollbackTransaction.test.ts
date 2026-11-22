@@ -88,6 +88,7 @@ describe('migration rollback', () => {
         }
         fs.renameSync(from, to);
       },
+      renameRetryDelaysMs: [0, 0, 0, 0, 0],
     };
   }
 

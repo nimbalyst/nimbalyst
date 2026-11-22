@@ -95,6 +95,8 @@ interface CandidateRow {
   id: number;
   source: string;
   content: string;
+  /** Selected by `CANDIDATE_SQL` only; the sampling query filters age in SQL. */
+  created_at?: string;
 }
 
 function cutoffIso(retentionDays: number, now: number): string {
@@ -104,8 +106,18 @@ function cutoffIso(retentionDays: number, now: number): string {
 const SOURCE_PREDICATE = ELIGIBLE_SOURCE_PREFIXES.map(() => `m.source LIKE ? || '%'`).join(' OR ');
 
 /**
- * Candidate selection. Tool rows only, older than the cutoff, in a session
- * that is not currently active.
+ * Candidate selection. Tool rows only, in a session that is not currently
+ * active.
+ *
+ * Age is NOT filtered here. The walk is resumed from a persisted row id, and
+ * ids do not rise with timestamps: an imported or copied row keeps its old
+ * `created_at` at a new id. With `created_at < cutoff` in this query, one such
+ * row carried the cursor past every younger row below it, and those rows were
+ * never examined again once they aged (NIM-7735; on the measured install the
+ * cursor sat 558k rows past the cutoff and a nightly run freed 5-17 MB). The
+ * age filter also made the `LIMIT` scan walk every young row to the end of the
+ * table looking for matches, an 11 s chunk on the same install. The chunk loop
+ * reads `created_at` and stops at the first row still inside the window.
  *
  * `tool` covers claude-code and, since the classifier change, codex
  * app-server tool items. `meta` is still admitted, and the pure rewrite
@@ -116,11 +128,10 @@ const SOURCE_PREDICATE = ELIGIBLE_SOURCE_PREFIXES.map(() => `m.source LIKE ? || 
  * frames are `system` now, so they no longer reach this query at all.
  */
 const CANDIDATE_SQL = `
-  SELECT m.id, m.source, m.content
+  SELECT m.id, m.source, m.content, m.created_at
   FROM ai_agent_messages m
   JOIN ai_sessions s ON s.id = m.session_id
   WHERE m.id > ?
-    AND m.created_at < ?
     AND m.direction = 'output'
     AND m.message_kind IN ('tool', 'meta')
     AND (${SOURCE_PREDICATE})
@@ -411,7 +422,7 @@ export function createToolOutputRetentionWork(
 
       const rows = db
         .prepare(CANDIDATE_SQL)
-        .all(lastId, cutoff, ...ELIGIBLE_SOURCE_PREFIXES, CHUNK_ROWS) as CandidateRow[];
+        .all(lastId, ...ELIGIBLE_SOURCE_PREFIXES, CHUNK_ROWS) as CandidateRow[];
 
       if (rows.length === 0) {
         log(
@@ -424,9 +435,21 @@ export function createToolOutputRetentionWork(
       }
 
       const update = db.prepare('UPDATE ai_agent_messages SET content = ? WHERE id = ?');
+      let reachedWindow = false;
       for (const row of rows) {
+        const createdAt = row.created_at ?? '';
+        // A row dated after "now" (clock skew, a synced row) would otherwise
+        // hold the cursor in place forever. Walk past it untouched.
+        const futureDated = createdAt > stampIso;
+        if (createdAt >= cutoff && !futureDated) {
+          // Still inside the retention window. Leave the cursor before this
+          // row so the next run starts here once it has aged.
+          reachedWindow = true;
+          break;
+        }
         lastId = row.id;
         progress.scanned++;
+        if (futureDated) continue;
         const rewritten = tombstoneRawContent(row.content, row.source, stampIso);
         if (rewritten === null) continue;
         update.run(rewritten, row.id);
@@ -435,6 +458,15 @@ export function createToolOutputRetentionWork(
       }
 
       options.onProgress?.({ ...progress });
+      if (reachedWindow) {
+        log(
+          'info',
+          `[ToolRetention] complete: scanned=${progress.scanned} rewritten=${progress.rewritten} `
+            + `saved=${(progress.bytesSaved / 1024 / 1024).toFixed(1)}MB`,
+        );
+        onDone({ ...progress, durationMs: now() - startedAt, cutoffIso: cutoff, stoppedEarly: false, lastId });
+        return { done: true };
+      }
       return { done: false };
     },
   };

@@ -52,11 +52,13 @@ public final class SessionCreationRequests: ObservableObject {
             guard isConnected else { throw CreationError("Connect to sync before creating a session.") }
             let target: DeviceInfo?
             if let selectedId = options.targetDeviceId {
-                target = devices.first { $0.deviceId == selectedId && ($0.type == "desktop" || $0.type == "headless") }
+                target = devices.first { $0.deviceId == selectedId && $0.isOnline != false && ($0.type == "desktop" || $0.type == "headless") }
             } else {
                 // An unattended sandbox always reports active. It must never
                 // outrank the user's desktop merely because the Mac is away.
-                target = devices.filter { $0.type == "desktop" }.sorted {
+                // The inventory includes offline installations. Missing online
+                // status is supported for older servers with a live-only roster.
+                target = devices.filter { $0.type == "desktop" && $0.isOnline != false }.sorted {
                     if ($0.isFocused == true) != ($1.isFocused == true) { return $0.isFocused == true }
                     if $0.lastActiveAt != $1.lastActiveAt { return $0.lastActiveAt > $1.lastActiveAt }
                     return $0.deviceId < $1.deviceId

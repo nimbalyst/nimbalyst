@@ -9,6 +9,7 @@ import {
 import { getExtensionLoader } from '@nimbalyst/runtime';
 import { CANVAS_SHORTCUT_TABLE } from '@nimbalyst/runtime/canvas/canvasKeymap';
 import { developerModeAtom } from '../../store/atoms/appSettings';
+import { dictationEnabledAtom } from '../../store/atoms/dictation';
 
 interface KeyboardShortcutsDialogProps {
   isOpen: boolean;
@@ -105,6 +106,7 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const [extensionGroups, setExtensionGroups] = useState<ShortcutGroup[]>([]);
   const developerMode = useAtomValue(developerModeAtom);
+  const dictationEnabled = useAtomValue(dictationEnabledAtom);
 
   // Handle Escape key to close dialog
   useEffect(() => {
@@ -170,6 +172,10 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
         { label: 'Fill in suggested next prompt (empty input)', shortcut: 'Tab' }, // AIInput.tsx - promptSuggestionKeys.ts
         { label: 'Choose AI Model (AI input focused)', shortcut: 'Cmd+Shift+M' }, // AIInput.tsx
         { label: 'Next / Previous AI menu (model, effort, actions)', shortcut: 'Tab / Shift+Tab' }, // AIInputControls.tsx
+        // Hidden when Dictation is off in Settings: no hints for a disabled feature.
+        ...(dictationEnabled
+          ? [{ label: 'Dictate: hold to talk, tap to toggle (Esc discards)', shortcut: KeyboardShortcuts.dictation.holdToTalk }] // dictation/dictationShortcut.ts
+          : []),
       ],
     },
     {

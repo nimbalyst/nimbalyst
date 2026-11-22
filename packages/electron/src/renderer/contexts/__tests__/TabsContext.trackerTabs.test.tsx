@@ -99,6 +99,29 @@ describe('TabsContext tracker tabs', () => {
     expect(result.current.tabs[0].fileName).toBe('Architecture Plan');
   });
 
+  it('reopens Pages tabs (local wiki file, tracker, type) without a file-select callback', async () => {
+    const { result } = renderHook(() => useTabs(), { wrapper });
+    const paths = ['/ws/nimbalyst-local/wiki/Home.md', 'tracker://T1', 'type://plan'];
+
+    for (const path of paths) {
+      let tabId: string | null = null;
+      act(() => {
+        tabId = result.current.addTab(path, '', true, `Title of ${path}`);
+      });
+      act(() => result.current.removeTab(tabId!));
+    }
+    expect(result.current.tabs).toHaveLength(0);
+
+    for (const _ of paths) {
+      await act(async () => {
+        await result.current.reopenLastClosedTab();
+      });
+    }
+
+    expect(result.current.tabs.map((t) => t.filePath).sort()).toEqual([...paths].sort());
+    expect(result.current.tabs.find((t) => t.filePath === paths[0])!.fileName).toBe(`Title of ${paths[0]}`);
+  });
+
   it('adds a tracker tab with kind/trackerItemId and does NOT watch it as a file', () => {
     const { result } = renderHook(() => useTabs(), { wrapper });
 

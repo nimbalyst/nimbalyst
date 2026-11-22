@@ -270,16 +270,23 @@ describe('buildClaudeCliSpawnConfig', () => {
 
   // NIM-806 Phase 4 (Direction A): register the PreToolUse permission hook via
   // --settings so built-in tool prompts route to a Nimbalyst widget.
-  it('emits --settings with the given JSON when provided', () => {
-    const settings = JSON.stringify({ hooks: { PreToolUse: [] } });
-    const cfg = buildClaudeCliSpawnConfig({ ...base, settingsJson: settings });
+  it('emits --settings with the given settings file path when provided', () => {
+    const cfg = buildClaudeCliSpawnConfig({ ...base, settingsPath: '/tmp/nimbalyst-claude-cli/s.settings.json' });
     const i = cfg.args.indexOf('--settings');
     expect(i).toBeGreaterThanOrEqual(0);
-    expect(cfg.args[i + 1]).toBe(settings);
+    expect(cfg.args[i + 1]).toBe('/tmp/nimbalyst-claude-cli/s.settings.json');
   });
 
-  it('omits --settings when no JSON is provided (native gate kept)', () => {
+  it('omits --settings when no settings file is provided (native gate kept)', () => {
     expect(buildClaudeCliSpawnConfig(base).args).not.toContain('--settings');
+  });
+
+  it('forces --permission-mode default only on a gated launch without the hook', () => {
+    const mode = (cfg: { args: string[] }) =>
+      cfg.args.includes('--permission-mode') ? cfg.args[cfg.args.indexOf('--permission-mode') + 1] : undefined;
+    expect(mode(buildClaudeCliSpawnConfig(base))).toBe('default');
+    expect(mode(buildClaudeCliSpawnConfig({ ...base, settingsPath: '/tmp/s.settings.json' }))).toBeUndefined();
+    expect(mode(buildClaudeCliSpawnConfig({ ...base, dangerouslySkipPermissions: true }))).toBeUndefined();
   });
 
   // NIM-806 Phase 4: trusted "allow-all"/"bypass-all" workspaces skip the gate
@@ -305,11 +312,11 @@ describe('buildClaudeCliSpawnConfig', () => {
   });
 
   it('places --settings (value-bearing) BEFORE the --allowedTools variadic', () => {
-    // --settings takes a single JSON value; if it landed inside/after a variadic
+    // --settings takes a single path value; if it landed inside/after a variadic
     // the value would be swallowed. It must precede the variadics.
     const cfg = buildClaudeCliSpawnConfig({
       ...base,
-      settingsJson: '{"hooks":{}}',
+      settingsPath: '/tmp/s.settings.json',
       allowedMcpServerNames: ['nimbalyst-mcp'],
     });
     const s = cfg.args.indexOf('--settings');
@@ -318,7 +325,7 @@ describe('buildClaudeCliSpawnConfig', () => {
     expect(s).toBeGreaterThanOrEqual(0);
     expect(s).toBeLessThan(allowed);
     expect(s).toBeLessThan(disallowed);
-    expect(cfg.args[s + 1]).toBe('{"hooks":{}}');
+    expect(cfg.args[s + 1]).toBe('/tmp/s.settings.json');
   });
 
   it('keeps both variadics terminated: --allowedTools … --disallowedTools … --append-system-prompt', () => {
@@ -385,7 +392,7 @@ describe('buildClaudeCliSpawnConfig', () => {
     const cfg = buildClaudeCliSpawnConfig({
       ...base,
       additionalDirectories: ['/data/attachments'],
-      settingsJson: '{"hooks":{}}',
+      settingsPath: '/tmp/s.settings.json',
       allowedMcpServerNames: ['nimbalyst-mcp'],
     });
     const addDir = cfg.args.indexOf('--add-dir');
@@ -490,21 +497,22 @@ describe('resolveClaudeCliModelArg', () => {
   });
 
   it('uses the same explicit current Fable model as the SDK', () => {
-    expect(resolveClaudeCliModelArg('claude-code-cli:fable')).toBe('claude-fable-5-1');
-    expect(resolveClaudeCliModelArg('fable')).toBe('claude-fable-5-1');
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable')).toBe('claude-fable-5-2');
+    expect(resolveClaudeCliModelArg('fable')).toBe('claude-fable-5-2');
   });
 
   it('resolves pinned fable-5 to the full model id (CLI does not accept `fable-5` as alias)', () => {
     expect(resolveClaudeCliModelArg('claude-code-cli:fable-5')).toBe('claude-fable-5');
     expect(resolveClaudeCliModelArg('fable-5')).toBe('claude-fable-5');
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable-5-1')).toBe('claude-fable-5-1');
   });
 
   // Plain `fable` is 1M on a plan that auto-upgrades, but NOT behind an
   // ANTHROPIC_BASE_URL gateway (our observation proxy) and not on Pro without
   // credits — the explicit `[1m]` form is the user's opt-in for those (NIM-2170).
   it('preserves the explicit 1M suffix for current Fable', () => {
-    expect(resolveClaudeCliModelArg('claude-code-cli:fable-1m')).toBe('claude-fable-5-1[1m]');
-    expect(resolveClaudeCliModelArg('fable-1m')).toBe('claude-fable-5-1[1m]');
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable-1m')).toBe('claude-fable-5-2[1m]');
+    expect(resolveClaudeCliModelArg('fable-1m')).toBe('claude-fable-5-2[1m]');
   });
 
   it('passes a bare variant through (normalized), translating -1m to [1m]', () => {

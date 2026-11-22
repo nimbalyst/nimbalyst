@@ -101,6 +101,27 @@ function fsFailingRenameFrom(target: string, code: 'EPERM' | 'EBUSY'): CutoverFs
       }
       fs.renameSync(from, to);
     },
+    renameRetryDelaysMs: [0, 0, 0, 0, 0],
+  };
+}
+
+/**
+ * Like `fsFailingRenameFrom`, but the lock clears after `failures` refusals --
+ * the Windows case where a directory handle outlives the close by a moment.
+ */
+function fsTransientRenameLock(target: string, failures: number): CutoverFs & { refusals: () => number } {
+  let refused = 0;
+  const base = fsFailingRenameFrom(target, 'EPERM');
+  return {
+    ...base,
+    rename: (from, to) => {
+      if (from === target && refused < failures) {
+        refused += 1;
+        base.rename(from, to);
+      }
+      fs.renameSync(from, to);
+    },
+    refusals: () => refused,
   };
 }
 
@@ -194,6 +215,30 @@ describe('cutover failure handling', () => {
     expect(readBackendState(tmp)?.backend).not.toBe('sqlite');
     // The verified target is retained -- it is a recoverable copy, not garbage.
     expect(fs.existsSync(path.join(tmp, 'sqlite-db', 'nimbalyst.sqlite'))).toBe(true);
+  });
+
+  // 2026-11-16: a Windows install failed at this rename with EPERM and only
+  // completed on its next launch. A handle that outlives the close by a moment
+  // is not evidence of anything, so the rename is retried before the cutover
+  // gives up (destructive-data-paths rule 1).
+  it('migration: a rename lock that clears within the retry window completes in the same launch', async () => {
+    const cutoverFs = fsTransientRenameLock(pgliteDir, 2);
+    const orchestrator = new MigrationOrchestrator({
+      userDataPath: tmp,
+      schemaDir: SCHEMA_DIR,
+      pglite: fakeReader,
+      closeRunningPglite: async () => {},
+      reopenPgliteAfterClose: fakeReopen,
+      migrator: stubMigrator(),
+      cutoverFs,
+    });
+
+    await orchestrator.run();
+
+    expect(cutoverFs.refusals()).toBe(2);
+    expect(readBackendState(tmp)?.backend).toBe('sqlite');
+    expect(fs.existsSync(pgliteDir)).toBe(false);
+    expect(fs.readdirSync(tmp).filter((d) => d.startsWith('pglite-db.migrated-'))).toHaveLength(1);
   });
 
   // PGLite is closed by `quiesceSource`, and the final catch-up runs after it.

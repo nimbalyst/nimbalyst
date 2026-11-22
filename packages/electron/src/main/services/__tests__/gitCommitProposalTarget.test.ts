@@ -113,6 +113,31 @@ it('treats the session checkout itself as an ordinary target', async () => {
   });
 });
 
+// #1968: a session opened on a subfolder that names its own checkout root is
+// not "another worktree", so it must not lose auto-approval. The record keeps
+// the session checkout (what execution re-checks) and commits in the root.
+it('treats its own checkout root as the same checkout when the session workspace is a subfolder', async () => {
+  const { env, git, main, sibling } = realRepos();
+  const sub = join(main, 'packages', 'app');
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(sub, 'inner.txt'), 'inner\n');
+  writeFileSync(join(main, 'shared.txt'), 'root edit\n');
+  state.session = { workspacePath: sub };
+
+  const target = await resolveGitCommitProposalTarget('session', sub, ['packages/app/inner.txt', 'shared.txt'], main);
+  expect(target).toEqual({
+    workspacePath: sub, repoPath: main, files: [join(sub, 'inner.txt'), join(main, 'shared.txt')],
+  });
+  const result = await executeGitCommitAcrossRepos(target.workspacePath, 'commit from subfolder', target.files, {
+    repoPath: target.repoPath, env: env as Record<string, string>,
+  });
+  expect(result.success).toBe(true);
+  expect(git(main, ['show', '--name-only', '--format=', 'HEAD']).split('\n').sort()).toEqual(['packages/app/inner.txt', 'shared.txt']);
+
+  // A real sibling named from the subfolder session still needs manual approval.
+  expect((await resolveGitCommitProposalTarget('session', sub, ['shared.txt'], sibling)).worktree).toEqual({ path: sibling, branch: 'feature' });
+});
+
 it('refuses other repositories, plain folders and files outside the named worktree, saying what to do', async () => {
   const { main, sibling, other } = realRepos();
   await expect(resolveGitCommitProposalTarget('session', main, [join(other, 'shared.txt')], other)).rejects.toThrow(/not a registered git worktree.*git worktree list/);

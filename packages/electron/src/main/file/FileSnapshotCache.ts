@@ -6,11 +6,31 @@ import { GitCatFileBatch } from './GitCatFileBatch';
 
 function execFileAsync(cmd: string, args: string[], opts: { cwd?: string; timeout?: number; maxBuffer?: number } = {}): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, opts, (error, stdout, stderr) => {
+    // windowsHide: every caller runs git, which otherwise flashes a console window on Windows (#1839).
+    execFile(cmd, args, { ...opts, windowsHide: true }, (error, stdout, stderr) => {
       if (error) reject(error);
       else resolve({ stdout: stdout as string, stderr: stderr as string });
     });
   });
+}
+
+/**
+ * Paths from `git status --porcelain -z`. Without `-z` git quotes and escapes
+ * names with spaces or non-ASCII characters, which then never resolve on disk.
+ * A rename or copy record is followed by its source path as a separate entry;
+ * that entry is skipped because only the destination exists in the worktree.
+ */
+export function parseDirtyPathsPorcelainZ(stdout: string): string[] {
+  const records = stdout.split('\0');
+  const paths: string[] = [];
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index];
+    if (record.length < 4) continue;
+    const status = record.slice(0, 2);
+    paths.push(record.slice(3));
+    if (status.includes('R') || status.includes('C')) index++;
+  }
+  return paths;
 }
 
 const BINARY_EXTENSIONS = new Set([
@@ -201,23 +221,12 @@ export class FileSnapshotCache {
       // `--no-optional-locks` keeps this read-only status from refreshing (and
       // so locking) `.git/index`, where it would contend with concurrent git
       // writers such as the commit path (NIM-2285).
-      const { stdout } = await execFileAsync('git', ['--no-optional-locks', 'status', '--porcelain'], {
+      const { stdout } = await execFileAsync('git', ['--no-optional-locks', 'status', '--porcelain', '-z'], {
         cwd: workspacePath,
         timeout: 10000,
         maxBuffer: 5_000_000, // 5MB cap on git status output
       });
-      const dirtyFiles = new Set<string>();
-      for (const line of stdout.split('\n')) {
-        if (!line.trim()) continue;
-        const status = line.slice(0, 2);
-        let filePart = line.slice(3).trim();
-        if (!filePart) continue;
-        if (status.startsWith('R') || status.startsWith('C')) {
-          const parts = filePart.split('->').map((part) => part.trim());
-          filePart = parts[parts.length - 1] || filePart;
-        }
-        dirtyFiles.add(filePart);
-      }
+      const dirtyFiles = new Set(parseDirtyPathsPorcelainZ(stdout));
 
       if (dirtyFiles.size > MAX_DIRTY_FILES) {
         logger.main.warn(`[FileSnapshotCache] ${dirtyFiles.size} dirty files exceeds limit of ${MAX_DIRTY_FILES}, caching only first ${MAX_DIRTY_FILES} (rest use git fallback)`);

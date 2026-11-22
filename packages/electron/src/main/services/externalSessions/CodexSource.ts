@@ -6,6 +6,7 @@ import {
   BoundedDiscovery,
   AcceptedHeaderCache,
   contentMarkerAt,
+  cursorInode,
   cursorContentMatches,
   DEFAULT_LINE_BYTES,
   type JsonlEntry,
@@ -444,7 +445,7 @@ export class CodexSource implements ExternalSessionSource {
     if (
       group &&
       (group.anchor !== anchor ||
-        group.inode !== stat.ino ||
+        group.inode !== cursorInode(stat.ino) ||
         stat.size < group.scan.fileSize ||
         (group.done &&
           (group.scan.fileSize !== stat.size ||
@@ -834,6 +835,30 @@ function typedToolItem(value: unknown): Record<string, unknown> | null {
   }
 }
 
+// Leading blocks Codex itself writes into user messages. An unterminated
+// block is treated as all preamble.
+const INJECTED_PREAMBLES: Array<[RegExp, string]> = [
+  [/^# AGENTS\.md instructions for [^\n]*\n+\s*<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>/, "# AGENTS.md instructions for "],
+  [/^<environment_context>[\s\S]*?<\/environment_context>/, "<environment_context>"],
+  [/^<user_instructions>[\s\S]*?<\/user_instructions>/, "<user_instructions>"],
+  [/^<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>/, "<INSTRUCTIONS>"],
+];
+function stripInjectedContext(text: string): string {
+  let rest = text.trimStart();
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const [pattern, prefix] of INJECTED_PREAMBLES) {
+      const match = pattern.exec(rest);
+      if (match) {
+        rest = rest.slice(match[0].length).trimStart();
+        changed = true;
+      } else if (rest.startsWith(prefix)) {
+        return "";
+      }
+    }
+  }
+  return rest;
+}
 function rolloutTitle(entries: Record<string, any>[]): string | undefined {
   for (const entry of entries) {
     if (
@@ -841,7 +866,16 @@ function rolloutTitle(entries: Record<string, any>[]): string | undefined {
       entry.payload?.type === "message" &&
       entry.payload.role === "user"
     ) {
-      const prompt = textBlocks(entry.payload.content);
+      // GitHub #1825: Codex records its own environment and AGENTS.md context
+      // as user messages. Only text the user typed may become the title.
+      const content = entry.payload.content;
+      const prompt = Array.isArray(content)
+        ? content
+            .filter((p) => p && typeof p === "object" && typeof p.text === "string")
+            .map((p) => stripInjectedContext(p.text))
+            .filter(Boolean)
+            .join("\n")
+        : stripInjectedContext(textBlocks(content));
       if (prompt.trim()) return prompt.slice(0, 50) + "...";
     }
   }

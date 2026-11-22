@@ -339,7 +339,7 @@ export function registerSuperLoopHandlers(): void {
         throw new Error('workspaceId is required');
       }
 
-      logger.info('Listing super loops', { workspaceId });
+      logger.debug('Listing super loops', { workspaceId });
 
       const loops = await superLoopService.listLoops(workspaceId);
 

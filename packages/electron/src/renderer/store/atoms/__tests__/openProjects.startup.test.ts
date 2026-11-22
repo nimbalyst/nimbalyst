@@ -5,6 +5,30 @@ import { activeWorkspacePathAtom, initOpenProjects, openProjectsAtom, moveOpenPr
 
 afterEach(() => { teardownOpenProjects(); vi.unstubAllGlobals(); });
 
+it('keeps an explicit new window on its requested project despite global rail restoration', async () => {
+  const invoke = vi.fn(async (channel: string) => {
+    switch (channel) {
+      case 'app:get-multi-project-mode':
+      case 'app:get-restore-previous-projects': return true;
+      case 'app:get-open-projects': return ['/project-a', '/project-b'];
+      case 'app:get-active-project-path': return '/project-a';
+      default: return { success: true };
+    }
+  });
+  vi.stubGlobal('window', { electronAPI: {
+    invoke,
+    getInitialState: async () => ({ mode: 'workspace', workspacePath: '/project-b',
+      activeWorkspacePath: '/project-b', openProjectPaths: ['/project-b'], restorePreviousProjects: false }),
+  } });
+
+  await initOpenProjects();
+
+  expect(store.get(openProjectsAtom).map(p => p.path)).toEqual(['/project-b']);
+  expect(store.get(activeWorkspacePathAtom)).toBe('/project-b');
+  expect(invoke).not.toHaveBeenCalledWith('workspace:register-additional', { workspacePath: '/project-a' });
+  expect(invoke).toHaveBeenCalledWith('workspace:set-active', { workspacePath: '/project-b' });
+});
+
 it('registers all restored projects and activates the saved project in main without a rail click', async () => {
   const paths = Array.from({ length: 32 }, (_,i) => `/project-${i + 1}`);
   const invoke = vi.fn(async (channel: string) => {

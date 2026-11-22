@@ -347,6 +347,21 @@ describe('PGLiteSessionStore JSON-column read normalization', () => {
     expect(spread).toHaveProperty('tags');
   });
 
+  it('returns hasBeenNamed as a boolean when SQLite stores the column as an integer', async () => {
+    // A numeric hasBeenNamed reached the phone's client metadata, which iOS
+    // decodes strictly as Bool, so every session created from the phone was
+    // skipped as unreadable.
+    const db = {
+      query: vi.fn(async () => ({
+        rows: [makeRow({ has_been_named: 0 }), makeRow({ id: 's2', has_been_named: 1 })],
+      })),
+    };
+    const store = createPGLiteSessionStore(db as any);
+    expect((await store.get('s1'))?.hasBeenNamed).toBe(false);
+    if (!store.getMany) throw new Error('PGLite session store must support bulk reads');
+    expect((await store.getMany(['s1', 's2'])).map(s => s.hasBeenNamed)).toEqual([false, true]);
+  });
+
   it('get() falls back to {} when the metadata text is malformed', async () => {
     const db = {
       query: vi.fn(async () => ({

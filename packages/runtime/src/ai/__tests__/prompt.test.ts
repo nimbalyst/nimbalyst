@@ -123,6 +123,16 @@ describe('buildClaudeCodeSystemPrompt', () => {
     expect(typical.length).toBeLessThan(6500);
   });
 
+  it('says nothing about messaging other sessions; reporting duty comes only from a spawn directive', () => {
+    const prompt = buildClaudeCodeSystemPrompt({ hasSessionNaming: true, trackersEnabled: true });
+    expect(prompt).not.toMatch(/send_prompt|messageKind|consume_session_inbox|sibling session/);
+    // The orchestrator persona opts into completion notifications explicitly
+    // and does not treat the inbox as a per-boundary ritual.
+    const meta = buildMetaAgentSystemPrompt('claude', 'default', { provider: 'claude-code' });
+    expect(meta).toContain('reporting: "final"');
+    expect(meta).not.toMatch(/after long validation|before final synthesis/);
+  });
+
   it('appends a session directive last, and a blank one changes nothing', () => {
     const base = buildClaudeCodeSystemPrompt({ hasSessionNaming: true });
     expect(buildClaudeCodeSystemPrompt({ hasSessionNaming: true, sessionDirective: '  \n' })).toBe(base);

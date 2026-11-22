@@ -81,6 +81,27 @@ export function parseCollabUri(uri: string): { orgId: string; documentId: string
   };
 }
 
+/** The document id prefix of a typed page's body room: `tracker-content/<itemId>`. */
+export const TRACKER_BODY_DOCUMENT_PREFIX = 'tracker-content/';
+
+/**
+ * The tracker item behind a typed-page body URI, or null for any other URI.
+ *
+ * Agents are handed the short form, `collab://tracker-content/<itemId>`, whose
+ * org is the project's team; the long form names the org itself. A body room is
+ * not in the shared-docs index, so callers resolve it from the item id.
+ */
+export function parseTrackerBodyUri(uri: string): { itemId: string; orgId: string | null } | null {
+  if (!isCollabUri(uri)) return null;
+  const short = uri.slice(COLLAB_PREFIX.length);
+  if (short.startsWith(TRACKER_BODY_DOCUMENT_PREFIX)) {
+    const itemId = short.slice(TRACKER_BODY_DOCUMENT_PREFIX.length);
+    return itemId ? { itemId, orgId: null } : null;
+  }
+  const match = /^org:([^:]+):doc:tracker-content\/(.+)$/.exec(short);
+  return match ? { itemId: match[2]!, orgId: match[1]! } : null;
+}
+
 /**
  * Build a collab:// URI from org and document IDs.
  *

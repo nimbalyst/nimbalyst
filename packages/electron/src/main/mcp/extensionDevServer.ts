@@ -30,6 +30,7 @@ import * as fs from "fs";
 import { runExtensionBuild } from "../extensions/extensionBuild";
 import { database } from "../database/initialize";
 import { findWindowByWorkspace } from "../window/WindowManager";
+import { reuseOpenWorkspaceWindow } from "../window/reuseOpenWorkspaceWindow";
 import { getRestartSignalPath, getPackageRoot } from "../utils/appPaths";
 import { requireMcpAuth } from "./mcpAuth";
 import { selectFocusedRestartSessions } from "./restartContinuationSelection";
@@ -2524,8 +2525,12 @@ ${script}
           };
         }
 
-        const targetWindow = findWindowByWorkspace(workspacePath);
-        if (!targetWindow || targetWindow.isDestroyed()) {
+        // The window holding the project may be showing another rail project;
+        // this switches it, and the renderer waits for the switch before it
+        // opens the file.
+        const match = reuseOpenWorkspaceWindow(workspacePath);
+        const targetWindow = match?.window;
+        if (!match || !targetWindow || targetWindow.isDestroyed()) {
           return {
             content: [
               {
@@ -2589,14 +2594,13 @@ ${script}
             });
           });
 
-          // Send 'open-workspace-file' to trigger the standard file opening flow
-          // in useIPCHandlers.ts -> handleWorkspaceFileSelect, which loads file content
-          // and creates a tab with the correct extension editor.
-          targetWindow.webContents.send("open-workspace-file", filePath);
-
-          // Send the test handler to poll for extension mount if needed
+          // The test handler opens the file through handleWorkspaceFileSelect
+          // once the window shows `workspacePath`, then polls for the extension
+          // mount if needed. A separate 'open-workspace-file' send used to open
+          // it as well, under whichever rail project was active.
           targetWindow.webContents.send("extension-test:open-file", {
             filePath,
+            workspacePath: match.matchedPath,
             waitForExtension,
             timeout: openTimeout,
             responseChannel,

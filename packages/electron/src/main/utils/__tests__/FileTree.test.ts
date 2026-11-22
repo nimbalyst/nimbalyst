@@ -1,9 +1,15 @@
 // @vitest-environment node
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { stat } from 'fs/promises';
 import { getFolderContents, listFolderFilesRecursive } from '../FileTree';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+
+vi.mock('fs/promises', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('fs/promises')>();
+    return { ...actual, stat: vi.fn(actual.stat) };
+});
 
 describe('FileTree All Files Mode', () => {
     let tempDir: string;
@@ -82,6 +88,86 @@ describe('FileTree All Files Mode', () => {
 
         expect(seen.find((entry) => entry.truncated)?.name).toBe('d9');
         expect(seen.filter((entry) => entry.truncated)).toHaveLength(1);
+    });
+
+    it('applies the per-directory cap to the sorted list, not to raw readdir order', async () => {
+        const names = Array.from({ length: 250 }, (_, i) => `a-${String(i + 1).padStart(3, '0')}.md`);
+        // Create in reverse so the first entries returned by readdir are the ones that sort last.
+        for (const name of [...names].reverse()) fs.writeFileSync(path.join(tempDir, name), '');
+        fs.writeFileSync(path.join(tempDir, 'zz-last.md'), '');
+        fs.mkdirSync(path.join(tempDir, 'zz-dir'));
+
+        const result = await getFolderContents(tempDir);
+
+        expect(result).toHaveLength(200);
+        // Directories sort first, so the late-named folder survives the cap.
+        expect(result[0].name).toBe('zz-dir');
+        expect(result.slice(1).map(item => item.name)).toEqual(names.slice(0, 199));
+    });
+
+    it('records how many entries the per-directory cap hid on the capped folder only', async () => {
+        const big = path.join(tempDir, 'big');
+        fs.mkdirSync(big);
+        for (let i = 1; i <= 251; i++) fs.writeFileSync(path.join(big, `a-${String(i).padStart(3, '0')}.md`), '');
+        fs.mkdirSync(path.join(tempDir, 'small'));
+        fs.writeFileSync(path.join(tempDir, 'small', 'one.md'), '');
+
+        const result = await getFolderContents(tempDir);
+        const bigNode = result.find(item => item.name === 'big')!;
+        const smallNode = result.find(item => item.name === 'small')!;
+
+        expect(bigNode.children).toHaveLength(200);
+        expect(bigNode.omittedChildCount).toBe(51);
+        expect(bigNode.omittedChildCountIsMinimum).toBeUndefined();
+        expect(smallNode.omittedChildCount ?? 0).toBe(0);
+    });
+
+    it('never stats symlinks past the cap and marks the count as a minimum instead', async () => {
+        const big = path.join(tempDir, 'big');
+        fs.mkdirSync(big);
+        for (let i = 1; i <= 200; i++) fs.mkdirSync(path.join(big, `d-${String(i).padStart(3, '0')}`));
+        for (let i = 1; i <= 200; i++) fs.symlinkSync(path.join(big, 'missing'), path.join(big, `zz-broken-${i}`));
+        fs.symlinkSync(path.join(big, 'd-001'), path.join(big, 'zz-live'));
+        vi.mocked(stat).mockClear();
+
+        const result = await getFolderContents(tempDir);
+
+        expect(vi.mocked(stat).mock.calls.filter(([p]) => path.basename(String(p)).startsWith('zz-'))).toHaveLength(0);
+        expect(result[0].children).toHaveLength(200);
+        expect(result[0].omittedChildCount ?? 0).toBe(0);
+        expect(result[0].omittedChildCountIsMinimum).toBe(true);
+    });
+
+    it('counts resolved entries exactly and flags links it skipped unresolved', async () => {
+        const big = path.join(tempDir, 'big');
+        fs.mkdirSync(big);
+        for (let i = 1; i <= 201; i++) fs.mkdirSync(path.join(big, `d-${String(i).padStart(3, '0')}`));
+        fs.symlinkSync(path.join(big, 'd-001'), path.join(big, 'a-link'));
+        fs.symlinkSync(path.join(big, 'd-001'), path.join(big, 'zz-link'));
+        fs.symlinkSync(path.join(big, 'missing'), path.join(big, 'a-broken'));
+
+        const result = await getFolderContents(tempDir);
+
+        // 201 dirs + a-link = 202 resolved and displayable; 200 kept. a-broken
+        // could make the cap, so it is stat'd, and is not counted. zz-link
+        // could not, so it is never stat'd and only sets the minimum flag.
+        expect(result[0].omittedChildCount).toBe(2);
+        expect(result[0].omittedChildCountIsMinimum).toBe(true);
+    });
+
+    it('sorts symlinks by target type but never stats a link that cannot make the cap', async () => {
+        for (let i = 1; i <= 201; i++) fs.mkdirSync(path.join(tempDir, `d-${String(i).padStart(3, '0')}`));
+        fs.symlinkSync(path.join(tempDir, 'd-001'), path.join(tempDir, 'a-link'));
+        fs.symlinkSync(path.join(tempDir, 'd-001'), path.join(tempDir, 'zz-link'));
+        vi.mocked(stat).mockClear();
+
+        const result = await getFolderContents(tempDir);
+
+        expect(result).toHaveLength(200);
+        expect(result[0]).toMatchObject({ name: 'a-link', type: 'directory' });
+        expect(result.map(item => item.name)).not.toContain('zz-link');
+        // Only a-link could land inside the cap; zz-link sorts after d-199 even as a directory.
+        expect(vi.mocked(stat).mock.calls.map(([p]) => path.basename(String(p)))).toEqual(['a-link']);
     });
 
     it('should return empty folders', async () => {

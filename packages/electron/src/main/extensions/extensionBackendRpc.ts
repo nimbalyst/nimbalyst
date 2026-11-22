@@ -17,7 +17,11 @@
  * after. There is no forced termination short of killing the process.
  */
 
-import type { BackendToolCallContext, ExtensionPermissionId } from '@nimbalyst/extension-sdk';
+import type {
+  BackendToolCallContext,
+  ExtensionPermissionId,
+  PanelGutterBadgeTone,
+} from '@nimbalyst/extension-sdk';
 
 /**
  * Stable identity passed to a backend module on init. The module never
@@ -180,7 +184,8 @@ export type BrokerMethodName =
   | 'toolExecutor'
   | 'devToolExecutor'
   | 'sessions'
-  | 'panels';
+  | 'panels'
+  | 'terminals';
 
 /** Payload shapes for each broker method. Kept here so both sides share one truth. */
 export interface BrokerPayloads {
@@ -243,7 +248,14 @@ export interface BrokerPayloads {
     /** Bare manifest panel id; the host rejects ids the calling extension does not declare. */
     panelId: string;
     value: number | null;
-    tone?: 'default' | 'warning';
+    tone?: PanelGutterBadgeTone;
+  };
+  terminals: {
+    /** `create`, or a `BackendCommandTerminal` method name (see extension-sdk backendTerminals.ts). */
+    op: string;
+    args: unknown;
+    // NOTE: no extensionId or workspacePath. The host scopes every op to
+    // terminals the calling module's own extension created in its workspace.
   };
 }
 
@@ -260,6 +272,7 @@ export interface BrokerResults {
   devToolExecutor: { result: string };
   sessions: { result: unknown };
   panels: Record<string, never>;
+  terminals: { result: unknown };
 }
 
 /**
@@ -269,6 +282,16 @@ export interface BrokerResults {
  */
 export type SessionsSettledEventName = 'sessions:settled';
 export const SESSIONS_SETTLED_EVENT: SessionsSettledEventName = 'sessions:settled';
+
+/**
+ * `broker-event` names the host uses to deliver a command terminal's output and
+ * exit to the module that created it (`ctx.services.terminals`). Payloads:
+ * `{ terminalId, data, cursor }` and `{ terminalId, exitCode, signal? }`.
+ */
+export type TerminalsOutputEventName = 'terminals:output';
+export const TERMINALS_OUTPUT_EVENT: TerminalsOutputEventName = 'terminals:output';
+export type TerminalsExitEventName = 'terminals:exit';
+export const TERMINALS_EXIT_EVENT: TerminalsExitEventName = 'terminals:exit';
 
 export interface SerializedError {
   message: string;

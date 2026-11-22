@@ -10,7 +10,13 @@
  * on a panel its own manifest declares.
  */
 
-export type PanelGutterBadgeTone = 'default' | 'warning';
+/**
+ * Badge color. `default` is the attention color used for unread counts;
+ * `warning`, `success` and `error` use the theme's status colors, for a badge
+ * that reports a state (starting, all running, something failed) rather than
+ * a count to act on.
+ */
+export type PanelGutterBadgeTone = 'default' | 'warning' | 'success' | 'error';
 
 export interface BackendPanelsService {
   /**

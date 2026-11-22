@@ -141,6 +141,32 @@ describe('OrgProjectionService (SQLite backend, migration 0013)', () => {
     })).allowed).toBe(false);
   });
 
+  it('a server commenter grant replaces the seed and reads as comment-only', async () => {
+    // A member's roster seed guesses project-editor; the server's list says
+    // project-commenter. The stored role string is what later ranks it, so it
+    // must survive the reconcile verbatim.
+    await backfillProjection(db, [{
+      org: { orgId: 'org-comm', name: 'Comm', flavor: 'team', teamProjectId: 'proj-comm' },
+      members: [{ teamMemberId: teamId('reader'), role: 'member' }],
+    }]);
+    await reconcileProjectAccessFromServer(db, 'proj-comm', [
+      { teamMemberId: teamId('reader'), projectRole: 'project-commenter' },
+    ]);
+
+    const rows = await db.query<{ project_role: string }>(
+      `SELECT project_role FROM project_access WHERE project_id = 'proj-comm' AND user_id = 'reader'`);
+    expect(rows.rows).toEqual([{ project_role: 'project-commenter' }]);
+    const input = { orgId: 'org-comm', projectId: 'proj-comm' };
+    expect((await canAccess(db, teamViewer('reader'), { ...input, action: 'comment' })).allowed).toBe(true);
+    const edit = await canAccess(db, teamViewer('reader'), { ...input, action: 'edit' });
+    expect(edit.allowed).toBe(false);
+    expect(edit.projectRole).toBe('project-commenter');
+
+    // A later broadcast grant upgrades it like any other role.
+    await applyProjectGrant(db, 'proj-comm', teamId('reader'), 'project-editor');
+    expect((await canAccess(db, teamViewer('reader'), { ...input, action: 'edit' })).allowed).toBe(true);
+  });
+
   it('reconcile leaves other projects untouched', async () => {
     await backfillProjection(db, [{
       org: { orgId: 'org-multi', name: 'Multi', flavor: 'team', teamProjectId: 'proj-keep' },

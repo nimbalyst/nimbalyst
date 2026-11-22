@@ -448,7 +448,14 @@ const WORKER_BUNDLES = [
     // Its local embedder is externalized and must resolve from Resources/node_modules.
     name: 'memory-backend',
     bundle: 'extensions/nimbalyst-memory/dist/backend.js',
-    externals: ['@huggingface/transformers', 'onnxruntime-node', 'onnxruntime-common'],
+    externals: [
+      '@huggingface/transformers', 'onnxruntime-node', 'onnxruntime-common',
+      'sharp', '@img/colour', 'detect-libc', 'semver',
+      ...(targetArch === 'universal' ? ['x64', 'arm64'] : [targetArch]).flatMap(arch => [
+        `@img/sharp-${targetPlatform}-${arch}/sharp.node`,
+        ...(targetPlatform === 'win32' ? [] : [`@img/sharp-libvips-${targetPlatform}-${arch}/binary`]),
+      ]),
+    ],
     nativeBinaries: (targetArch === 'universal' ? ['x64', 'arm64'] : [targetArch]).map(
       (arch) => ({
         candidateRelPaths: [
@@ -590,6 +597,11 @@ if (canBootCheck) {
     // don't go through worker_threads here -- the same Node ABI is in play,
     // and require/dlopen happens at module load regardless of thread.
     const NATIVE_BOOT_PROBES = {
+      '@huggingface/transformers': `
+        // Loading the real consumer also loads Sharp's platform binding.
+        const { RawImage } = req('@huggingface/transformers');
+        if (typeof RawImage.fromBlob !== 'function') throw new Error('RawImage decoder unavailable');
+      `,
       'better-sqlite3': `
         const Database = req('better-sqlite3');
         const db = new Database(':memory:');

@@ -9,6 +9,7 @@
  * pipeline (separate wiring step).
  */
 
+import { createHash } from 'crypto';
 import type { Database as SqliteDatabase } from 'better-sqlite3';
 
 export type QueryKind = 'read' | 'write' | 'migration';
@@ -105,6 +106,8 @@ export interface DatabaseInstrumentationOptions {
   windowMs?: number;
   /** Logger. Tests can pass a no-op. */
   log?: (level: 'info' | 'warn', msg: string) => void;
+  /** Max distinct shapes aggregated; the least recently seen is evicted. Default 1_000. */
+  maxShapeBuckets?: number;
 }
 
 interface ShapeBucket {
@@ -123,8 +126,21 @@ const HIST_KINDS: QueryKind[] = ['read', 'write', 'migration'];
  * amount between lucky draws.
  */
 export const SLOW_QUERY_PRUNE_EVERY = 50;
-/** Stored shape text is cut to this length; a generated IN-list shape can be megabytes. */
+/** Readable prefix kept in a shape key; a generated IN-list shape can be megabytes. */
 export const SLOW_QUERY_SHAPE_MAX_CHARS = 500;
+/**
+ * Hard cap on a shape key, in memory and in `_perf_slow_queries.shape`: the
+ * readable prefix plus a ` #<hash>` identity suffix.
+ */
+export const QUERY_SHAPE_KEY_MAX_CHARS = SLOW_QUERY_SHAPE_MAX_CHARS + 18;
+/**
+ * Statements longer than this skip the regex normalization and table
+ * extraction entirely: the work is proportional to the SQL length and runs on
+ * every sampled query, before and after the real one.
+ */
+export const NORMALIZE_INPUT_MAX_CHARS = 20_000;
+/** Stored error messages are cut to this length, like the SQL and params samples. */
+export const SLOW_QUERY_ERROR_MAX_CHARS = 2_000;
 
 function emptyHistRow(): HistogramRow {
   return { lt1ms: 0, lt10ms: 0, lt100ms: 0, lt1s: 0, gt1s: 0 };
@@ -137,6 +153,7 @@ export class DatabaseInstrumentation {
   private slowQueryMaxRows: number;
   private slowInsertsSincePrune = 0;
   private windowMs: number;
+  private maxShapeBuckets: number;
   private log: (level: 'info' | 'warn', msg: string) => void;
 
   private shapes = new Map<string, ShapeBucket>();
@@ -169,6 +186,7 @@ export class DatabaseInstrumentation {
     this.slowQueryThresholdMs = opts.slowQueryThresholdMs ?? 100;
     this.slowQueryMaxRows = opts.slowQueryMaxRows ?? 2_000;
     this.windowMs = opts.windowMs ?? 5 * 60 * 1000;
+    this.maxShapeBuckets = Math.max(1, opts.maxShapeBuckets ?? 1_000);
     this.log = opts.log ?? (() => {});
   }
 
@@ -221,7 +239,19 @@ export class DatabaseInstrumentation {
     this.slowQueryThresholdMs = Math.max(0, ms);
   }
 
+  /**
+   * Never throws: it runs on the application query's success and error paths,
+   * and a diagnostic failure must not replace the query's real outcome (#1810).
+   */
   recordQuery(opts: RecordedQuery): void {
+    try {
+      this.recordQueryUnsafe(opts);
+    } catch (err) {
+      this.safeLog('warn', `[DBInstr] failed to record query: ${(err as Error)?.message}`);
+    }
+  }
+
+  private recordQueryUnsafe(opts: RecordedQuery): void {
     this.totalQueries += 1;
     const isSlow = opts.durationMs >= this.slowQueryThresholdMs;
     const sampled = isSlow || Math.random() < this.sampleRate;
@@ -231,15 +261,24 @@ export class DatabaseInstrumentation {
 
     if (!sampled) return;
 
-    const shape = normalizeSql(opts.sql);
+    const shape = queryShapeKey(opts.sql);
     const callSite = opts.stack ? extractCallSite(opts.stack) : null;
     const now = Date.now();
 
+    // The map is kept in least-recently-seen order (re-inserted on every hit)
+    // and capped, because oversized statements are keyed by a hash of their
+    // raw text and a literal-varying one makes a new key per execution.
     let bucket = this.shapes.get(shape);
-    if (!bucket) {
+    if (bucket) {
+      this.shapes.delete(shape);
+    } else {
       bucket = { samples: [], totalMs: 0, count: 0, lastCallSite: null, lastSeenAt: now };
-      this.shapes.set(shape, bucket);
+      if (this.shapes.size >= this.maxShapeBuckets) {
+        const oldest = this.shapes.keys().next().value;
+        if (oldest !== undefined) this.shapes.delete(oldest);
+      }
     }
+    this.shapes.set(shape, bucket);
     bucket.count += 1;
     bucket.totalMs += opts.durationMs;
     bucket.lastCallSite = callSite;
@@ -249,7 +288,7 @@ export class DatabaseInstrumentation {
     // the rolling window.
     if (bucket.samples.length > 1000) bucket.samples.shift();
 
-    const table = extractPrimaryTable(opts.sql);
+    const table = opts.sql.length > NORMALIZE_INPUT_MAX_CHARS ? null : extractPrimaryTable(opts.sql);
     if (table) {
       let t = this.tableStats.get(table);
       if (!t) {
@@ -277,15 +316,19 @@ export class DatabaseInstrumentation {
     }
   }
 
+  /** Never throws; it runs before the application query (#1810). */
   beginInFlight(sql: string, stack?: string): InFlightHandle {
     const id = this.nextInFlightId++;
-    const entry: InFlightQuery = {
-      id,
-      shape: normalizeSql(sql),
-      startedAt: Date.now(),
-      callSite: stack ? extractCallSite(stack) : null,
-    };
-    this.inFlight.set(id, entry);
+    try {
+      this.inFlight.set(id, {
+        id,
+        shape: queryShapeKey(sql),
+        startedAt: Date.now(),
+        callSite: stack ? extractCallSite(stack) : null,
+      });
+    } catch (err) {
+      this.safeLog('warn', `[DBInstr] failed to register in-flight query: ${(err as Error)?.message}`);
+    }
     return {
       end: () => {
         this.inFlight.delete(id);
@@ -307,7 +350,7 @@ export class DatabaseInstrumentation {
 
   recordSlowBgChunk(info: { name: string; durationMs: number; chunkIndex: number }): void {
     this.slowBgChunks += 1;
-    this.log(
+    this.safeLog(
       'warn',
       `[DBInstr] slow bg chunk ${info.name}#${info.chunkIndex} ran ${info.durationMs.toFixed(1)}ms`,
     );
@@ -436,7 +479,7 @@ export class DatabaseInstrumentation {
       if (wasReadOnly) db.pragma('query_only = OFF');
       try {
         this.insertSlowStmt.run({
-          shape: shape.length > SLOW_QUERY_SHAPE_MAX_CHARS ? shape.slice(0, SLOW_QUERY_SHAPE_MAX_CHARS) + '...' : shape,
+          shape,
           sqlSample: opts.sql.length > 2000 ? opts.sql.slice(0, 2000) + '...' : opts.sql,
           paramsSample: opts.params ? safeStringifyParams(opts.params) : null,
           durationMs: opts.durationMs,
@@ -444,7 +487,7 @@ export class DatabaseInstrumentation {
           rowsReturned: opts.rowsReturned ?? null,
           rowsAffected: opts.rowsAffected ?? null,
           callSite,
-          errorMessage: opts.error ? String(opts.error.message ?? opts.error) : null,
+          errorMessage: opts.error ? truncate(String(opts.error.message ?? opts.error), SLOW_QUERY_ERROR_MAX_CHARS) : null,
         });
         // Prune on the first insert of a session (catches tables left over
         // the cap by older builds) and then every SLOW_QUERY_PRUNE_EVERY.
@@ -458,9 +501,46 @@ export class DatabaseInstrumentation {
         }
       }
     } catch (err) {
-      this.log('warn', `[DBInstr] failed to persist slow query: ${(err as Error).message}`);
+      this.safeLog('warn', `[DBInstr] failed to persist slow query: ${(err as Error)?.message}`);
     }
   }
+
+  private safeLog(level: 'info' | 'warn', msg: string): void {
+    try {
+      this.log(level, msg);
+    } catch {
+      // A broken logger must not escape into the application query.
+    }
+  }
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max) + '...' : text;
+}
+
+function shortHash(text: string): string {
+  return createHash('sha256').update(text).digest('hex').slice(0, 16);
+}
+
+/**
+ * The bounded key a statement is aggregated and persisted under.
+ *
+ * Ordinary statements get their readable normalized shape. A normalized shape
+ * over SLOW_QUERY_SHAPE_MAX_CHARS keeps a readable prefix plus a hash of the
+ * whole shape, so two long statements that differ only past the prefix stay
+ * separate. A raw statement over NORMALIZE_INPUT_MAX_CHARS is not normalized
+ * at all (the regex pass is proportional to its size); it is keyed by a hash of
+ * the raw text, so such statements group only when byte-identical, losing the
+ * literal-normalized grouping ordinary statements get.
+ */
+export function queryShapeKey(sql: string): string {
+  if (sql.length > NORMALIZE_INPUT_MAX_CHARS) {
+    const prefix = sql.slice(0, SLOW_QUERY_SHAPE_MAX_CHARS).replace(/\s+/g, ' ').trim().toLowerCase();
+    return `${prefix} #${shortHash(sql)}`;
+  }
+  const shape = normalizeSql(sql);
+  if (shape.length <= SLOW_QUERY_SHAPE_MAX_CHARS) return shape;
+  return `${shape.slice(0, SLOW_QUERY_SHAPE_MAX_CHARS)} #${shortHash(shape)}`;
 }
 
 /**

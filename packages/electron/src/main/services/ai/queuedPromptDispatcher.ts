@@ -61,6 +61,7 @@ export class SessionProcessingGuard extends Set<string> {
 export interface ClaimedQueuedPrompt {
   id: string;
   prompt: string;
+  createdAt?: number;
   attachments?: unknown[] | null;
   documentContext?: DocumentContext | null;
 }
@@ -242,6 +243,8 @@ interface TryClaimAndDispatchNextQueuedPromptOptions {
   resolveLiveWindow?: (workspacePath: string) => Electron.BrowserWindow | null;
   targetWindow: Electron.BrowserWindow | null;
   workspacePath: string;
+  /** Session title for an agent row's origin label; undefined falls back to a short id. */
+  resolveSessionTitle?: (id: string) => Promise<string | undefined>;
   /** True when a draining turn holds the guard but its live query can take this prompt. */
   canBypassChainGuard?: () => boolean;
   isLeadTurnPending?: DispatchClaimedQueuedPromptOptions['isLeadTurnPending'];
@@ -267,6 +270,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     targetWindow,
     workspacePath,
     canBypassChainGuard,
+    resolveSessionTitle,
     isLeadTurnPending,
   } = options;
 
@@ -293,8 +297,9 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
       return false;
     }
 
-    // Agent-authored rows deliver as one turn; a human row keeps its own turn and
-    // bounds the run on both sides. See coalesceQueuedPrompts.ts.
+    // Consecutive rows that can share a turn deliver as one, user and agent
+    // alike; slash commands and rows with differing context keep their own.
+    // See coalesceQueuedPrompts.ts.
     const run = selectCoalescibleRun(pendingPrompts);
     const nextPrompt = run[0];
     logInfo(`[AIService] ${source}: processing prompt ${nextPrompt.id} for session ${sessionId}`);
@@ -315,11 +320,19 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
       claimedRun.push(claimedNext);
     }
 
-    const claimed = mergeClaimedRun(claimedRun);
+    const originIds = [...new Set(claimedRun.flatMap((row) => {
+      const provenance = row.documentContext?.promptProvenance;
+      return provenance?.actor === 'agent' && provenance.originSessionId ? [provenance.originSessionId] : [];
+    }))];
+    const titles = new Map(await Promise.all(originIds.map(async (id) => {
+      try { return [id, await resolveSessionTitle?.(id)] as const; }
+      catch (error) { logError(`[AIService] ${source}: session title lookup failed for ${id}`, error); return [id, undefined] as const; }
+    })));
+    const claimed = mergeClaimedRun(claimedRun, (id) => titles.get(id));
     const claimedIds = claimedRun.map((row) => row.id);
 
     if (claimedRun.length > 1) {
-      logInfo(`[AIService] ${source}: coalesced ${claimedRun.length} agent-authored prompts into one turn for session ${sessionId}`);
+      logInfo(`[AIService] ${source}: coalesced ${claimedRun.length} queued prompts into one turn for session ${sessionId}`);
     }
 
     if (!sendMessageHandler) {

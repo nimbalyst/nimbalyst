@@ -140,6 +140,7 @@ import type {
 import { filterSessionsForPersonalSync } from './types';
 import type { FleetActivitySnapshot, PushRejectionCause } from '@nimbalyst/collab-protocol';
 import type { SyncedReadReceipt } from '../readReceipts/readReceipts';
+import { aesGcmEncrypt } from './aesGcm';
 
 /**
  * `readyState` values, spelled out rather than read off the global
@@ -297,14 +298,10 @@ async function encryptProjectId(
   const encoder = new TextEncoder();
   const data = encoder.encode(projectId);
 
-  const encrypted = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: PROJECT_ID_FIXED_IV },
-    key,
-    data
-  );
+  const encrypted = await aesGcmEncrypt(key, PROJECT_ID_FIXED_IV, data);
 
   return {
-    encryptedProjectId: btoa(String.fromCharCode(...new Uint8Array(encrypted))),
+    encryptedProjectId: btoa(String.fromCharCode(...encrypted)),
     projectIdIv: btoa(String.fromCharCode(...PROJECT_ID_FIXED_IV)),
   };
 }

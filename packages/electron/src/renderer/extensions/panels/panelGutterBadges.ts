@@ -12,7 +12,7 @@
  * renderer has loaded the extension.
  */
 
-export type PanelGutterBadgeTone = 'default' | 'warning';
+export type PanelGutterBadgeTone = 'default' | 'warning' | 'success' | 'error';
 
 export interface PanelGutterBadge {
   /** 0 renders a dot; a positive count renders the number. */

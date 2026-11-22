@@ -6,12 +6,34 @@ import { openSettingsCommandAtom } from '../../store/atoms/settingsNavigation';
 import { projectAppearanceAtom } from '../../store/atoms/projectAppearance';
 import { ProjectRail } from '../ProjectRail';
 import { activeWorkspacePathAtom, multiProjectModeAtom, openProjectsAtom } from '../../store/atoms/openProjects';
+import { markSessionStreamingAtom } from '../../store/atoms/sessionActivity';
 
 vi.mock('@nimbalyst/runtime', () => ({ getShowInFileBrowserLabel: () => 'Show in Finder' }));
 vi.mock('../OrgSwitcher', () => ({ OrgSwitcher: () => null }));
 vi.mock('../WorkspaceSummaryHeader', () => ({ generateWorkspaceAccentColor: () => '#123456' }));
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+it('opens an inactive rail project in a separate window without switching the source window', async () => {
+  const invoke = vi.fn().mockResolvedValue({ success: true, action: 'created' });
+  vi.stubGlobal('electronAPI', { invoke });
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  const store = createStore();
+  const projects = ['A', 'B'].map(name => ({ path: `/p/${name}`, name, openedAt: 0 }));
+  store.set(multiProjectModeAtom, true);
+  store.set(openProjectsAtom, projects);
+  store.set(activeWorkspacePathAtom, projects[0].path);
+  const view = render(<Provider store={store}><ProjectRail /></Provider>);
+
+  fireEvent.contextMenu(view.getByRole('button', { name: 'Switch to project B' }));
+  fireEvent.click(view.getByText('Open in new window'));
+
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith(
+    'workspace-manager:open-workspace', '/p/B', { forceNewWindow: true },
+  ));
+  expect(store.get(activeWorkspacePathAtom)).toBe('/p/A');
+  expect(store.get(openProjectsAtom)).toEqual(projects);
+});
 
 it('reveals restored and newly selected projects, handles resize, and leaves manual scrolling alone', () => {
   const store = createStore();
@@ -131,4 +153,41 @@ it('customizes an inactive project without switching or editing the active proje
   fireEvent.click(view.getByText('Customize appearance…'));
   expect(store.get(openSettingsCommandAtom)?.destination).toEqual({ scope: 'project', category: 'project-appearance', target: { kind: 'workspace', workspacePath: projects[1].path } });
   expect(store.get(activeWorkspacePathAtom)).toBe(projects[0].path);
+});
+
+it('closes a project on middle-click and offers no hover close button to hit by accident', async () => {
+  vi.stubGlobal('electronAPI', { invoke: vi.fn().mockResolvedValue(undefined) });
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  const store = createStore();
+  const projects = ['A', 'B'].map(name => ({ path: `/p/${name}`, name, openedAt: 0 }));
+  store.set(multiProjectModeAtom, true);
+  store.set(openProjectsAtom, projects);
+  store.set(activeWorkspacePathAtom, projects[0].path);
+  const view = render(<Provider store={store}><ProjectRail /></Provider>);
+
+  expect(view.queryByRole('button', { name: /^Close / })).toBeNull();
+
+  // A left click selects; it must never close.
+  fireEvent.click(view.getByRole('button', { name: 'Switch to project B' }));
+  expect(store.get(openProjectsAtom).map(p => p.name)).toEqual(['A', 'B']);
+
+  fireEvent(view.getByRole('button', { name: 'Switch to project B' }), new MouseEvent('auxclick', { bubbles: true, button: 1 }));
+  await waitFor(() => expect(store.get(openProjectsAtom).map(p => p.name)).toEqual(['A']));
+});
+
+it('keeps the session badge on a project when it becomes the selected one', () => {
+  vi.stubGlobal('electronAPI', { invoke: vi.fn().mockResolvedValue(undefined) });
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  const store = createStore();
+  const projects = ['A', 'B'].map(name => ({ path: `/p/${name}`, name, openedAt: 0 }));
+  store.set(multiProjectModeAtom, true);
+  store.set(openProjectsAtom, projects);
+  store.set(activeWorkspacePathAtom, projects[0].path);
+  store.set(markSessionStreamingAtom, { sessionId: 's1', workspacePath: '/p/B' });
+  const view = render(<Provider store={store}><ProjectRail /></Provider>);
+
+  view.getByLabelText('1 running session');
+  fireEvent.click(view.getByRole('button', { name: 'Switch to project B' }));
+  expect(store.get(activeWorkspacePathAtom)).toBe('/p/B');
+  view.getByLabelText('1 running session');
 });

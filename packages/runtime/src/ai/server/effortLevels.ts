@@ -36,8 +36,11 @@ const EFFORT_RANK: Record<EffortLevel, number> = {
  * ceiling is rejected by codex, so callers clamp rather than pass through.
  */
 const CODEX_EFFORT_CEILINGS: Readonly<Record<string, EffortLevel>> = {
+  'gpt-6.2-sol': 'ultra',
+  'gpt-6.2-astra': 'ultra',
   'gpt-6-astra': 'ultra',
   'gpt-6.1-sol': 'ultra',
+  'gpt-6.1-terra': 'ultra',
   'gpt-6-sol': 'ultra',
   'gpt-6-luna': 'max',
   'gpt-5.6-sol': 'ultra',

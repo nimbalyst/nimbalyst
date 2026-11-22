@@ -170,6 +170,7 @@ describe('ClaudeCliSessionLauncher', () => {
         headers: { Authorization: 'Bearer secret-token-xyz' },
       },
     }));
+    const written = new Map<string, string>();
     const createClaudeCliTerminal = vi.fn(async (..._args: CreateClaudeCliTerminalArgs): Promise<void> => {});
     const launcher = new ClaudeCliSessionLauncher({
       getMcpServersConfig,
@@ -179,7 +180,9 @@ describe('ClaudeCliSessionLauncher', () => {
       baseEnv: {},
       tempDir: '/tmp/claude-cli-test',
       mkdir: vi.fn(async () => undefined),
-      writeFile: vi.fn(async () => undefined),
+      writeFile: vi.fn(async (file: string, data: string) => {
+        written.set(file, data);
+      }),
       permissionHookScriptPath: '/app/resources/claudeCliPermissionHook.cjs',
       electronExecPath: '/app/electron',
     });
@@ -189,13 +192,150 @@ describe('ClaudeCliSessionLauncher', () => {
     // --settings registers a PreToolUse hook running the script under Electron-as-Node.
     const i = cfg.args.indexOf('--settings');
     expect(i).toBeGreaterThanOrEqual(0);
-    const settings = JSON.parse(cfg.args[i + 1]);
+    const settings = JSON.parse(written.get(cfg.args[i + 1]) ?? 'null');
     expect(settings.hooks.PreToolUse[0].hooks[0].type).toBe('command');
     expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain('/app/resources/claudeCliPermissionHook.cjs');
     expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain('ELECTRON_RUN_AS_NODE=1');
     // The endpoint URL + bearer are injected into the CLI env (lifted from the MCP config).
     expect(cfg.env.NIMBALYST_PERMISSION_URL).toBe('http://127.0.0.1:5123/permission');
     expect(cfg.env.NIMBALYST_PERMISSION_TOKEN).toBe('secret-token-xyz');
+  });
+
+  // #1905: on Windows `claude` is the npm shim `claude.cmd`, run through cmd.exe.
+  // node-pty only quotes args with whitespace, so an inline settings JSON exposed
+  // the `|` in the hook matcher to cmd.exe as a pipe and the launch exited 255.
+  // The settings now go to a per-launch file and `--settings` gets its path.
+  function makeSettingsFileHarness(opts: {
+    createClaudeCliTerminal?: ReturnType<typeof vi.fn<CreateClaudeCliTerminal>>;
+    failSettingsWrite?: boolean;
+    resolveClaudeExecutable?: () => string;
+  } = {}) {
+    const files = new Map<string, string>();
+    const removeFile = vi.fn(async (file: string) => {
+      files.delete(file);
+    });
+    const createClaudeCliTerminal =
+      opts.createClaudeCliTerminal ??
+      vi.fn<CreateClaudeCliTerminal>(async (..._args: CreateClaudeCliTerminalArgs): Promise<void> => {});
+    const launcher = new ClaudeCliSessionLauncher({
+      getMcpServersConfig: async () => ({
+        'nimbalyst': {
+          type: 'sse',
+          url: 'http://127.0.0.1:5123/mcp/core?sessionId=sess-01HABC',
+          headers: { Authorization: 'Bearer secret-token-xyz' },
+        },
+      }),
+      resolveClaudeExecutable:
+        opts.resolveClaudeExecutable ?? (() => 'C:\\Users\\Jane Doe\\AppData\\Roaming\\npm\\claude.cmd'),
+      getEnhancedPath: () => 'C:\\Windows',
+      terminalManager: { createClaudeCliTerminal },
+      baseEnv: {},
+      tempDir: 'C:\\Users\\Jane Doe\\AppData\\Local\\Temp\\nimbalyst-claude-cli',
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async (file: string, data: string) => {
+        if (opts.failSettingsWrite && file.endsWith('.settings.json')) throw new Error('EACCES');
+        files.set(file, data);
+      }),
+      removeFile,
+      permissionHookScriptPath: '/app/resources/claudeCliPermissionHook.cjs',
+      electronExecPath: '/app/electron',
+      getPermissionMode: () => 'ask',
+    });
+    return { launcher, files, removeFile, createClaudeCliTerminal };
+  }
+
+  it('passes the permission hook settings as a file path, never inline JSON (#1905)', async () => {
+    const { launcher, files, createClaudeCliTerminal } = makeSettingsFileHarness();
+    await launcher.launch(baseInput);
+    const cfg = createClaudeCliTerminal.mock.calls[0][1].spawnConfig;
+
+    const i = cfg.args.indexOf('--settings');
+    expect(i).toBeGreaterThanOrEqual(0);
+    const settingsPath = cfg.args[i + 1];
+    expect(settingsPath.startsWith('C:\\Users\\Jane Doe\\AppData\\Local\\Temp\\nimbalyst-claude-cli')).toBe(true);
+    expect(settingsPath.endsWith('.settings.json')).toBe(true);
+    // No arg may carry the matcher's pipe (or any JSON) to cmd.exe.
+    for (const arg of cfg.args) {
+      expect(arg).not.toContain('|');
+      expect(arg.trimStart().startsWith('{')).toBe(false);
+    }
+
+    const settings = JSON.parse(files.get(settingsPath) ?? 'null');
+    expect(settings.hooks.PreToolUse[0].matcher).toBe('Bash|Edit|Write|MultiEdit|NotebookEdit|WebFetch');
+    expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
+      'ELECTRON_RUN_AS_NODE=1 "/app/electron" "/app/resources/claudeCliPermissionHook.cjs"',
+    );
+  });
+
+  it('deletes the settings file when the CLI exits (#1905)', async () => {
+    const { launcher, files, removeFile, createClaudeCliTerminal } = makeSettingsFileHarness();
+    const onExit = vi.fn();
+    await launcher.launch({ ...baseInput, onExit });
+    const opts = createClaudeCliTerminal.mock.calls[0][1];
+    const settingsPath = opts.spawnConfig.args[opts.spawnConfig.args.indexOf('--settings') + 1];
+    expect(files.has(settingsPath)).toBe(true);
+
+    opts.onExit?.(0);
+    await vi.waitFor(() => expect(removeFile).toHaveBeenCalledWith(settingsPath));
+    expect(files.has(settingsPath)).toBe(false);
+    expect(onExit).toHaveBeenCalledWith(0);
+  });
+
+  it('deletes the settings file if the terminal spawn throws (#1905)', async () => {
+    const createClaudeCliTerminal = vi.fn<CreateClaudeCliTerminal>(async () => {
+      throw new Error('spawn failed');
+    });
+    const { launcher, files, removeFile } = makeSettingsFileHarness({ createClaudeCliTerminal });
+    await expect(launcher.launch(baseInput)).rejects.toThrow(/spawn failed/);
+    expect(removeFile).toHaveBeenCalledTimes(1);
+    expect([...files.keys()].some((f) => f.endsWith('.settings.json'))).toBe(false);
+  });
+
+  it('deletes the settings file if launch preparation throws after it was written (#1905)', async () => {
+    const { launcher, files, removeFile } = makeSettingsFileHarness({
+      resolveClaudeExecutable: () => {
+        throw new Error('resolve failed');
+      },
+    });
+    await expect(launcher.launch(baseInput)).rejects.toThrow(/resolve failed/);
+    expect(removeFile).toHaveBeenCalledTimes(1);
+    expect([...files.keys()].some((f) => f.endsWith('.settings.json'))).toBe(false);
+  });
+
+  // An Ask workspace that loses the hook must still prompt: without an explicit
+  // mode the CLI would inherit the user's own defaultMode (auto, acceptEdits,
+  // bypassPermissions) and run tools with no prompt at all.
+  it('forces the CLI prompting mode when the settings file cannot be written', async () => {
+    const { launcher, createClaudeCliTerminal } = makeSettingsFileHarness({ failSettingsWrite: true });
+    await launcher.launch(baseInput);
+    const { args } = createClaudeCliTerminal.mock.calls[0][1].spawnConfig;
+    expect(args).not.toContain('--settings');
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    expect(args[args.indexOf('--permission-mode') + 1]).toBe('default');
+  });
+
+  it('removes only settings files older than a day from the temp folder', async () => {
+    const now = Date.parse('2026-11-03T12:00:00Z');
+    const dir = '/tmp/claude-cli-sweep';
+    const mtimes: Record<string, number> = {
+      'old.abcd1234.settings.json': now - 2 * 86_400_000,
+      'fresh.abcd1234.settings.json': now - 60_000,
+      'old.mcp.json': now - 5 * 86_400_000,
+    };
+    const removeFile = vi.fn(async (_file: string) => undefined);
+    const launcher = new ClaudeCliSessionLauncher({
+      getMcpServersConfig: async () => ({}),
+      resolveClaudeExecutable: () => 'claude',
+      getEnhancedPath: () => '',
+      terminalManager: { createClaudeCliTerminal: vi.fn(async () => undefined) },
+      tempDir: dir,
+      readDir: async () => Object.keys(mtimes),
+      statFile: async (file: string) => ({ mtimeMs: mtimes[file.slice(dir.length + 1)] }),
+      removeFile,
+      now: () => now,
+    });
+    await launcher.sweepStaleSettingsFiles();
+    expect(removeFile.mock.calls.map(([f]) => f)).toEqual([`${dir}/old.abcd1234.settings.json`]);
   });
 
   it('omits the permission hook when no hook script path is provided (keeps native gate)', async () => {

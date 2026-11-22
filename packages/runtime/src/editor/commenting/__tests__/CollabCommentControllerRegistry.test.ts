@@ -24,6 +24,7 @@ import {
 } from '../YDocCommentRepository';
 import {
   collabCommentAnchorAdapterRegistry,
+  collectMarkIds,
   createCollabCommentController,
   createRepositoryCollabCommentController,
 } from '../CollabCommentControllerRegistry';
@@ -775,11 +776,18 @@ describe('CollabCommentController', () => {
         'thread-orphan',
       );
       commentStore.addComment(thread);
-      expect(controller.list().threads[0].anchorState).toBe('orphaned');
+      // Already reported attached: a unique quote is drawn as a decoration
+      // even without a MarkNode. Healing restores the MarkNode itself.
+      expect(collectMarkIds(editor as LexicalEditor).has('thread-orphan')).toBe(
+        false,
+      );
 
       const result = reanchorOrphanedThreads(editor as LexicalEditor, [thread]);
 
       expect(result.reattached).toEqual(['thread-orphan']);
+      expect(collectMarkIds(editor as LexicalEditor).has('thread-orphan')).toBe(
+        true,
+      );
       expect(controller.list().threads[0].anchorState).toBe('attached');
     });
 
@@ -807,6 +815,35 @@ describe('CollabCommentController', () => {
       for (const entry of controller.list().threads) {
         expect(entry.anchorState).toBe('orphaned');
       }
+    });
+
+    it('re-attaches by the bare quote when its context changed but the quote is still unique', () => {
+      const { commentStore, editor } = createFixture('Changed target Omega');
+      const thread = createThread('target', [], 'thread-context', false, {
+        kind: 'text-quote',
+        exact: 'target',
+        prefix: 'Alpha ',
+      });
+      commentStore.addComment(thread);
+
+      const result = reanchorOrphanedThreads(editor as LexicalEditor, [thread]);
+
+      expect(result.reattached).toEqual(['thread-context']);
+    });
+
+    it('never falls back to the bare quote when it repeats', () => {
+      const { commentStore, editor } = createFixture('One target and another target');
+      const thread = createThread('target', [], 'thread-context-repeat', false, {
+        kind: 'text-quote',
+        exact: 'target',
+        prefix: 'Alpha ',
+      });
+      commentStore.addComment(thread);
+
+      expect(reanchorOrphanedThreads(editor as LexicalEditor, [thread])).toEqual({
+        reattached: [],
+        skipped: [{ id: 'thread-context-repeat', reason: 'ANCHOR_AMBIGUOUS' }],
+      });
     });
   });
 });

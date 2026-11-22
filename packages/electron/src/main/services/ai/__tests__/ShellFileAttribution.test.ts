@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ShellFileAttribution, type ShellAttributionDependencies, type ShellFileState, type ShellFileEvidence, type ShellPersistenceOutcome } from '../ShellFileAttribution';
 import { ShellTrackingCoverage } from '../ShellTrackingCoverage';
+import { AgentToolActivityRegistry } from '@nimbalyst/runtime/ai/server/agentToolActivity';
 
 function fixture(beforeRead?: () => Promise<void>, prepareCheckout?: () => Promise<any>, overrides: Partial<ShellAttributionDependencies> = {}) {
   let now = 1000;
@@ -46,7 +47,7 @@ function fixture(beforeRead?: () => Promise<void>, prepareCheckout?: () => Promi
   };
 }
 describe('shell hook attribution', () => {
-  it.each(['one', 'neither', 'both'] as const)('resolves overlapping Bash commands when %s names the changed path', async names => {
+  it('withholds an edit made while Bash commands from two sessions overlap', async () => {
     const coverage = new ShellTrackingCoverage({ load: async () => undefined, save: async () => {}, notify: () => {} });
     const f = fixture(undefined, async () => ({
       defer: async () => true,
@@ -56,19 +57,17 @@ describe('shell hook attribution', () => {
     const b = await f.service.register('B', '/workspace');
     await coverage.open('A', a);
     await coverage.open('B', b);
-    await f.service.pre(a, 'sleep', 'Bash', {}, names === 'both' ? 'cat /workspace/named.ts' : 'sleep 30; touch ./other.ts');
-    await f.service.pre(b, 'writer', 'Bash', {}, names === 'neither' ? 'npm test' : "printf edit > ./nested/../named.ts");
+    await f.service.pre(a, 'sleep', 'Bash');
+    await f.service.pre(b, 'writer', 'Bash');
     f.write('/workspace/named.ts', 'changed');
     await f.service.flush();
-    expect(f.persist).not.toHaveBeenCalled(); // The winner must still await checkout reconciliation.
+    expect(f.persist).not.toHaveBeenCalled(); // Reconciliation may suppress unchanged bytes, never select an owner.
     await f.service.post(b, 'writer');
     await f.service.post(a, 'sleep');
-    if (names === 'one') {
-      expect(f.persist.mock.calls.map(([e]) => [e.sessionId, e.toolUseId, e.filePath])).toEqual([['B', 'writer', '/workspace/named.ts']]);
-    } else expect(f.persist).not.toHaveBeenCalled();
+    expect(f.persist).not.toHaveBeenCalled();
     const summaries = await coverage.readMany(['A', 'B']);
     for (const summary of summaries) {
-      expect(summary.reasons).toEqual(names === 'one' ? {} : { competingOwners: 1 });
+      expect(summary.reasons).toEqual({ competingOwners: 1 });
       expect(summary.state).toBe('no-detected-fault');
     }
     await f.service.release(a);
@@ -77,12 +76,12 @@ describe('shell hook attribution', () => {
     await coverage.close(b);
   });
 
-  it.each(['lost observation', 'mixed tools'] as const)('does not override %s with a unique command match', async kind => {
+  it.each(['lost observation', 'mixed tools'] as const)('withholds an overlapping edit with %s', async kind => {
     const f = fixture();
     const a = await f.service.register('A', '/workspace');
     const b = await f.service.register('B', '/workspace');
     await f.service.pre(a, 'other', kind === 'mixed tools' ? 'apply_patch' : 'Bash');
-    await f.service.pre(b, 'writer', 'Bash', {}, 'printf edit > ./named.ts');
+    await f.service.pre(b, 'writer', 'Bash');
     if (kind === 'lost observation') f.service.watcherLost('/workspace');
     f.write('/workspace/named.ts', 'edit');
     await f.service.post(b, 'writer');
@@ -470,16 +469,62 @@ it('abstains for one command when the pre-hook drain times out, not for the rest
   await f.service.release(a);
 });
 
-it('shares links with a concurrent uninstrumented session instead of withholding them', async () => {
-  const f = fixture(undefined, undefined, { otherSessions: () => ['claude-session'] });
+it('does not assign a session without tool tracking’s edits to a long-running test command', async () => {
+  const f = fixture(undefined, undefined, { otherSessions: () => ['cli-session'] });
   const a = await f.service.register('A', '/workspace');
   await f.service.pre(a, 'shell', 'Bash');
-  f.write('/workspace/shared.ts', 'codex');
+  f.advance(100_000);
+  f.write('/workspace/shared.ts', 'written by the concurrent session');
   await f.service.post(a, 'shell');
-  expect(f.persist.mock.calls.map(([e]) => e.filePath)).toEqual(['/workspace/shared.ts']);
-  expect(f.report.mock.calls.map(([, r]) => r)).toEqual(['uninstrumented']);
-  expect(f.service.getStats().ambiguous).toBe(0);
+  expect(f.persist).not.toHaveBeenCalled();
+  expect(f.report.mock.calls.map(([, r]) => r)).toEqual(['unreportedSession']);
+  expect(f.service.getStats().ambiguous).toBe(1);
   await f.service.release(a);
+});
+
+it('retains uncertainty after an uninstrumented writer finishes before reconciliation', async () => {
+  let others = ['claude-session'];
+  let finishRead!: () => void;
+  const reading = new Promise<void>(resolve => { finishRead = resolve; });
+  const f = fixture(() => reading, undefined, { otherSessions: () => others });
+  const a = await f.service.register('test-runner', '/workspace');
+  await f.service.pre(a, 'test', 'Bash');
+  f.write('/workspace/other-session.ts', 'edit');
+  others = [];
+  finishRead();
+  await f.service.post(a, 'test');
+  expect(f.persist).not.toHaveBeenCalled();
+  await f.service.release(a);
+});
+
+it('judges a concurrent hook-reporting session by its tool windows, not its active turn', async () => {
+  let f!: ReturnType<typeof fixture>;
+  const activity = new AgentToolActivityRegistry(() => f.advance(0));
+  f = fixture(undefined, undefined, {
+    otherSessions: (_w, file, at) => ['claude', ...activity.activeSessions(file, at)],
+    otherWriter: (id, file, at) => activity.writerEvidence(id, file, at),
+  });
+  activity.declare('claude', '/workspace');
+  const codex = await f.service.register('codex', '/workspace');
+  await f.service.pre(codex, 'test', 'Bash');
+  // Claude's Edit owns its file; the long Codex command must not claim it.
+  activity.started('claude', 'edit', 'Edit', { file_path: '/workspace/edited.ts' });
+  f.write('/workspace/edited.ts', 'claude edit');
+  activity.finished('claude', 'edit');
+  await f.service.flush();
+  // A Claude shell command could have written anything: withhold.
+  f.advance(10_000);
+  activity.started('claude', 'gen', 'Bash', { command: 'node gen.js' });
+  f.write('/workspace/generated.ts', 'claude or codex');
+  activity.finished('claude', 'gen');
+  await f.service.flush();
+  // Claude is mid-turn but between tools: the change is Codex's.
+  f.advance(10_000);
+  f.write('/workspace/codex.ts', 'codex');
+  await f.service.post(codex, 'test');
+  expect(f.persist.mock.calls.map(([e]) => [e.sessionId, e.filePath])).toEqual([['codex', '/workspace/codex.ts']]);
+  expect(f.report.mock.calls.map(([, r]) => r)).toEqual(['competingOwners']);
+  await f.service.release(codex);
 });
 
 it('lets an in-flight completion persist and clear its tool marker before release', async () => {

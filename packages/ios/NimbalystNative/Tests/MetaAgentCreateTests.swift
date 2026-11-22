@@ -31,6 +31,25 @@ final class MetaAgentCreateTests: XCTestCase {
     }
 
     @MainActor
+    func testOfflineInventoryCannotWinDefaultOrExplicitCreation() throws {
+        let requests = SessionCreationRequests()
+        defer { requests.disconnect() }
+        let crypto = CryptoManager(seed: SyncIntegrationTests.passphrase, userId: SyncIntegrationTests.userId)
+        var offline = creationDevice("old-mac", type: "desktop", status: "active", lastActive: 999)
+        offline.isOnline = false
+        let online = creationDevice("live-mac", type: "desktop", status: "away", lastActive: 1)
+        var options = SessionCreationOptions(projectId: "/mac/project")
+        _ = try requests.create(options, crypto: crypto, devices: [offline, online], isConnected: true) { json, _ in
+            let envelope = try! JSONSerialization.jsonObject(with: Data(json.utf8)) as! [String: Any]
+            XCTAssertEqual(envelope["targetDeviceId"] as? String, "live-mac")
+        }
+        options.targetDeviceId = "old-mac"
+        XCTAssertThrowsError(try requests.create(options, crypto: crypto, devices: [offline, online], isConnected: true) { _, _ in
+            XCTFail("An explicit offline choice must not send or redirect to another computer")
+        })
+    }
+
+    @MainActor
     func testDesktopTargetAndRequestOutcomes() throws {
         let requests = SessionCreationRequests()
         let crypto = CryptoManager(seed: SyncIntegrationTests.passphrase, userId: SyncIntegrationTests.userId)

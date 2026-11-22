@@ -7,7 +7,7 @@ import type { TranscriptFileLocation } from './MarkdownRenderer';
 import { TranscriptSidebar } from './TranscriptSidebar';
 import { FileEditsSidebar } from './FileEditsSidebar';
 import { FloatingTranscriptActions } from './FloatingTranscriptActions';
-import { formatISO } from '../../../utils/dateUtils';
+import { buildPromptMarkers } from '../utils/promptMarkers';
 import { MaterialSymbol } from '../../icons/MaterialSymbol';
 
 interface Todo {
@@ -195,7 +195,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   // Removed activeTab state - sidebar now only shows Files tab
 
   const [prompts, setPrompts] = useState<PromptMarker[]>([]);
-  const transcriptRef = useRef<{ scrollToMessage: (index: number) => void; scrollToTop: () => void }>(null);
+  const transcriptRef = useRef<{ scrollToMessage: (index: number, toolCallId?: string) => void; scrollToTop: () => void }>(null);
 
   // Resize logic
   const [isDragging, setIsDragging] = useState(false);
@@ -225,47 +225,13 @@ const AgentTranscriptPanelComponent = React.forwardRef<
     setPrompts([]);
   }, [sessionId]);
 
-  // Extract prompts from messages
+  // Extract prompts and question answers from messages
   useEffect(() => {
-    const userMessages = sessionData.messages
-      .map((msg, index) => ({ msg, index }))
-      .filter(({ msg }) => msg.type === 'user_message');
-
-    const allMessages = sessionData.messages;
-    const markers: PromptMarker[] = userMessages.map(({ msg, index }, promptIndex) => {
-      // Find the next user-input message to bound this turn
-      const nextUserMsg = userMessages[promptIndex + 1];
-      const endBound = nextUserMsg ? nextUserMsg.index : allMessages.length;
-
-      // Walk backward from endBound to find the last assistant/tool message in this turn
-      let completionTimestamp: string | undefined;
-      for (let i = endBound - 1; i > index; i--) {
-        if (allMessages[i].type !== 'user_message') {
-          completionTimestamp = formatISO(allMessages[i].createdAt.getTime()) || undefined;
-          break;
-        }
-      }
-
-      // Don't show completion for the last prompt if session is still processing
-      if (promptIndex === userMessages.length - 1 && isProcessing) {
-        completionTimestamp = undefined;
-      }
-
-      return {
-        id: promptIndex + 1,
-        sessionId,
-        promptText: msg.text ?? '',
-        outputIndex: index,
-        timestamp: formatISO(msg.createdAt.getTime()) || new Date().toISOString(),
-        completionTimestamp
-      };
-    });
-
-    setPrompts(markers);
+    setPrompts(buildPromptMarkers(sessionData.messages, sessionId, !!isProcessing));
   }, [sessionData.messages, sessionId, isProcessing]);
 
   const handleNavigateToPrompt = useCallback((marker: PromptMarker) => {
-    transcriptRef.current?.scrollToMessage(marker.outputIndex);
+    transcriptRef.current?.scrollToMessage(marker.outputIndex, marker.toolCallId);
   }, []);
 
   // Expose methods to parent via ref

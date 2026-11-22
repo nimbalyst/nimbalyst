@@ -1,4 +1,4 @@
-import { app, type BrowserWindow } from "electron";
+import { app } from "electron";
 import * as fs from "fs/promises";
 import * as path from "path";
 import type {
@@ -13,10 +13,8 @@ import {
   updateWorkspaceState,
   type WorkspaceState,
 } from "../../utils/store";
-import {
-  createWindow,
-  findWindowByWorkspace,
-} from "../../window/WindowManager";
+import { createWindow } from "../../window/WindowManager";
+import { reuseOpenWorkspaceWindow } from "../../window/reuseOpenWorkspaceWindow";
 import { seedTutorialSessions } from "./TutorialSessionSeeder";
 import {
   deleteTutorialTrackers,
@@ -59,7 +57,8 @@ export interface TutorialProjectServiceDependencies {
   ) => WorkspaceState;
   getWorkspaceWindowState: typeof getWorkspaceWindowState;
   createWindow: typeof createWindow;
-  findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null;
+  /** Brings forward the window holding the project and switches its rail to it; null when none does. */
+  reuseOpenWorkspaceWindow: (workspacePath: string) => unknown | null;
   addToRecentItems: typeof addToRecentItems;
   closeWorkspaceManagerWindow: () => void;
   seedTutorialTrackers: (
@@ -87,7 +86,7 @@ const defaultDependencies: TutorialProjectServiceDependencies = {
   updateWorkspaceState,
   getWorkspaceWindowState,
   createWindow,
-  findWindowByWorkspace,
+  reuseOpenWorkspaceWindow,
   addToRecentItems,
   closeWorkspaceManagerWindow: () => undefined,
   seedTutorialTrackers,
@@ -363,11 +362,8 @@ export class TutorialProjectService {
   private openProject(workspacePath: string): void {
     // The tutorial can be started repeatedly (Help menu, Workspace Manager),
     // so focus the window that already has it rather than opening a duplicate.
-    const existingWindow =
-      this.dependencies.findWindowByWorkspace(workspacePath);
-    if (existingWindow && !existingWindow.isDestroyed()) {
-      existingWindow.focus();
-    } else {
+    // That window may be showing another rail project; it switches to this one.
+    if (!this.dependencies.reuseOpenWorkspaceWindow(workspacePath)) {
       const savedState =
         this.dependencies.getWorkspaceWindowState(workspacePath);
       this.dependencies.createWindow(

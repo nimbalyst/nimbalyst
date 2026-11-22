@@ -89,6 +89,13 @@ const CONFIRMED_REVOCATION_CODES = new Set([
   // transient one: retrying replays the same refused update on every
   // reconnect, forever, instead of telling the user the document is read-only.
   "document_read_only",
+  // A commenter's docUpdate that changed more than the comment threads. The
+  // room closes the socket (4009): later updates from that Y.Doc's client
+  // depend on the refused one, so a retry can only be refused again.
+  "document_comment_update_refused",
+  // A commenter's docCompact. Not terminal (the socket stays open), but a
+  // commenter can never compact, so retrying is pointless.
+  "document_comment_forbidden",
 ]);
 
 /** Unknown and write-barrier codes are retryable by design. */

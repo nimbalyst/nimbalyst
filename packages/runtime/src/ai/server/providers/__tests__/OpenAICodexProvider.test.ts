@@ -5,6 +5,7 @@ import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAICodexProvider } from '../OpenAICodexProvider';
 import { OpenAICodexACPProvider } from '../OpenAICodexACPProvider';
+import { parseCodexModelListPage } from '../../protocols/codexAppServer/modelCatalog';
 import { configureMcpServers } from '../../services/mcpServerConfig';
 import * as codexBinaryPath from '../codex/codexBinaryPath';
 import * as codexSdkLoader from '../codex/codexSdkLoader';
@@ -46,6 +47,10 @@ describe('OpenAICodexProvider', () => {
     OpenAICodexProvider.setPreEditHookScriptPathResolver(null);
     OpenAICodexProvider.setPreEditSidecarDirResolver(null);
     OpenAICodexProvider.setCodexTransportResolver(null);
+    // Default: treat the Codex provider as public OpenAI (not Bedrock) so
+    // model-id assertions are deterministic regardless of the developer's real
+    // ~/.codex/config.toml. Bedrock-specific tests opt in explicitly.
+    OpenAICodexProvider.bedrockDetectionOverride = () => false;
 
     // Provide default injected dependencies required by the provider.
     OpenAICodexProvider.setTrustChecker(() => ({ trusted: true, mode: 'allow-all' as any }));
@@ -232,7 +237,7 @@ describe('OpenAICodexProvider', () => {
   });
 
   it('returns fallback models when SDK model discovery is unavailable', async () => {
-    expect(OpenAICodexProvider.DEFAULT_MODEL).toBe('openai-codex:gpt-6.1-sol');
+    expect(OpenAICodexProvider.DEFAULT_MODEL).toBe('openai-codex:gpt-6.2-sol');
 
     const models = await OpenAICodexProvider.getModels(undefined, {
       loadSdkModule: async () => {
@@ -255,7 +260,10 @@ describe('OpenAICodexProvider', () => {
 
   it('leads the Codex roster with the GPT-6 models and keeps them out of the ACP roster', async () => {
     const expectedCodexModelIds = [
+      'gpt-6.2-sol',
+      'gpt-6.2-astra',
       'gpt-6.1-sol',
+      'gpt-6.1-terra',
       'gpt-6-sol',
       'gpt-6-astra',
       'gpt-6-luna',
@@ -285,10 +293,64 @@ describe('OpenAICodexProvider', () => {
     );
   });
 
+  // #1891: a model the bundled codex supports must be selectable before the
+  // built-in list is updated.
+  it('adds models from the codex model/list catalog that the built-in list does not know', async () => {
+    const listCatalogModels = vi.fn(async () => [
+      { id: 'gpt-6.2-nova', displayName: 'GPT-6.2 Nova', hidden: false, isDefault: false },
+      { id: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol', hidden: false, isDefault: true },
+      { id: 'gpt-6-internal', displayName: 'Internal', hidden: true, isDefault: false },
+    ]);
+
+    const models = await OpenAICodexProvider.getModels(undefined, { listCatalogModels });
+    const ids = models.map((model) => model.id);
+
+    expect(listCatalogModels).toHaveBeenCalledTimes(1);
+    expect(models[0]).toEqual({
+      id: 'openai-codex:gpt-6.2-nova',
+      name: 'GPT-6.2 Nova',
+      provider: 'openai-codex',
+    });
+    expect(ids).not.toContain('openai-codex:gpt-6-internal');
+    expect(ids.filter((id) => id === 'openai-codex:gpt-6.1-sol')).toHaveLength(1);
+    // Built-in models the catalog omits stay selectable.
+    expect(ids).toContain('openai-codex:gpt-5.4-mini');
+  });
+
+  it('falls back to the built-in Codex model list when model/list fails', async () => {
+    const models = await OpenAICodexProvider.getModels(undefined, {
+      listCatalogModels: async () => {
+        throw new Error('codex app-server failed to start');
+      },
+    });
+
+    expect(models[0].id).toBe('openai-codex:gpt-6.2-sol');
+    expect(models.map((model) => model.id)).toContain('openai-codex:gpt-5.4-mini');
+  });
+
+  it('parses model/list pages, preferring the runnable model id and skipping malformed entries', () => {
+    expect(parseCodexModelListPage({
+      data: [
+        { id: 'catalog-key', model: 'gpt-6.2-nova', displayName: 'Nova', hidden: false, isDefault: true },
+        { id: 'gpt-6-luna', hidden: true },
+        { displayName: 'no id' },
+        null,
+      ],
+      nextCursor: 'page-2',
+    })).toEqual({
+      models: [
+        { id: 'gpt-6.2-nova', displayName: 'Nova', hidden: false, isDefault: true },
+        { id: 'gpt-6-luna', displayName: undefined, hidden: true, isDefault: false },
+      ],
+      nextCursor: 'page-2',
+    });
+    expect(parseCodexModelListPage(undefined)).toEqual({ models: [], nextCursor: null });
+  });
+
   it('normalizes legacy codex default aliases to the GPT-6.1 Sol default', () => {
-    expect(OpenAICodexProvider.normalizeModelSelection('openai-codex:openai-codex-cli')).toBe('openai-codex:gpt-6.1-sol');
-    expect(OpenAICodexProvider.normalizeModelSelection('openai-codex:default')).toBe('openai-codex:gpt-6.1-sol');
-    expect(OpenAICodexProvider.normalizeModelSelection('cli')).toBe('openai-codex:gpt-6.1-sol');
+    expect(OpenAICodexProvider.normalizeModelSelection('openai-codex:openai-codex-cli')).toBe('openai-codex:gpt-6.2-sol');
+    expect(OpenAICodexProvider.normalizeModelSelection('openai-codex:default')).toBe('openai-codex:gpt-6.2-sol');
+    expect(OpenAICodexProvider.normalizeModelSelection('cli')).toBe('openai-codex:gpt-6.2-sol');
   });
 
   it.each([
@@ -358,7 +420,7 @@ describe('OpenAICodexProvider', () => {
         provider: 'openai-codex',
       }),
     ]));
-    expect(models).toHaveLength(10);
+    expect(models).toHaveLength(13);
   });
 
   it('preserves CLI auth when initialized without an API key', async () => {
@@ -1680,7 +1742,35 @@ describe('OpenAICodexProvider', () => {
     provider.cleanupSession('session-agent-verified');
   });
 
-  it('denies Codex in ask mode (tool-level permissions not supported)', async () => {
+  // #1884: approval requests reach the user on the app-server transport, so Ask mode can run.
+  it('runs Codex in ask mode on the app-server transport', async () => {
+    const createSession = vi.fn(async () => ({ id: 'thread-ask', platform: 'codex-app-server', raw: {} }));
+    const protocol = {
+      platform: 'codex-app-server',
+      createSession,
+      resumeSession: vi.fn(),
+      forkSession: vi.fn(),
+      sendMessage: vi.fn(() => createAsyncEventStream([
+        { type: 'complete', content: 'ok', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+      ])),
+      abortSession: vi.fn(),
+      cleanupSession: vi.fn(),
+    } as any;
+    const provider = new OpenAICodexProvider({ apiKey: 'test-key' }, { protocol, transport: 'app-server' });
+    OpenAICodexProvider.setTrustChecker(() => ({ trusted: true, mode: 'ask' }));
+    await provider.initialize({ apiKey: 'test-key', model: 'openai-codex:gpt-5' });
+
+    const chunks: any[] = [];
+    for await (const chunk of provider.sendMessage('test message', undefined, 'session-ask-app-server', [], process.cwd())) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.find((chunk) => chunk.type === 'error')).toBeUndefined();
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: 'ask' }));
+    provider.cleanupSession('session-ask-app-server');
+  });
+
+  it('denies Codex in ask mode on the legacy SDK transport (no approval callback)', async () => {
     const startThread = vi.fn();
 
     const provider = new OpenAICodexProvider(
@@ -1719,7 +1809,7 @@ describe('OpenAICodexProvider', () => {
     expect(errorChunk?.error).toContain('permission mode');
   });
 
-  it('maps default codex cli aliases to gpt-6.1-sol when starting a thread', async () => {
+  it('maps default codex cli aliases to gpt-6.2-sol when starting a thread', async () => {
     const startThread = vi.fn((config: { model: string }) => ({
       id: 'thread-legacy',
       runStreamed: async () => ({
@@ -1759,7 +1849,7 @@ describe('OpenAICodexProvider', () => {
 
     expect(startThread).toHaveBeenCalledTimes(1);
     const startArgs = (startThread.mock.calls as unknown as [Record<string, unknown>][])[0][0];
-    expect(startArgs.model).toBe('gpt-6.1-sol');
+    expect(startArgs.model).toBe('gpt-6.2-sol');
   });
 
   it('maps removed codex aliases to supported model ids', async () => {
@@ -1846,6 +1936,55 @@ describe('OpenAICodexProvider', () => {
     expect(startThread).toHaveBeenCalledTimes(1);
     const startArgs = (startThread.mock.calls as unknown as [Record<string, unknown>][])[0][0];
     expect(startArgs.model).toBe('gpt-5.6-sol');
+  });
+
+  it('namespaces bare OpenAI model ids for the Bedrock provider', async () => {
+    // Simulate model_provider = "amazon-bedrock" in ~/.codex/config.toml.
+    OpenAICodexProvider.bedrockDetectionOverride = () => true;
+
+    const startThread = vi.fn((config: { model: string }) => ({
+      id: 'thread-bedrock',
+      runStreamed: async () => ({
+        events: createAsyncEventStream([
+          {
+            type: 'item.completed',
+            item: { type: 'agent_message', text: 'bedrock model mapped' },
+          },
+        ]),
+      }),
+    }));
+
+    const provider = new OpenAICodexProvider(
+      { apiKey: 'test-key' },
+      {
+        loadSdkModule: async () =>
+          ({
+            Codex: class {
+              startThread = startThread;
+              resumeThread = vi.fn();
+            },
+          }) as any,
+      }
+    );
+
+    await provider.initialize({ apiKey: 'test-key', model: 'openai-codex:gpt-5.6-luna' });
+
+    for await (const _chunk of provider.sendMessage('bedrock', undefined, 'session-bedrock', [], process.cwd())) {
+      // drain
+    }
+
+    expect(startThread).toHaveBeenCalledTimes(1);
+    const bedrockArgs = (startThread.mock.calls as unknown as [Record<string, unknown>][])[0][0];
+    // Bedrock's OpenAI-compatible endpoint requires the `openai.` namespace.
+    expect(bedrockArgs.model).toBe('openai.gpt-5.6-luna');
+  });
+
+  it('only treats a top-level model_provider as selecting Bedrock', () => {
+    const select = OpenAICodexProvider.codexConfigSelectsBedrock;
+    expect(select('model = "gpt-5.6-luna"\nmodel_provider = "amazon-bedrock" # aws\n')).toBe(true);
+    // A Bedrock profile that is defined but not active must not namespace ids.
+    expect(select('model = "gpt-5.6-luna"\n\n[profiles.aws]\nmodel_provider = "amazon-bedrock"\n')).toBe(false);
+    expect(select('model_provider = "openai"\n')).toBe(false);
   });
 
   it('supports direct handleToolCall execution through the shared tool handler', async () => {

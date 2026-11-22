@@ -83,6 +83,12 @@ export function isInWikiTrash(filePath: string, workspacePath: string): boolean 
  * whose marker exists; never the wiki's trash. The marker check is not cached,
  * so a table that arrives right after the marker in one batch is accepted.
  */
+/**
+ * What the workspace walk returns for {@link isProjectSyncPath} to judge: a
+ * superset of every file it can accept. Widen this with it.
+ */
+export const PROJECT_SYNC_CANDIDATES = { extensions: ['.md', '.html', '.csv'], names: [MARKER_FILE] };
+
 export function isProjectSyncPath(filePath: string, workspacePath: string): boolean {
   if (filePath.endsWith('.md') || filePath.endsWith('.html')) return !isInWikiTrash(filePath, workspacePath);
   if (path.basename(filePath) === MARKER_FILE) return isWikiMarkerPath(filePath, workspacePath);

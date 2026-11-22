@@ -35,6 +35,7 @@ export const scriptTests = [
   "scripts/__tests__/run-workspace-script.test.mjs",
   "scripts/__tests__/vitest-tree-fingerprint.test.mjs",
   "packages/electron/scripts/__tests__/dev-user2.test.mjs",
+  "packages/electron/scripts/__tests__/renderer-supervisor.test.mjs",
   "scripts/__tests__/vitest-run-log-reporter.test.mjs",
   "scripts/__tests__/check-ui-invariants.test.mjs",
   "scripts/__tests__/validation-inventory.test.mjs"

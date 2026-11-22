@@ -121,3 +121,196 @@ describe('hook ask overrides remembered approvals', () => {
     expect(await service.requestToolPermission(request('gh pr merge 12'))).toEqual({ decision: 'allow', scope: 'always' });
   });
 });
+
+// #375: the model can call the same MCP tool several times at once. Each call asks its own
+// question. One "Always" (or "session") answer must settle every waiting call for that tool,
+// or the user is asked again for something they already allowed.
+describe('one answer settles every waiting request for the same rule', () => {
+  const mcpTool = 'mcp__serena__find_symbol';
+  function createService(patternChecker: () => Promise<boolean> = async () => false) {
+    const emit = vi.fn();
+    const patternSaver = vi.fn();
+    const recordReleasedPermission = vi.fn();
+    const service = new ToolPermissionService({
+      trustChecker: () => ({ trusted: true, mode: 'ask' }),
+      patternSaver,
+      patternChecker,
+      emit,
+      recordReleasedPermission,
+    });
+    vi.spyOn(service as any, 'pollForPermissionResponse').mockResolvedValue(undefined);
+    return { service, emit, patternSaver, recordReleasedPermission };
+  }
+  type AskOverrides = Partial<Parameters<ToolPermissionService['requestToolPermission']>[0]>;
+  const ask = (service: ToolPermissionService, requestId: string, toolName = mcpTool, overrides: AskOverrides = {}) =>
+    service.requestToolPermission({
+      requestId, sessionId: 'session', workspacePath: '/fixture', permissionsPath: '/fixture',
+      toolName, toolInput: {}, pattern: toolName,
+      patternDisplayName: toolName, toolDescription: toolName, isDestructive: false,
+      signal: new AbortController().signal,
+      ...overrides,
+    });
+  const waitingCount = (service: ToolPermissionService) => (service as any).pendingPermissions.size;
+  // A request that is still waiting never settles, so race it against a short timer.
+  const settledOrStillWaiting = (promise: Promise<unknown>) =>
+    Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('still waiting'), 100))]);
+
+  it.each(['always', 'session'] as const)('a %s answer lets the other waiting call for the same tool through', async (scope) => {
+    const { service, emit, patternSaver, recordReleasedPermission } = createService();
+    const first = ask(service, 'first');
+    const second = ask(service, 'second');
+    await vi.waitFor(() => expect(waitingCount(service)).toBe(2));
+
+    service.resolvePermission('first', { decision: 'allow', scope });
+
+    expect(await first).toEqual({ decision: 'allow', scope });
+    // The second call gets the same answer a later call gets from the session cache.
+    expect(await settledOrStillWaiting(second)).toEqual({ decision: 'allow', scope: 'session' });
+    expect(waitingCount(service)).toBe(0);
+    // Both prompts must be closed, and the rule must be saved once, not once per prompt.
+    expect(recordReleasedPermission).toHaveBeenCalledWith('session', 'second', { decision: 'allow', scope: 'session' });
+    expect(emit).toHaveBeenCalledWith('toolPermission:resolved', expect.objectContaining({ requestId: 'second' }));
+    expect(patternSaver).toHaveBeenCalledTimes(scope === 'always' ? 1 : 0);
+  });
+
+  it('leaves a call for a different tool waiting', async () => {
+    const { service } = createService();
+    const first = ask(service, 'first');
+    const other = ask(service, 'other', 'mcp__serena__replace_symbol_body');
+    await vi.waitFor(() => expect(waitingCount(service)).toBe(2));
+
+    service.resolvePermission('first', { decision: 'allow', scope: 'always' });
+    await first;
+
+    expect(await settledOrStillWaiting(other)).toBe('still waiting');
+    expect(waitingCount(service)).toBe(1);
+  });
+
+  it.each([{ decision: 'allow', scope: 'once' }, { decision: 'deny', scope: 'always' }] as const)(
+    'leaves the other waiting call alone after a %o answer', async (answer) => {
+      const { service } = createService();
+      const first = ask(service, 'first');
+      const second = ask(service, 'second');
+      await vi.waitFor(() => expect(waitingCount(service)).toBe(2));
+
+      service.resolvePermission('first', answer);
+      await first;
+
+      expect(await settledOrStillWaiting(second)).toBe('still waiting');
+      expect(waitingCount(service)).toBe(1);
+    });
+
+  it('tells the caller once about the released call, with its id and the allow answer', async () => {
+    const { service, recordReleasedPermission } = createService();
+    const first = ask(service, 'first');
+    const second = ask(service, 'second');
+    await vi.waitFor(() => expect(waitingCount(service)).toBe(2));
+
+    service.resolvePermission('first', { decision: 'allow', scope: 'always' });
+    await first;
+    await second;
+
+    expect(recordReleasedPermission).toHaveBeenCalledTimes(1);
+    expect(recordReleasedPermission).toHaveBeenCalledWith('session', 'second', { decision: 'allow', scope: 'session' });
+  });
+
+  it('leaves a waiting call in another session alone', async () => {
+    const { service, recordReleasedPermission } = createService();
+    const inSessionA = ask(service, 'a', mcpTool, { sessionId: 'session-a' });
+    const inSessionB = ask(service, 'b', mcpTool, { sessionId: 'session-b' });
+    await vi.waitFor(() => expect(waitingCount(service)).toBe(2));
+
+    service.resolvePermission('a', { decision: 'allow', scope: 'always' });
+    await inSessionA;
+
+    expect(await settledOrStillWaiting(inSessionB)).toBe('still waiting');
+    expect(waitingCount(service)).toBe(1);
+    expect(recordReleasedPermission).not.toHaveBeenCalled();
+  });
+
+  it('leaves a waiting call alone when it asked to be approved one time only', async () => {
+    const { service, recordReleasedPermission } = createService();
+    const first = ask(service, 'first');
+    const oneTimeOnly = ask(service, 'one-time-only', mcpTool, { suppressAlwaysAllowRule: true });
+    await vi.waitFor(() => expect(waitingCount(service)).toBe(2));
+
+    service.resolvePermission('first', { decision: 'allow', scope: 'always' });
+    await first;
+
+    expect(await settledOrStillWaiting(oneTimeOnly)).toBe('still waiting');
+    expect(waitingCount(service)).toBe(1);
+    expect(recordReleasedPermission).not.toHaveBeenCalled();
+  });
+
+  it('keeps a hook-requested prompt waiting when another call approves its rule', async () => {
+    const { service, recordReleasedPermission } = createService();
+    const first = ask(service, 'first');
+    const hookAsked = ask(service, 'hook', mcpTool, { requiresUserDecision: 'hook-ask' });
+    await vi.waitFor(() => expect(waitingCount(service)).toBe(2));
+    service.resolvePermission('first', { decision: 'allow', scope: 'always' });
+    await first;
+    expect(waitingCount(service)).toBe(1);
+    expect(recordReleasedPermission).not.toHaveBeenCalled();
+    service.resolvePermission('hook', { decision: 'deny', scope: 'once' });
+    expect(await hookAsked).toEqual({ decision: 'deny', scope: 'once' });
+  });
+
+  it('lets "allow all WebFetches" through a waiting WebFetch call for a different address', async () => {
+    const { service, patternSaver, recordReleasedPermission } = createService();
+    const first = ask(service, 'first', 'WebFetch', { pattern: 'WebFetch(domain:example.com)' });
+    const second = ask(service, 'second', 'WebFetch', { pattern: 'WebFetch(domain:other.org)' });
+    await vi.waitFor(() => expect(waitingCount(service)).toBe(2));
+
+    service.resolvePermission('first', { decision: 'allow', scope: 'always-all' });
+
+    expect(await first).toEqual({ decision: 'allow', scope: 'always-all' });
+    expect(await settledOrStillWaiting(second)).toEqual({ decision: 'allow', scope: 'session' });
+    expect(recordReleasedPermission).toHaveBeenCalledWith('session', 'second', { decision: 'allow', scope: 'session' });
+    // The wildcard is saved once for the answered call, not again for the released one.
+    expect(patternSaver).toHaveBeenCalledTimes(1);
+    expect(patternSaver).toHaveBeenCalledWith('/fixture', 'WebFetch');
+  });
+
+  it('does not let a compound shell command release another waiting call', async () => {
+    // Compound commands get a one-of-a-kind pattern and must be approved every time, so an
+    // "Always" answer on one is not saved or cached and settles nothing else. The two calls
+    // here share a pattern on purpose, to show that sharing alone does not release them.
+    const { service, patternSaver, recordReleasedPermission } = createService();
+    const compound = { pattern: 'Bash:compound:123' };
+    const first = ask(service, 'first', 'Bash', compound);
+    const second = ask(service, 'second', 'Bash', compound);
+    await vi.waitFor(() => expect(waitingCount(service)).toBe(2));
+
+    service.resolvePermission('first', { decision: 'allow', scope: 'always' });
+    await first;
+
+    expect(await settledOrStillWaiting(second)).toBe('still waiting');
+    expect(waitingCount(service)).toBe(1);
+    expect(recordReleasedPermission).not.toHaveBeenCalled();
+    expect(patternSaver).not.toHaveBeenCalled();
+    expect(service.getSessionApprovedPatterns().size).toBe(0);
+  });
+
+  it('skips the question for a call that was still reading saved settings when another was answered', async () => {
+    // The second call is held inside the saved-settings lookup. While it is held, the first
+    // call is answered "session". The second call must see that answer, not wait for a prompt.
+    let releaseSettingsLookup: (approved: boolean) => void = () => {};
+    const patternChecker = vi.fn<() => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockImplementationOnce(() => new Promise<boolean>((resolve) => { releaseSettingsLookup = resolve; }));
+    const { service, emit } = createService(patternChecker);
+
+    const first = ask(service, 'first');
+    await vi.waitFor(() => expect(waitingCount(service)).toBe(1));
+    const second = ask(service, 'second');
+    await vi.waitFor(() => expect(patternChecker).toHaveBeenCalledTimes(2));
+
+    service.resolvePermission('first', { decision: 'allow', scope: 'session' });
+    await first;
+    releaseSettingsLookup(false);
+
+    expect(await settledOrStillWaiting(second)).toEqual({ decision: 'allow', scope: 'session' });
+    expect(waitingCount(service)).toBe(0);
+    expect(emit).not.toHaveBeenCalledWith('toolPermission:pending', expect.objectContaining({ requestId: 'second' }));
+  });
+});

@@ -46,6 +46,7 @@ export { AskUserQuestionWidget } from './AskUserQuestionWidget';
 export { RequestUserInputWidget } from './RequestUserInputWidget';
 export { FeedbackRequestComposeWidget } from './feedback/FeedbackRequestComposeWidget';
 export { VisualDisplayWidget } from './VisualDisplayWidget';
+export { CodexImageGenerationWidget } from './CodexImageGenerationWidget';
 export { BashWidget } from './BashWidget';
 export { GitCommitConfirmationWidget } from './GitCommitConfirmationWidget';
 export { ExitPlanModeWidget } from './ExitPlanModeWidget';
@@ -112,6 +113,7 @@ import { AskUserQuestionWidget } from './AskUserQuestionWidget';
 import { RequestUserInputWidget } from './RequestUserInputWidget';
 import { FeedbackRequestComposeWidget } from './feedback/FeedbackRequestComposeWidget';
 import { VisualDisplayWidget } from './VisualDisplayWidget';
+import { CodexImageGenerationWidget } from './CodexImageGenerationWidget';
 import { BashWidget } from './BashWidget';
 import { GitCommitConfirmationWidget } from './GitCommitConfirmationWidget';
 import { ExitPlanModeWidget } from './ExitPlanModeWidget';
@@ -123,6 +125,7 @@ import { TrackerToolWidget } from './TrackerToolWidget';
 import { PageUpdateWidget } from './PageUpdateWidget';
 import { MemoryToolWidget } from './MemoryToolWidget';
 import { CrossSessionToolWidget } from './CrossSessionToolWidget';
+import { RunToolWidget } from './RunToolWidget';
 
 import {
   getTranscriptToolWidget,
@@ -176,6 +179,9 @@ const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
 
   // Display to user tool - renders charts and image galleries inline in the transcript
   'display_to_user': VisualDisplayWidget,
+
+  // Codex built-in image generation - shows the saved PNG, not the base64 result
+  'imageGeneration': CodexImageGenerationWidget,
 
   // Bash tool - terminal-style display for shell commands
   'Bash': BashWidget,
@@ -235,6 +241,12 @@ const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
   'get_session_result': CrossSessionToolWidget,
   'list_queued_prompts': CrossSessionToolWidget,
   'list_spawned_sessions': CrossSessionToolWidget,
+
+  // Run Manager (built-in extension) - one line with the target, its status
+  // transition and a link to its log tab.
+  'run_start': RunToolWidget,
+  'run_stop': RunToolWidget,
+  'run_restart': RunToolWidget,
 };
 
 // Identifier used when the host registers built-in widgets to the runtime

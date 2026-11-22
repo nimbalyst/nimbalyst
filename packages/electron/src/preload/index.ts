@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { createIpcSubscriber } from './ipcSubscriptions.ts';
 import {ClaudeForWindowsInstallation} from "../main/services/CLIManager.ts";
 import type { GhCliStatus } from '../main/services/GhCliDetector.ts';
+import type { ProjectMoveJob } from '../main/ipc/ProjectMigrationHandlers.ts';
 import type { GitStatusChangedPayload } from '../main/services/GitStatusRefreshCoordinator.ts';
 import type {
   AppendLocalReplicaUpdateInput,
@@ -155,11 +156,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event: any, filePath: string) => callback(filePath);
     ipcRenderer.on('open-workspace-file', handler);
     return () => ipcRenderer.removeListener('open-workspace-file', handler);
-  },
-  onOpenDocument: (callback: (data: { path: string }) => void) => {
-    const handler = (_event: any, data: { path: string }) => callback(data);
-    ipcRenderer.on('open-document', handler);
-    return () => ipcRenderer.removeListener('open-document', handler);
   },
   onOpenWorkspaceFromCLI: (callback: (workspacePath: string) => void) => {
     const handler = (_event: any, workspacePath: string) => callback(workspacePath);
@@ -419,6 +415,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyImageToClipboard: (payload: { filePath?: string; dataUrl?: string }) =>
     ipcRenderer.invoke('copy-image-to-clipboard', payload),
   readClipboard: () => ipcRenderer.invoke('read-from-clipboard'),
+  readWindowsClipboardImage: () => ipcRenderer.invoke('read-image-from-windows-clipboard'),
 
   // File change event listeners
   onFileRenamed: (callback: (data: { oldPath: string; newPath: string }) => void) => {
@@ -819,8 +816,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendMcpCollabIndexResult: (resultChannel: string, result: { success: boolean; error?: string; [key: string]: unknown }) => {
     ipcRenderer.send(resultChannel, result);
   },
-  onMcpGetResourceSharingStatus: (callback: (data: { sourceId: string; resultChannel: string }) => void) => {
-    const handler = (_event: any, data: { sourceId: string; resultChannel: string }) => callback(data);
+  onMcpGetResourceSharingStatus: (callback: (data: { sourceId: string; workspacePath?: string; resultChannel: string }) => void) => {
+    const handler = (_event: any, data: { sourceId: string; workspacePath?: string; resultChannel: string }) => callback(data);
     ipcRenderer.on('mcp:getResourceSharingStatus', handler);
     return () => ipcRenderer.removeListener('mcp:getResourceSharingStatus', handler);
   },
@@ -932,8 +929,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Project Migration (move/rename)
   projectMigration: {
     canMove: (oldPath: string) => ipcRenderer.invoke('project:can-move', oldPath) as Promise<{ canMove: boolean; reason?: string }>,
-    move: (oldPath: string, newPath: string) => ipcRenderer.invoke('project:move', oldPath, newPath) as Promise<{ success: boolean; error?: string; newPath?: string }>,
-    rename: (oldPath: string, newName: string) => ipcRenderer.invoke('project:rename', oldPath, newName) as Promise<{ success: boolean; error?: string; newPath?: string }>,
+    move: (oldPath: string, newPath: string) => ipcRenderer.invoke('project:move', oldPath, newPath) as Promise<{ started: boolean; error?: string }>,
+    getMoveJobs: () => ipcRenderer.invoke('project:move-jobs') as Promise<ProjectMoveJob[]>,
+    onMoveProgress: (callback: (job: ProjectMoveJob) => void) => subscribeToIpcChannel('project:move-progress', callback),
+    rename: (oldPath: string, newName: string) => ipcRenderer.invoke('project:rename', oldPath, newName) as Promise<{ success: boolean; error?: string; newPath?: string; warnings?: string[] }>,
   },
 
 
@@ -1860,6 +1859,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Server-managed custody status. `unmigrated` means the organization was
     // never converted and the server refuses its team content.
     getKeyCustodyStatus: (orgId: string) => ipcRenderer.invoke('team:get-key-custody-status', orgId) as Promise<{ success: boolean; mode?: 'server-managed' | 'unmigrated'; dekFingerprint?: string | null; error?: string }>,
+    recovery: (orgId: string, command: import('../shared/teamRecovery').TeamRecoveryCommand, options?: { workspacePath?: string; password?: string }) => ipcRenderer.invoke('team:recovery', orgId, command, options) as Promise<{ success: boolean; overview?: import('../shared/teamRecovery').TeamRecoveryOverview; error?: string }>,
     setProjectIdentity: (orgId: string, workspacePath: string) => ipcRenderer.invoke('team:set-project-identity', orgId, workspacePath),
     clearProjectIdentity: (orgId: string) => ipcRenderer.invoke('team:clear-project-identity', orgId),
   },
@@ -1939,7 +1939,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // projection from the server; project-access grant/revoke/list manage the
   // per-project member set.
   org: {
-    canAccess: (input: { orgId?: string | null; projectId?: string | null; action: 'view' | 'edit' | 'admin' }) =>
+    canAccess: (input: { orgId?: string | null; projectId?: string | null; action: 'view' | 'comment' | 'edit' | 'admin' }) =>
       ipcRenderer.invoke('org:can-access', input),
     syncProjection: () => ipcRenderer.invoke('org:sync-projection'),
     grantProjectAccess: (orgId: string, projectId: string, userId: string, projectRole: string) =>

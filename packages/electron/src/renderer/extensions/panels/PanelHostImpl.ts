@@ -11,7 +11,7 @@ import type { PanelHost, PanelAIContext, ExtensionStorage, ExtensionFileStorage,
 import type { PanelHostComponents, PanelPanes, PanelPaneSide, PanelSessionTranscriptProps } from '@nimbalyst/extension-sdk';
 import { store } from '@nimbalyst/runtime/store';
 import { ExtensionFileStorageImpl } from './ExtensionFileStorageImpl';
-import { setPanelGutterBadge } from './panelGutterBadges';
+import { setPanelGutterBadge, type PanelGutterBadgeTone } from './panelGutterBadges';
 import { addPanelPaneToggleHandler, setPanelPanes } from './panelPanes';
 import { workspaceRootPathsAtom } from '../../store/atoms/fileTree';
 import { isPathInWorkspace } from '../../../shared/pathUtils';
@@ -282,7 +282,7 @@ class PanelHostImpl implements PanelHost {
     });
   }
 
-  setGutterBadge(value: number | null, options?: { tone?: 'default' | 'warning' }): void {
+  setGutterBadge(value: number | null, options?: { tone?: PanelGutterBadgeTone }): void {
     // Deliberately not cleared in dispose(): the badge must outlive the panel.
     setPanelGutterBadge(this.panelId, value, options?.tone ?? 'default');
   }

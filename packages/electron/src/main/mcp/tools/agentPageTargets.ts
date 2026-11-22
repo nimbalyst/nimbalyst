@@ -10,6 +10,7 @@
 import { globalRegistry } from '@nimbalyst/tracker-schema';
 import { getDatabase } from '../../database/initialize';
 import { getEffectiveTrackerSharingPolicy, shouldSyncTrackerItem } from '../../services/TrackerPolicyService';
+import { parseTrackerBodyUri } from '@nimbalyst/collab-protocol';
 import { isPersonalPageUri, parsePersonalPageUri } from '../../../shared/personalPageUri';
 import { resolveTrackerRowByReference } from './trackerToolItemAccess';
 import { rowToTrackerItem } from './trackerToolHandlers';
@@ -22,7 +23,8 @@ export function isAgentPageUri(uri: string | undefined): uri is string {
 
 /** The tracker item behind a typed-page body URI, team or Personal. */
 export function typedPageItemId(uri: string): string | null {
-  if (uri.startsWith(TEAM_TYPED_PAGE_PREFIX)) return uri.slice(TEAM_TYPED_PAGE_PREFIX.length) || null;
+  const team = parseTrackerBodyUri(uri);
+  if (team) return team.itemId;
   const personal = parsePersonalPageUri(uri);
   return personal?.kind === 'typed-page' ? personal.itemId : null;
 }
@@ -47,19 +49,21 @@ export async function describeTypedPage(itemId: string, workspacePath: string | 
 }
 
 /**
- * Refuse a Personal typed-page URI for an item whose body is the team's: that
- * write would land in the local copy and be replaced by the room's.
+ * The page an agent's read or edit of `uri` reaches. A Personal typed-page URI
+ * for an item whose body is the team's goes to the team body room: a write to
+ * the local copy would be replaced by the room's, and a read of it can be
+ * stale (#1879).
  */
-export async function personalTypedPageError(uri: string, workspacePath: string | undefined): Promise<string | null> {
+export async function resolveAgentPageTarget(
+  uri: string,
+  workspacePath: string | undefined,
+): Promise<{ uri: string } | { error: string }> {
   const personal = isPersonalPageUri(uri) ? parsePersonalPageUri(uri) : null;
-  if (!personal) return isPersonalPageUri(uri) ? `Error: Not a Personal page URI: ${uri}` : null;
-  if (personal.kind !== 'typed-page') return null;
+  if (!personal) return isPersonalPageUri(uri) ? { error: `Error: Not a Personal page URI: ${uri}` } : { uri };
+  if (personal.kind !== 'typed-page') return { uri };
   const facts = await describeTypedPage(personal.itemId, workspacePath);
-  if (!facts) return `Error: Unknown typed page '${personal.itemId}'.`;
-  if (facts.shared) {
-    return `Error: '${facts.title}' is shared with the team; edit its body at ${TEAM_TYPED_PAGE_PREFIX}${personal.itemId}.`;
-  }
-  return null;
+  if (!facts) return { error: `Error: Unknown typed page '${personal.itemId}'.` };
+  return { uri: facts.shared ? `${TEAM_TYPED_PAGE_PREFIX}${personal.itemId}` : uri };
 }
 
 export function pageUpdatedText(uri: string, title: string | undefined): string {

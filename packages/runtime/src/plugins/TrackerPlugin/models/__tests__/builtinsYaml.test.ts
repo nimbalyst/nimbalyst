@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   BUILTIN_TRACKER_YAML,
@@ -29,6 +30,9 @@ const EXPECTED = [
   'source',
   'capture',
   'citation',
+  // GitHub panel overlays.
+  'github-issue',
+  'github-pr',
 ] as const;
 
 // Behavior-preserving invariants carried over from the pre-migration code array.
@@ -51,6 +55,10 @@ const INVARIANTS: Record<string, {
   source: { idPrefix: 'src', sharing: 'personal', draftByDefault: false },
   capture: { idPrefix: 'cap', sharing: 'personal', draftByDefault: false },
   citation: { idPrefix: 'cit', sharing: 'personal', draftByDefault: false },
+  // Overlays are personal by default: clicking Review or Investigate must not
+  // publish to a team tracker unless the workspace's schema says so.
+  'github-issue': { idPrefix: 'ghi', sharing: 'personal', draftByDefault: false },
+  'github-pr': { idPrefix: 'ghp', sharing: 'personal', draftByDefault: false },
 };
 
 /** Section 3 pins `modes.fullDocument: false` on all three evidence kinds. */
@@ -128,6 +136,26 @@ describe('bundled builtin tracker YAML', () => {
     }
   });
 
+  it('keeps the GitHub overlays unlisted until a workspace schema replaces them', () => {
+    loadBuiltinTrackers();
+    const listed = () => globalRegistry.getListed().map((m) => m.type);
+    for (const type of ['github-issue', 'github-pr']) {
+      globalRegistry.clearWorkspaceSchema(type);
+      expect(globalRegistry.get(type)?.listed, `${type} parsed listed flag`).toBe(false);
+      expect(listed(), `${type} listed as builtin`).not.toContain(type);
+
+      // A workspace's own full schema (this repo's triage types) lists it again.
+      const { listed: _unlisted, ...workspaceModel } = globalRegistry.get(type)!;
+      globalRegistry.register(workspaceModel);
+      try {
+        expect(listed(), `${type} listed with a workspace schema`).toContain(type);
+      } finally {
+        globalRegistry.clearWorkspaceSchema(type);
+      }
+      expect(listed(), `${type} unlisted after the workspace schema goes`).not.toContain(type);
+    }
+  });
+
   it('keeps the evidence kinds out of full-document mode', () => {
     // A source, a capture, and a citation are records about something else.
     // Giving them a document body would invite the argument to be written in
@@ -154,5 +182,15 @@ describe('bundled builtin tracker YAML', () => {
       expect(globalRegistry.get(type), `${type} registered`).toBeDefined();
       expect(globalRegistry.isBuiltin(type), `${type} isBuiltin`).toBe(true);
     }
+  });
+
+  // The collab worker resolves a team's builtin overrides against this
+  // generated copy (#1880). A YAML edit that did not regenerate it would leave
+  // the server resolving deltas against different builtins than desktops do.
+  it('matches the catalog the collab worker bundles (run `pnpm --filter @nimbalyst/tracker-builtins build`)', () => {
+    const catalog = JSON.parse(readFileSync(
+      new URL('../../../../../../tracker-builtins/src/builtinCatalog.json', import.meta.url), 'utf8',
+    ));
+    expect(catalog).toEqual(JSON.parse(JSON.stringify(parseBuiltinTrackers())));
   });
 });

@@ -237,12 +237,12 @@ export function ensureLocalKeyPrefix(
 }
 
 /**
- * Give every unnumbered item of an opted-in type in this workspace a local
+ * Give every unnumbered item of a numbered type in this workspace a local
  * number.
  *
- * `isNumberedType` is required rather than defaulted: numbers are opt-in per
- * type (`localNumbers` in the type YAML), and a caller that forgot to ask would
- * number everything again.
+ * `isNumberedType` is required rather than defaulted: a type can opt out
+ * (`localNumbers: false` in the type YAML), and a caller that forgot to ask
+ * would number it anyway.
  *
  * Returns how many were assigned. Safe to run repeatedly: a second pass finds
  * nothing to do, so this can be called after a create without becoming a

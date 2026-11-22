@@ -16,10 +16,13 @@
  * That was a missed call site of the `HeadlessBodyNodes` fix.
  */
 import { createHeadlessEditor } from '@lexical/headless';
+import { $wrapSelectionInMarkNode } from '@lexical/mark';
 import { createBinding, syncLexicalUpdateToYjs } from '@lexical/yjs';
 import {
   $applyNodeReplacement,
   $createParagraphNode,
+  $createRangeSelection,
+  $setSelection,
   $createTextNode,
   $getRoot,
   DecoratorNode,
@@ -386,5 +389,65 @@ describe('MarkdownCollabContentAdapter node set', () => {
         : new TextDecoder('utf-8').decode(exported as Uint8Array);
 
     expect(markdown).toContain(`[Roadmap](${target})`);
+  });
+});
+
+describe('MarkdownCollabContentAdapter export with comment marks', () => {
+  /** Wrap `quote` in a comment MarkNode in the live doc, as an editor client does. */
+  function markQuote(doc: Y.Doc, quote: string): void {
+    withHeadlessLexicalBridge(doc, { nodes: HeadlessBodyNodes }, (headless) => {
+      headless.applyUpdate(() => {
+        const texts = $getRoot().getAllTextNodes();
+        const full = texts.map((node) => node.getTextContent()).join('');
+        const start = full.indexOf(quote);
+        if (start < 0) throw new Error(`"${quote}" is not in the document`);
+        const end = start + quote.length;
+        let at = 0;
+        let anchor: { key: string; offset: number } | null = null;
+        let focus: { key: string; offset: number } | null = null;
+        for (const node of texts) {
+          const size = node.getTextContentSize();
+          if (!anchor && start < at + size) anchor = { key: node.getKey(), offset: start - at };
+          if (!focus && end <= at + size) focus = { key: node.getKey(), offset: end - at };
+          at += size;
+        }
+        const selection = $createRangeSelection();
+        selection.anchor.set(anchor!.key, anchor!.offset, 'text');
+        selection.focus.set(focus!.key, focus!.offset, 'text');
+        $setSelection(selection);
+        $wrapSelectionInMarkNode(selection, false, 'thread-1');
+      });
+    });
+  }
+
+  function hasMark(doc: Y.Doc): boolean {
+    return withHeadlessLexicalBridge(doc, { nodes: HeadlessBodyNodes }, (headless) =>
+      headless.editor.getEditorState().read(() =>
+        $getRoot().getAllTextNodes().some((node) => node.getParent()?.getType() === 'mark'),
+      ),
+    );
+  }
+
+  it.each([
+    ['part of a bold run', 'Alpha **beta gamma** delta.\n', 'beta'],
+    ['across a bold boundary', 'Alpha **beta gamma** delta.\n', 'pha beta ga'],
+    ['part of inline code', 'Run `nim wiki publish` today.\n', 'nim wiki'],
+  ])('exports %s byte-identically with and without a mark, leaving the doc untouched', (_label, markdown, quote) => {
+    const plain = new Y.Doc();
+    MarkdownCollabContentAdapter.seedFromFile(plain, markdown);
+    const marked = new Y.Doc();
+    MarkdownCollabContentAdapter.seedFromFile(marked, markdown);
+    markQuote(marked, quote);
+    const stateBefore = Y.encodeStateAsUpdate(marked);
+
+    expect(MarkdownCollabContentAdapter.exportToFile(marked)).toBe(
+      MarkdownCollabContentAdapter.exportToFile(plain),
+    );
+    expect(MarkdownCollabContentAdapter.toPlainText!(marked)).toBe(
+      MarkdownCollabContentAdapter.toPlainText!(plain),
+    );
+    // The export read a private copy: the live doc keeps its mark, byte for byte.
+    expect(hasMark(marked)).toBe(true);
+    expect(Y.encodeStateAsUpdate(marked)).toEqual(stateBefore);
   });
 });

@@ -10,6 +10,7 @@ import {
 import {
   bodyMarkdown,
   getTrackerCreationPublication,
+  isTeamlessWorkspace,
   publishTrackerCreation,
 } from '../services/tracker/publishTrackerCreation';
 import { registerTrackerCreationResume } from '../services/tracker/trackerCreationResume';
@@ -129,6 +130,9 @@ export function registerTrackerCreationHandlers(
     'tracker-creation:pending',
     async (event, payload: { workspacePath: string }) => {
       resolveService(event).assertWorkspace(payload?.workspacePath);
+      // Nothing is waiting on a team that does not exist (#1960); the receipts
+      // stay pending so they publish if the workspace later joins one.
+      if (await isTeamlessWorkspace(payload.workspacePath)) return [];
       const result = await database.query<{ item_id: string }>(
         "SELECT item_id FROM tracker_creation_receipts WHERE workspace = $1 AND publication_status = 'pending' ORDER BY updated DESC LIMIT 100",
         [payload.workspacePath],

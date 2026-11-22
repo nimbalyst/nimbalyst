@@ -13,7 +13,11 @@ import { buildToolPermissionResponseRecord } from '.././claudeCliToolPermission'
 import { setSessionPendingPrompt } from '.././pendingPromptPersistence';
 import { type AIServiceContext } from './AIServiceContext';
 import { ProviderFactory } from '@nimbalyst/runtime/ai/server';
+import { hasOpenPrompts, isPromptOpen } from '../openPromptRegistry';
+import { sessionFallbackMayCarryAnswer } from '../../../mcp/tools/interactivePromptFallback';
+import { hasLiveInteractivePrompt } from '../../../mcp/tools/interactivePromptLiveness';
 import { type AIProviderType } from '@nimbalyst/runtime/ai/server/types';
+import type { ExitPlanModeResponse } from '@nimbalyst/runtime/ai/exitPlanModeDeferral';
 import { ipcMain } from 'electron';
 
 /**
@@ -31,9 +35,10 @@ export function registerInteractivePromptHandlers(ctx: AIServiceContext): void {
   configureRequestUserInputResume(({ event, sessionId, workspacePath, message }) =>
     // Not a human turn: it must not supersede other open questions.
     ctx.sendMessageHandler(event, message, { promptOrigin: 'interactive-question' }, sessionId, workspacePath),
+    sessionId => ctx.publishQueueStateToSync(sessionId),
   );
   // Handle ExitPlanMode confirmation response from renderer
-  safeHandle('ai:exitPlanModeConfirmResponse', async (event, requestId: string, sessionId: string, response: { approved: boolean; clearContext?: boolean; feedback?: string }) => {
+  safeHandle('ai:exitPlanModeConfirmResponse', async (event, requestId: string, sessionId: string, response: ExitPlanModeResponse) => {
     logger.main.info(`[AIService] ExitPlanMode confirmation response: requestId=${requestId}, approved=${response.approved}, clearContext=${response.clearContext}, hasFeedback=${!!response.feedback}`);
 
     // Use repository directly - we just need session metadata (provider type),
@@ -134,10 +139,14 @@ export function registerInteractivePromptHandlers(ctx: AIServiceContext): void {
       logger.main.info(`[AIService] No in-process provider for AskUserQuestion cancel (${session.provider}); routing via MCP/IPC channel: ${resolvedSessionId}`);
     }
 
+    // The provider holds this question itself only for the SDK-native
+    // AskUserQuestion (canUseTool), which registers it as an open prompt.
+    // Read it before rejecting: the rejection's cancelled event resolves it.
+    const providerHeldQuestion = isPromptOpen(resolvedSessionId, questionId);
     const providerSupportsCancel = !!provider && typeof (provider as any).rejectAskUserQuestion === 'function';
-    if (providerSupportsCancel) {
-      (provider as any).rejectAskUserQuestion(questionId, new Error('User cancelled'));
-    }
+    // 'dismissed': the CLI takes the cancel as an answer and the turn goes on.
+    const dismissedIntoTurn = providerSupportsCancel
+      && (provider as any).rejectAskUserQuestion(questionId, new Error('User cancelled')) === 'dismissed';
 
     const mcpQuestionResponseChannel = `ask-user-question-response:${resolvedSessionId || 'unknown'}:${questionId}`;
     const hasMcpWaiter = ipcMain.listenerCount(mcpQuestionResponseChannel) > 0;
@@ -151,8 +160,14 @@ export function registerInteractivePromptHandlers(ctx: AIServiceContext): void {
       });
     }
 
+    // Same rule as the answer path: a Claude Code card with no waiter on its
+    // own channel has no live waiter, and a fallback listener is a different
+    // question that ignores this id.
     const sessionFallbackChannel = `ask-user-question:${resolvedSessionId}`;
-    const hasSessionFallbackWaiter = ipcMain.listenerCount(sessionFallbackChannel) > 0;
+    const hasSessionFallbackWaiter =
+      !hasMcpWaiter &&
+      sessionFallbackMayCarryAnswer(session.provider, questionId) &&
+      ipcMain.listenerCount(sessionFallbackChannel) > 0;
     if (hasSessionFallbackWaiter) {
       ipcMain.emit(sessionFallbackChannel, event, {
         questionId,
@@ -184,22 +199,26 @@ export function registerInteractivePromptHandlers(ctx: AIServiceContext): void {
       });
     }
 
-    if (!providerSupportsCancel && !hasMcpWaiter && !hasSessionFallbackWaiter) {
-      // NIM-2208: no provider, no MCP waiter, no fallback waiter means nothing
-      // is listening -- the process that opened this question is gone (app
-      // restarted, turn died). This used to return an error and leave
+    if (!providerHeldQuestion && !hasMcpWaiter && !hasSessionFallbackWaiter) {
+      // NIM-2208: no provider-held question, no MCP waiter, no fallback waiter
+      // means nothing is listening -- the process that opened this question is
+      // gone (app restarted, turn died). This used to return an error and leave
       // `metadata.hasPendingPrompt` set, so the session kept showing "awaiting
       // input" in AgentSessionsPopover with no way to dismiss it: the ONLY
       // cancel affordance is this widget, and it was a no-op on exactly the
       // sessions that needed it. Clearing the bit here makes the widget's
-      // Cancel button the working escape hatch for a dead prompt.
-      logger.main.info(`[AIService] Question cancel target not found; clearing stale pending-prompt bit: ${resolvedSessionId}`);
-      await setSessionPendingPrompt(resolvedSessionId, false).catch((err) => {
-        logger.main.warn(`[AIService] Failed to clear stale pending-prompt bit on cancel: ${err}`);
-      });
+      // Cancel button the working escape hatch for a dead prompt -- unless
+      // another prompt is still live, which owns the bit.
+      if (!hasLiveInteractivePrompt(resolvedSessionId) && !hasOpenPrompts(resolvedSessionId)) {
+        logger.main.info(`[AIService] Question cancel target not found; clearing stale pending-prompt bit: ${resolvedSessionId}`);
+        await setSessionPendingPrompt(resolvedSessionId, false).catch((err) => {
+          logger.main.warn(`[AIService] Failed to clear stale pending-prompt bit on cancel: ${err}`);
+        });
+      }
       // Issue #1116: clearing the pending-prompt bit dismissed the session-level
       // indicator but left the tool call pending, so the cancelled widget came
-      // back on the next session switch. Write the terminal result too.
+      // back on the next session switch. Write the terminal result too. No
+      // abort: nothing in the running turn belongs to this card.
       await persistInteractivePromptTerminalResult({
         sessionId: resolvedSessionId,
         questionId,
@@ -209,11 +228,13 @@ export function registerInteractivePromptHandlers(ctx: AIServiceContext): void {
       return { success: true, staleCleared: true };
     }
 
-    // For MCP-backed AskUserQuestion (Codex), let the MCP tool call resolve with
-    // a cancelled result instead of force-aborting the provider. Immediate abort can
+    // For MCP-backed AskUserQuestion, let the MCP tool call resolve with a
+    // cancelled result instead of force-aborting the provider. Immediate abort can
     // interrupt the in-flight MCP request before the cancellation result is delivered.
-    if (!hasMcpWaiter && !hasSessionFallbackWaiter) {
-      // Provider-backed AskUserQuestion path (Claude Code): abort active turn.
+    // Only the SDK-native question blocks the provider's own turn, so only it
+    // aborts; any other card reaching here has a waiter of its own. A CLI that
+    // took the cancel as a dismissal answer keeps working, so no abort then.
+    if (providerHeldQuestion && !dismissedIntoTurn && !hasMcpWaiter && !hasSessionFallbackWaiter) {
       provider?.abort();
     }
 

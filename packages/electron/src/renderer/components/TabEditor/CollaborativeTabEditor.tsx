@@ -125,6 +125,7 @@ import {
   createCollaborationContext,
   createCollabExtensionHost,
   createExtensionAwarenessBridge,
+  createReadOnlySignal,
   disposeCollaborationContext,
   getHostedCollaborationComments,
   notifyCollabStatus,
@@ -147,6 +148,18 @@ import {
 } from '../../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 import { resolveDocumentCommentCapabilities } from '../../../../../collab-bundle/src/editor/commenting';
+import {
+  COMMENT_NOT_SAVED_MESSAGE,
+  COMMENT_NOT_SAVED_TITLE,
+  COMMENT_REFUSAL_STOPPED_MESSAGE,
+  bodyCommentCapabilitiesWithVerdict,
+  commentRefusalPlan,
+  extensionCommentCapabilities,
+  resolveTeamBodyCommentCapabilities,
+  useDocumentServerAccess,
+  useTeamBodyCommentCapabilities,
+} from '../../services/teamBodyCommentCapabilities';
+import { createHostDictationSlot } from '../../dictation/dictationTargets';
 
 interface CollaborativeTabEditorProps {
   /** The collab:// URI for this document */
@@ -978,12 +991,61 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   // connection (see documentCommentNotifier).
   const decisionsMemoConfig = useDocumentDecisionsConfig(activeConfig, hasHydrated, collabProviderRef, syncProviderRef);
 
+  // A `project-commenter` reads and comments but never writes the body; every
+  // other role keeps the open answer (see teamBodyCommentCapabilities). The
+  // room's sync verdict, once it arrives, outranks the local projection.
+  const projectedBodyCapabilities = useTeamBodyCommentCapabilities(
+    activeConfig.orgId,
+    activeConfig.scope.indexConfig.teamProjectId,
+  );
+  // Reloads caused by a refused commenter update, per document; capped so a
+  // client that trips the refusal on every mount cannot loop.
+  const commentRefusalReloadsRef = useRef({ documentId: activeConfig.documentId, count: 0 });
+  if (commentRefusalReloadsRef.current.documentId !== activeConfig.documentId) {
+    commentRefusalReloadsRef.current = { documentId: activeConfig.documentId, count: 0 };
+  }
+  const handleCommentUpdateRefused = useCallback(() => {
+    const reloads = commentRefusalReloadsRef.current;
+    if (commentRefusalPlan(reloads.count) === 'stop') {
+      errorNotificationService.showError(COMMENT_NOT_SAVED_TITLE, COMMENT_REFUSAL_STOPPED_MESSAGE);
+      return;
+    }
+    reloads.count += 1;
+    void (async () => {
+      // The refused update is in the local Y.Doc and replica; reopening on
+      // them would resend state the room can never integrate. Discard the
+      // local copy (its outbox is rejected, nothing unsent survives that the
+      // room would accept) and reopen with a fresh Y.Doc and clientID.
+      const acquisition = replicaAcquisitionRef.current;
+      if (acquisition) {
+        try {
+          await acquisition.discardLocalCopy();
+          await acquisition.supersede();
+        } catch (error) {
+          console.error('[CollaborativeTabEditor] Could not discard the refused local copy:', error);
+          errorNotificationService.showError(COMMENT_NOT_SAVED_TITLE, COMMENT_REFUSAL_STOPPED_MESSAGE);
+          return;
+        }
+      }
+      errorNotificationService.showWarning(COMMENT_NOT_SAVED_TITLE, COMMENT_NOT_SAVED_MESSAGE);
+      setOpenAttempt((attempt) => attempt + 1);
+    })();
+  }, []);
+  const serverAccessVerdict = useDocumentServerAccess(
+    providerEpoch > 0 ? syncProviderRef.current : null,
+    handleCommentUpdateRefused,
+  );
+  const bodyCommentCapabilities = useMemo(
+    () => bodyCommentCapabilitiesWithVerdict(projectedBodyCapabilities, serverAccessVerdict),
+    [projectedBodyCapabilities, serverAccessVerdict],
+  );
+
   const commentsMemoConfig = useMemo<CommentsConfig>(() => ({
     getYDoc: () => collabProviderRef.current?.getYDoc() ?? null,
     // Reaching this mounted editor means the document sync lifecycle already
     // authorized the current user. Team roster ids are not a document
     // capability source and can differ from the auth subject id.
-    getCapabilities: () => ({ read: true, comment: true }),
+    getCapabilities: () => bodyCommentCapabilities,
     isHydrated: () => hasHydratedRef.current,
     currentUser: {
       id: activeConfig.teamMemberId,
@@ -1031,6 +1093,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     activeConfig.title,
     activeConfig.documentId,
     activeConfig.orgId,
+    bodyCommentCapabilities,
   ]);
 
   const markdownConfig = useMemo(() => ({
@@ -1114,6 +1177,8 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
       setEditorContextItems(): void {},
 
       registerEditorAPI(): void {},
+
+      registerDictationTarget: createHostDictationSlot(`collab-editor:${filePath}`),
 
       registerMenuItems(): void {},
     };
@@ -1581,6 +1646,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         ) : documentType === 'code' && syncProviderRef.current ? (
           <MonacoCollabBranch
             key={providerEpoch}
+            bodyReadOnly={bodyCommentCapabilities.editBody === false}
             syncProvider={syncProviderRef.current}
             filePath={filePath}
             fileName={fileName}
@@ -1601,6 +1667,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         ) : extensionRegistration && syncProviderRef.current ? (
           <ExtensionCollabBranch
             key={providerEpoch}
+            bodyReadOnly={bodyCommentCapabilities.editBody === false}
             registration={extensionRegistration}
             syncProvider={syncProviderRef.current}
             filePath={filePath}
@@ -1636,6 +1703,13 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
 // ---------------------------------------------------------------------------
 
 interface MonacoCollabBranchProps {
+  /**
+   * The body is not writable for this user (a commenter or viewer, by the
+   * room's verdict or the project role). Non-markdown pages give such a user a
+   * read-only editor with no commenting in v1: any write outside `comments`
+   * from a commenter ends the session.
+   */
+  bodyReadOnly: boolean;
   syncProvider: DocumentSyncProvider;
   filePath: string;
   fileName: string;
@@ -1648,6 +1722,7 @@ interface MonacoCollabBranchProps {
 }
 
 const MonacoCollabBranch: React.FC<MonacoCollabBranchProps> = ({
+  bodyReadOnly,
   syncProvider,
   filePath,
   fileName,
@@ -1739,6 +1814,13 @@ const MonacoCollabBranch: React.FC<MonacoCollabBranchProps> = ({
     };
   }, [bumpHistoryControllers, createHistoryClient, filePath, onHistoryControllerChange, syncProvider]);
 
+  // Live read-only flag: the host object is not rebuilt when it changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const readOnlySignal = useMemo(
+    () => createReadOnlySignal(bodyReadOnly, () => syncProvider.getServerAccessVerdict()?.canWrite === false),
+    [],
+  );
+  useEffect(() => { readOnlySignal.set(bodyReadOnly); }, [bodyReadOnly, readOnlySignal]);
   const themeChangeCallbackRef = useRef<((theme: string) => void) | null>(null);
   useEffect(() => {
     const unsubscribe = store.sub(themeIdAtom, () => {
@@ -1759,6 +1841,7 @@ const MonacoCollabBranch: React.FC<MonacoCollabBranchProps> = ({
       onDirtyChange,
       onOpenHistory: () => setHistoryDialogFile(filePath),
       getTheme: () => store.get(themeIdAtom),
+      readOnlySignal,
       subscribeToThemeChanges: (callback) => {
         themeChangeCallbackRef.current = callback;
         return () => {
@@ -1791,6 +1874,13 @@ const MonacoCollabBranch: React.FC<MonacoCollabBranchProps> = ({
 // ---------------------------------------------------------------------------
 
 interface ExtensionCollabBranchProps {
+  /**
+   * The body is not writable for this user (a commenter or viewer, by the
+   * room's verdict or the project role). Non-markdown pages give such a user a
+   * read-only editor with no commenting in v1: any write outside `comments`
+   * from a commenter ends the session.
+   */
+  bodyReadOnly: boolean;
   registration: CustomEditorRegistration;
   syncProvider: DocumentSyncProvider;
   filePath: string;
@@ -1806,7 +1896,7 @@ type DocumentCommentAccessSource = {
   canAccess(input: {
     orgId?: string | null;
     projectId?: string | null;
-    action: 'view' | 'edit' | 'admin';
+    action: 'view' | 'comment' | 'edit' | 'admin';
   }): Promise<{ allowed: boolean }>;
 };
 
@@ -1821,6 +1911,7 @@ function getDocumentCommentAccessSource():
 }
 
 const ExtensionCollabBranch: React.FC<ExtensionCollabBranchProps> = ({
+  bodyReadOnly,
   registration,
   syncProvider,
   filePath,
@@ -1968,7 +2059,17 @@ const ExtensionCollabBranch: React.FC<ExtensionCollabBranchProps> = ({
           orgId: activeConfig.orgId,
           projectId: document.teamProjectId,
         };
-        return resolveDocumentCommentCapabilities(canAccess, accessInput);
+        const [base, projected] = await Promise.all([
+          resolveDocumentCommentCapabilities(canAccess, accessInput),
+          resolveTeamBodyCommentCapabilities(canAccess, accessInput),
+        ]);
+        // Body rights come from the room's verdict when it has one (the
+        // server is the authority), else from the project role.
+        const body = bodyCommentCapabilitiesWithVerdict(
+          projected,
+          syncProvider.getServerAccessVerdict(),
+        );
+        return extensionCommentCapabilities(base, body);
       },
       onMention: (recipientUserIds, payload) => {
         notifyDocumentCommentRecipients({
@@ -2028,6 +2129,13 @@ const ExtensionCollabBranch: React.FC<ExtensionCollabBranchProps> = ({
   // theme via `getTheme()` (always fresh, no host recreate) and
   // subscribes to theme changes through `subscribeToThemeChanges`.
   // Mirrors how TabEditor wires non-collab custom editors.
+  // Live read-only flag: the host object is not rebuilt when it changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const readOnlySignal = useMemo(
+    () => createReadOnlySignal(bodyReadOnly, () => syncProvider.getServerAccessVerdict()?.canWrite === false),
+    [],
+  );
+  useEffect(() => { readOnlySignal.set(bodyReadOnly); }, [bodyReadOnly, readOnlySignal]);
   const themeChangeCallbackRef = useRef<((theme: string) => void) | null>(null);
   useEffect(() => {
     const unsubscribe = store.sub(themeIdAtom, () => {
@@ -2049,6 +2157,7 @@ const ExtensionCollabBranch: React.FC<ExtensionCollabBranchProps> = ({
         onDirtyChange,
         onOpenHistory: () => setHistoryDialogFile(filePath),
         getTheme: () => store.get(themeIdAtom),
+        readOnlySignal,
         subscribeToThemeChanges: (callback) => {
           themeChangeCallbackRef.current = callback;
           return () => {
@@ -2069,6 +2178,11 @@ const ExtensionCollabBranch: React.FC<ExtensionCollabBranchProps> = ({
     () => getHostedCollaborationComments(collaboration) ?? null,
     [collaboration],
   );
+  // The body's writability feeds the extension's comment capabilities
+  // (`editBody`, and `comment: false` on these pages when it is locked).
+  useEffect(() => {
+    void hostedComments?.refreshCapabilities();
+  }, [bodyReadOnly, hostedComments]);
   const commentPanel = useCollabCommentsPanel({
     documentUri: commentsHostConfig?.documentUri ?? '',
     panelSource: hostedComments?.panelSource ?? null,

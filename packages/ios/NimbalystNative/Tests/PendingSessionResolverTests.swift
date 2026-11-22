@@ -172,6 +172,14 @@ final class PendingSessionResolverTests: XCTestCase {
         XCTAssertEqual(navigation.hostDeviceId, "vm")
         navigation.openSession("unattributed", database: db)
         XCTAssertEqual(navigation.hostDeviceId, "mac", "A headless host never lists unattributed sessions")
+
+        var staleMac = device("mac", "desktop")
+        staleMac.isOnline = false
+        staleMac.lastSeenAt = Int(Date().timeIntervalSince1970 * 1000)
+        roster.send([staleMac, device("studio", "desktop"), device("vm", "headless")])
+        navigation.openSession("owned", database: db)
+        navigation.openSession("unattributed", database: db)
+        XCTAssertEqual(navigation.hostDeviceId, "studio", "An offline installation listed first must not become the creation target")
     }
 
     func testComposeStateSurvivesColumnRemountAndRejectsOldRemoteDrafts() {

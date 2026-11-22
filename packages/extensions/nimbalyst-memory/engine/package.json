@@ -15,7 +15,7 @@
     "serve": "node dist/serve.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "better-sqlite3": "13.0.3",
     "chokidar": "4.0.3",
     "fast-glob": "3.3.3",

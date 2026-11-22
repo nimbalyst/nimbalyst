@@ -107,3 +107,24 @@ it("retries transient registration failure and cancels future retries on dispose
   subscription.dispose();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it("never registers a fileless virtual:// tab for disk reconciliation (#1863)", async () => {
+  const invoke = vi.fn().mockRejectedValue(new Error("Invalid open-file registration"));
+  vi.stubGlobal("window", { electronAPI: { invoke } });
+  const { errorNotificationService } = await import("../../ErrorNotificationService");
+  vi.mocked(errorNotificationService.showWarning).mockClear();
+  subscriptions.push(
+    new DiskChangeSubscription(
+      "virtual://com.example.reader/page/wiki/index.md",
+      vi.fn(),
+      vi.fn(),
+      vi.fn()
+    )
+  );
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(
+    invoke.mock.calls.filter(([channel]) => channel === "file:register-open")
+  ).toHaveLength(0);
+  expect(errorNotificationService.showWarning).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+});

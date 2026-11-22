@@ -1,64 +1,25 @@
-# October 16th, 2026 Release
+## Nimbalyst v0.83.0
+
+Covers everything since v0.82.8.
 
 ### New Features
 
-- Claude Code sessions suggest your next prompt in the empty input after a turn; press Tab to fill it in (toggle in Agent Features).
-- Claude Agent sessions stopped by a usage limit can continue on their own once the limit resets; turn it on from the limit card in the transcript or in Agent Features.
-- **New editor blocks:** charts, callouts, columns, tabs, a table of contents, transclusions, `@` mentions of people and dates, link previews, video players, code excerpts, and buttons that start an agent session or create a new item. Most can be resized and edited from the block menu.
-- **Interactive HTML pages:** a link to an `.html` file on its own line embeds it live in a document, sandboxed from the app, and its links open pages, tracker items and files in Nimbalyst.
-- **CSV spreadsheet editor:** a formatting toolbar, conditional formatting, data validation, wrap text, freezing, a status bar, formula autocomplete with click-to-insert references, named ranges, spreadsheet keyboard shortcuts, paste from other spreadsheet apps, and undo for every edit. Agents can edit sheets with A1-range tools, including files that aren't open.
-- Reorder projects in the rail by dragging or from the context menu, or sort them by name (#1126, contributed by @jszobody).
-- Customize a project's initials, color, or image in Project Settings > Appearance (#784, contributed by @jszobody).
-- After enlarging an image in a session transcript, the Left and Right arrow keys step through the session's other images.
+- Claude Fable 5.2 is available in the model picker. Fable 5.1 and Fable 5 remain selectable as previous-generation options.
 
 ### Improvements
 
-- A document's frontmatter properties and cited sources now sit in a resizable Page info panel opened from the header.
-- Pages search and the tracker toolbar show active filters, tags and source as pills inside the search box; Import moved into the New menu.
-- The meta agent's delegated sessions panel can be folded away, giving the transcript the full width on a narrow window (contributed by @karlwirth).
-- Sessions that hand off to a new session can go past eight handoffs, and agents can place a spawned session beside themselves instead of nested under them.
-- Following external Claude Code and Codex sessions watches each session folder instead of keeping every transcript file open, which had reached over 2,000 open files on one machine.
-- Extension docs and SDK comments now describe the file patterns that custom editors and document headers actually match (#1666, contributed by @theluckystrike).
-- Updated Claude Agent SDK to 0.3.300 and Codex SDK to 0.162.1.
+- Messages queued while an agent is working, whether typed by you or sent by other sessions, are delivered together in one turn, each labeled with its author. Slash commands and messages with a different document context still go as their own turn.
+- On macOS and Linux, agent sessions, MCP servers, CLIs and git now put your login shell's PATH ahead of the system defaults, so tools from version managers such as mise are found before the `/usr/bin` versions.
+- A file tree subfolder cut off at the 200-entry limit ends with a row saying how many items are hidden.
+- The session machine picker labels the local machine with its device name, followed by "(this device)", instead of "This Mac" on every platform.
 
 ### Fixed
 
-- In a project spanning several repositories, the title-bar branch, the Git operations panel and the new-worktree dialog follow the file open in the editor instead of always using the first repository, and pulling or pushing one repository from the title bar shows its progress without greying out the others (contributed by @Knifiel).
-- Quick Open, @ mentions and content search find files in git repositories cloned inside a project (#1449, contributed by @Knifiel).
-- Files @-mentioned to chat providers without file tools are read from attached folders too, and no longer from a sibling folder whose name starts with the project's (contributed by @Knifiel).
-- An agent session in a worktree can read and edit folders attached to either the worktree or its project (contributed by @Knifiel).
-- Archiving a worktree that was interrupted by quitting the app finishes cleanly on the next launch, and archiving a worktree with unmerged commits no longer skips its warning because a similarly named branch was already merged (contributed by @Knifiel).
-- Expanded deep folders in the file tree stay visible and current when files change elsewhere (contributed by @Knifiel).
-- Cmd+Alt+W (Ctrl+Alt+W on Windows and Linux) opens the new-worktree dialog instead of creating a worktree with a generated name (contributed by @Knifiel).
-- Archiving a session shows an error when it fails, and no longer hangs when a worktree's git remote stops responding (#282, contributed by @CaptainMittens).
-- The "Show recent commits" widget no longer comes up empty when the agent passes a folder path (#382, contributed by @CaptainMittens).
-- An error from an earlier turn, such as the "You are logged in" login card, no longer stays pinned to the bottom of a session after later turns (#1663, contributed by @tsvtdy).
-- Copilot tool calls show their tool name, arguments and result instead of "unknown", and Copilot messages are labeled "Copilot Agent" (#1658, contributed by @codeapplied).
-- Shell commands no longer appear as sub-agents in the agent sidebar, and a stopped task no longer looks the same as one that failed (contributed by @Sergio-3).
-- A question left open when the agent connection drops no longer leaves the session waiting for your response (#1557, contributed by @stephane-camhaji-sx).
-- Commit with AI from the Git panel no longer fails with "Session not found" when the selected repository is nested inside the project folder (contributed by @hmmmzaDev).
-- Asking an agent to turn on a feature this build does not have now reports that, instead of saying it worked (#1501, contributed by @L4XB).
-- Codex sessions no longer fail to start when an HTTP MCP server is also listed in `~/.codex/config.toml` (#1503, contributed by @moriosoft).
-- Sending queued messages to Codex no longer fails with an overlapping-turn error when interrupting a session.
-- A message queued during a Claude Code agent turn no longer cancels a question the agent asks; it waits until you answer.
-- Nimbalyst's background branch and file status checks no longer lock the git index, which could make a `git pull --rebase` with autostash leave your uncommitted changes in the stash.
-- Windows updates no longer fail with "Get-AuthenticodeSignature" when checking the downloaded installer's signature takes longer than 20 seconds.
-- macOS: Cmd+` cycles windows again while an agent drives a headless browser session.
-- Clicking or dropping a file in the empty space below a short markdown document now lands in the editor.
-- Wide document tables scroll sideways with the first column pinned; phone-width screens show rows as cards.
-- Mermaid gantt charts fit the page width with readable labels in light and dark themes.
-- Charts whose x column holds plain dates show one label per row instead of weekday ticks that missed the rows.
-- Enlarging an image an agent showed in the transcript no longer shows a broken image when the file is outside the project folder.
-- In shared documents, a collaborator's cursor label shows their name or email instead of an internal member ID.
-- Sessions in projects you have not turned on in Settings > Sync no longer upload their messages to the sync server while they run.
-- The desktop no longer fails to refresh its sign-in every 30 seconds when its saved sync server address is malformed.
-
-### Wiki (beta)
-
-- **Project wiki setup:** wiki setup builds a project wiki by default, with a dashboard Home, a product map, initiatives, decisions, team and strategy pages, and agents use charts, decision blocks and editor pages where they fit. The Wiki extension is now on by default; if you turned it off, it stays off.
-- **HTML pages:** HTML is a Team, Personal and local wiki page type with a preview and a source view.
-- **Local wiki in the browser (`nim wiki serve`):** open, edit and create drawings, mind maps, spreadsheets, data models, mockups and canvases; paste and drop files; link pages with `@` and typed pages with `#`; find and replace with Cmd+F.
-- **Attachments:** drop or paste files into a local wiki page; images show inline, other files become links, and attachments stay with the page when it is renamed or moved.
-- **Share types:** share a personal tracker type with the team from the tracker sidebar or the Wiki's Personal Types table, and convert local wiki table types to pages, keeping item ids.
-- **Nimbalyst Wiki plugin for Claude Code and Codex:** installs in the Codex CLI, has a `/nimbalyst-wiki:start` tour, opens the local wiki in the browser with nothing to install, moves a local wiki to a Nimbalyst team with `/nimbalyst-wiki:team`, tells you when an update is out, and is MIT licensed. Local pages can name the code they cover, agents are told at session start what the wiki covers, and new `wikiDoctor`, `listMarks` and `recall` tools report broken links and stale pages and answer what the wiki decided. Team wiki users install the separate `nimbalyst-wiki-team` add-on once after updating.
-- Fixed: links between local wiki pages stay in the Wiki, pages an agent edited open with the edit applied, type files written as the format describes now load, a local wiki created outside the app shows up without a reload, moving a local wiki to a team brings editor pages and images, shared wiki and feedback links open in the right project, and decision blocks no longer stay on "Loading answer status...".
+- The weekly history in the Claude and Codex usage popovers charts the main weekly limit by default instead of a per-model limit.
+- Nested lists under numbered items stay nested after saving in other Markdown tools, and a nested numbered list under item 10 starts at 1.
+- A question card that a hook denies now shows as blocked with the hook's reason, instead of as answered or still submittable.
+- Orchestrating agents can call `consume_session_inbox` on the `nimbalyst-host` MCP server.
+- Switching workspace clears the Agent Sessions search, and a search still running for the previous workspace no longer replaces the new workspace's list.
+- A prompt queued after you clear the document no longer merges into a turn with the older document content.
+- Creating a local wiki page whose content starts with its own frontmatter writes one frontmatter block instead of two.
+- In workspaces with more than 5,000 uncommitted files, the session list skips matching sessions to those files instead of sending every path to the database in one query.

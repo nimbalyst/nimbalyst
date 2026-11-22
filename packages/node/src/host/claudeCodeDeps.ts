@@ -25,6 +25,7 @@
  * | `historyManager`               | No document history; AgentToolHooks skips snapshotting    |
  * | `claudeSettingsPatternSaver`   | "Always allow" has no UI to be clicked in                 |
  * | `claudeSettingsPatternChecker` | Same                                                      |
+ * | `claudeLocalAllowRuleChecker`  | Same                                                      |
  */
 
 import { ClaudeCodeProvider } from '@nimbalyst/runtime/ai/server/providers/ClaudeCodeProvider';

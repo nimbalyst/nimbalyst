@@ -14,6 +14,7 @@ import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../common/AlphaBadge';
 import { TEAM_BETA_TOOLTIP } from '../common/TeamBetaNotice';
 import { developerModeAtom } from '../../store/atoms/appSettings';
 import { teamsConfiguredAtom } from '../../store/atoms/settingsDomains';
+import { dbActiveBackendAtom } from '../../store/atoms/dbMigration';
 import {
   getSettingsRoutesForScope,
   type SettingsCategory,
@@ -56,6 +57,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
 }) => {
   const developerMode = useAtomValue(developerModeAtom);
   const teamsConfigured = useAtomValue(teamsConfiguredAtom);
+  const pgliteActive = useAtomValue(dbActiveBackendAtom) === 'pglite';
   const [extAgentProviders, setExtAgentProviders] = useState<
     Array<{ id: string; name: string; icon?: string; status: string }>
   >([]);
@@ -82,7 +84,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
     const grouped = new Map<string, Array<SettingsRoute | { id: string; label: string; icon?: string; status: string }>>();
     for (const route of getSettingsRoutesForScope(
       scope,
-      { developerMode, showDirectChatProviders, teamsConfigured },
+      { developerMode, showDirectChatProviders, teamsConfigured, pgliteActive },
       extensionRoutes,
     )) {
       const entries = grouped.get(route.group) ?? [];
@@ -95,7 +97,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
       grouped.set('Agent Providers', entries);
     }
     return [...grouped.entries()];
-  }, [developerMode, extAgentProviders, extensionRoutes, scope, showDirectChatProviders, teamsConfigured]);
+  }, [developerMode, extAgentProviders, extensionRoutes, scope, showDirectChatProviders, teamsConfigured, pgliteActive]);
 
   return (
     <aside

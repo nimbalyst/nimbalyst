@@ -158,6 +158,46 @@ export function abortRequiresRelaunch(
   return journalPhase !== null && phaseAtLeast(journalPhase, 'source_quiesced');
 }
 
+/**
+ * Error codes a rename returns while another handle still holds the directory.
+ * Windows keeps directory handles open for a moment after the owning process
+ * closes them (antivirus and the indexer do the same), so these are transient
+ * more often than not.
+ */
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+
+/** Backoff between rename attempts: about 3.5 s in total before giving up. */
+export const RENAME_RETRY_DELAYS_MS: readonly number[] = [100, 250, 500, 1000, 1500];
+
+/**
+ * Rename, retrying a transient lock before reporting failure. A single refusal
+ * is not evidence that the cutover cannot finish (destructive-data-paths rule
+ * 1); without this, a lock that cleared a second later cost the user a failed
+ * migration and a relaunch (Windows install, 2026-11-16). A non-transient
+ * error, or the last refusal, is rethrown unchanged so the caller's abort
+ * handling is exactly what it was.
+ */
+async function renameWithRetry(
+  cutoverFs: CutoverFs,
+  from: string,
+  to: string,
+  log: NonNullable<CutoverRequest['log']>,
+): Promise<void> {
+  const delaysMs = cutoverFs.renameRetryDelaysMs ?? RENAME_RETRY_DELAYS_MS;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      cutoverFs.rename(from, to);
+      if (attempt > 0) log('info', `[cutover] rename succeeded after ${attempt} retries`, { from, to });
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (!code || !TRANSIENT_RENAME_CODES.has(code) || attempt >= delaysMs.length) throw err;
+      log('warn', `[cutover] rename refused (${code}); retrying`, { from, to, attempt: attempt + 1 });
+      await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt]));
+    }
+  }
+}
+
 export async function runCutover(req: CutoverRequest): Promise<CutoverResult> {
   const log = req.log ?? (() => {});
   const cutoverFs = req.cutoverFs ?? realCutoverFs;
@@ -257,10 +297,11 @@ export async function runCutover(req: CutoverRequest): Promise<CutoverResult> {
 
   // --- source_preserved -----------------------------------------------------
   try {
-    cutoverFs.rename(req.sourceLiveDir, req.sourcePreservedDir);
+    await renameWithRetry(cutoverFs, req.sourceLiveDir, req.sourcePreservedDir, log);
   } catch (err) {
     // Windows holds directory handles open longer than POSIX does, so this is
-    // an `EPERM`/`EBUSY` we expect to see in the field. The source is still
+    // an `EPERM`/`EBUSY` we expect to see in the field; `renameWithRetry` has
+    // already waited out a short-lived lock by the time we get here. The source is still
     // where it was and the flag still points at it; stopping here is correct
     // and is the whole difference from the behaviour this replaces.
     log('error', '[cutover] source preservation failed; backend flag NOT committed', {
@@ -279,7 +320,7 @@ export async function runCutover(req: CutoverRequest): Promise<CutoverResult> {
   // --- backend_committed ----------------------------------------------------
   try {
     if (req.targetStagingDir && !cutoverFs.exists(req.targetLiveDir)) {
-      cutoverFs.rename(req.targetStagingDir, req.targetLiveDir);
+      await renameWithRetry(cutoverFs, req.targetStagingDir, req.targetLiveDir, log);
     }
     if (journal.commitBackend === 'pglite') {
       // A rollback. `setBy: 'rollback'` is what stops a later launch offering

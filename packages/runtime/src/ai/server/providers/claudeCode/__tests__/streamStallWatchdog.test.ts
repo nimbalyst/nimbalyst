@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   raceNextChunkWithStallWatchdog,
   resolveStreamStallMs,
@@ -117,6 +117,71 @@ describe('raceNextChunkWithStallWatchdog', () => {
     });
     expect(outcome.kind).toBe('chunk-error');
     if (outcome.kind === 'chunk-error') expect(outcome.error).toBe(boom);
+  });
+});
+
+describe('raceNextChunkWithStallWatchdog across system sleep', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Models macOS sleep: nothing runs while asleep, then every overdue timer fires
+  // at once on wake, with the wall clock already at the wake time.
+  const sleep = async (ms: number): Promise<void> => {
+    const wake = Date.now() + ms;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(wake);
+    await vi.advanceTimersByTimeAsync(ms);
+    now.mockRestore();
+  };
+
+  it('does not reap a healthy turn when the machine wakes from a 15-min sleep', async () => {
+    let chunk!: (r: IteratorResult<string>) => void;
+    const race = raceNextChunkWithStallWatchdog<string>({
+      nextPromise: new Promise<IteratorResult<string>>(resolve => { chunk = resolve; }),
+      interruptPromise: forever<'interrupted'>(),
+      watchdogActive: true,
+      stallMs: DEFAULT_STREAM_STALL_MS,
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    await sleep(15 * 60_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    chunk({ value: 'after-wake', done: false });
+    const outcome = await race;
+    expect(outcome.kind).toBe('chunk');
+  });
+
+  it('still reports stalled after the window of real awake silence', async () => {
+    let settled = false;
+    const race = raceNextChunkWithStallWatchdog<string>({
+      nextPromise: forever<IteratorResult<string>>(),
+      interruptPromise: forever<'interrupted'>(),
+      watchdogActive: true,
+      stallMs: DEFAULT_STREAM_STALL_MS,
+    }).finally(() => { settled = true; });
+    await sleep(15 * 60_000);
+    await vi.advanceTimersByTimeAsync(DEFAULT_STREAM_STALL_MS - 15_000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect((await race).kind).toBe('stalled');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a backward wall-clock jump does not extend the stall window', async () => {
+    let settled = false;
+    const race = raceNextChunkWithStallWatchdog<string>({
+      nextPromise: forever<IteratorResult<string>>(),
+      interruptPromise: forever<'interrupted'>(),
+      watchdogActive: true,
+      stallMs: DEFAULT_STREAM_STALL_MS,
+    }).finally(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(DEFAULT_STREAM_STALL_MS / 2);
+    vi.setSystemTime(Date.now() - 60 * 60_000);
+    await vi.advanceTimersByTimeAsync(DEFAULT_STREAM_STALL_MS / 2 + 15_000);
+    expect(settled).toBe(true);
+    expect((await race).kind).toBe('stalled');
   });
 });
 

@@ -9,6 +9,20 @@ import { STATIC_SITE_DATA_DIR, type LocalPage, type LocalTrackerItem } from '@ni
 /** Top-level folders the site itself uses; a page that folds to one gets its id appended. */
 const RESERVED_TOP = new Set(['assets', 'extensions', 'html-embed', STATIC_SITE_DATA_DIR, 'search', 'types', 'items', '404.html', 'index.html']);
 
+/** A site mount path, with leading/trailing slashes and URL-encoded segments. */
+export function normalizeBasePath(base = '/'): string {
+  const invalid = () => new Error('--base must be an absolute URL path such as /docs/ (no URL, query, fragment, or dot segments)');
+  if (!base.startsWith('/') || base.startsWith('//') || /[?#\\\x00-\x1f\x7f]/.test(base)) throw invalid();
+  if (base === '/') return base;
+  const parts = base.replace(/\/$/, '').slice(1).split('/').map((part) => {
+    let decoded: string;
+    try { decoded = decodeURIComponent(part); } catch { throw invalid(); }
+    if (!decoded || decoded === '.' || decoded === '..' || /[/\\\x00-\x1f\x7f]/.test(decoded)) throw invalid();
+    return encodeURIComponent(decoded);
+  });
+  return `/${parts.join('/')}/`;
+}
+
 export function slugSegment(name: string): string {
   const slug = name
     .normalize('NFKD')

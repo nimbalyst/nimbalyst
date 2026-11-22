@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import { ExternalSessionService } from "../ExternalSessionService";
+import {
+  isDeletedExternalSession,
+  recordDeletedExternalSession,
+  setDeletedExternalSessionsStorageForTests,
+} from "../deletedExternalSessions";
 
 function harness(initial: unknown = false) {
   let value = initial;
@@ -122,6 +127,21 @@ describe("ExternalSessionService opt-in lifecycle", () => {
 });
 
 describe("manual selections", () => {
+  it("offers interrupted external imports for retry even when timestamps match", async () => {
+    const ref = { providerId: "claude-code", externalId: "external", workspacePath: "/workspace", filePath: "/log", updatedAt: 10 };
+    const local = { id: "local", updatedAt: 10, providerConfig: { imported: true }, metadata: { externalIngestionOwner: "external" } };
+    const emptyImportIds = vi.fn(async () => new Set(["local"]));
+    const service = new ExternalSessionService({
+      createSources: () => [{ discoverPage: async () => ({ sessions: [ref], hasMore: false }), dispose: vi.fn() }],
+      getRoutes: async () => [],
+      sessions: { get: async () => local },
+      persistence: { resolveSessionId: async () => local.id, emptyImportIds },
+    } as any);
+    expect((await service.scan())[0].syncStatus).toBe("needs-update");
+    local.metadata.externalIngestionOwner = "nimbalyst";
+    expect((await service.scan())[0].syncStatus).toBe("up-to-date");
+    expect(emptyImportIds).toHaveBeenCalledTimes(1);
+  });
   it("skips an ambiguously opened worktree while listing and syncing other sessions", async () => {
     const refs = ["/repoA/worktreeW", "/repoA"].map((workspacePath, index) => ({
       providerId: "claude-code",
@@ -226,5 +246,20 @@ describe("manual selections", () => {
     const summaries = await service.scan("/workspace");
     expect(summaries[0].messageCount).toBeNull();
     expect(summaries[0].tokenUsage).toBeNull();
+  });
+});
+
+describe("deleted external sessions (GitHub #1825)", () => {
+  it("persists deletions across reloads under the canonical provider", () => {
+    let saved: string[] = [];
+    const storage = { get: () => saved, set: (keys: string[]) => { saved = keys; } };
+    setDeletedExternalSessionsStorageForTests(storage);
+    recordDeletedExternalSession("openai-codex-acp", "thread-1");
+    // A fresh process reads only what was persisted.
+    setDeletedExternalSessionsStorageForTests(storage);
+    expect(isDeletedExternalSession("openai-codex", "thread-1")).toBe(true);
+    expect(isDeletedExternalSession("claude-code", "thread-1")).toBe(false);
+    expect(isDeletedExternalSession("openai-codex", "thread-2")).toBe(false);
+    setDeletedExternalSessionsStorageForTests(null);
   });
 });

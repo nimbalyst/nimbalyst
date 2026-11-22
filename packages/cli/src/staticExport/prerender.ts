@@ -3,13 +3,15 @@
  * HTML, so it reads without JavaScript and a crawler sees its text and links.
  * When the app boots it replaces all of it with the real read-only editor, so
  * this only has to be legible, not faithful: rich blocks (charts, diagrams,
- * decisions) show their source as code, and raw HTML in a body is left out.
+ * decisions) show their source as code, and raw HTML in a body is left out,
+ * except colored text, which keeps its colors.
  *
  * Links are relative to the page's folder, so this fallback works wherever
  * the site is hosted.
  */
 import { Marked, type Tokens } from 'marked';
-import { encodeLinkPath, type LocalPage } from '@nimbalyst/local-wiki';
+import { encodeLinkPath, type LocalPage, type StaticSiteConfig } from '@nimbalyst/local-wiki';
+import { formatTextColorStyle, parseTextColorOpenTag } from '@nimbalyst/runtime/core/textColorSyntax';
 import { linkBase, resolveRelative } from './bodyLinks.js';
 
 export function escapeHtml(text: string): string {
@@ -24,6 +26,7 @@ export interface PrerenderSite {
   included: ReadonlySet<string>;
   /** Id to site path, as in the manifest. */
   sitePaths: Readonly<Record<string, string>>;
+  basePath: string;
 }
 
 /** Site-relative URL of a page from a page at `fromSitePath`. */
@@ -42,9 +45,11 @@ function findTarget(site: PrerenderSite, target: string, folder: boolean): Local
 }
 
 /** Where a link or image in `page` points on the site; null when it should not be a link. */
-function siteUrl(site: PrerenderSite, page: LocalPage, prefix: string, href: string): string | null {
+function siteUrl(site: PrerenderSite, page: Pick<LocalPage, 'path' | 'dir'>, prefix: string, href: string): string | null {
   const raw = href.trim();
   if (raw.startsWith('#')) return raw;
+  // A site path the exporter wrote (`/items/<id>/`, a carried tracker item), made relative to this page.
+  if (raw.startsWith(site.basePath) && !raw.startsWith('//')) return `${prefix}${raw.slice(site.basePath.length)}`;
   if (SCHEME.test(raw)) return SAFE_SCHEME.test(raw) ? raw : null;
   const hash = raw.indexOf('#');
   const bare = hash >= 0 ? raw.slice(0, hash) : raw;
@@ -61,7 +66,12 @@ function siteUrl(site: PrerenderSite, page: LocalPage, prefix: string, href: str
   return `${prefix}_wiki/files/${encodeLinkPath(target)}`;
 }
 
-export function renderBodyHtml(markdown: string, page: LocalPage, site: PrerenderSite, prefix: string): string {
+const SPAN_OPEN = /^<span\b[^>]*>$/i;
+const SPAN_CLOSE = /^<\/span\s*>$/i;
+
+export function renderBodyHtml(markdown: string, page: Pick<LocalPage, 'path' | 'dir'>, site: PrerenderSite, prefix: string): string {
+  // Whether each open inline `<span>` was written, so its `</span>` is written or dropped with it.
+  const openSpans: boolean[] = [];
   const marked = new Marked({
     gfm: true,
     async: false,
@@ -76,7 +86,16 @@ export function renderBodyHtml(markdown: string, page: LocalPage, site: Prerende
         return url === null ? escapeHtml(token.text) : `<img src="${escapeHtml(url)}" alt="${escapeHtml(token.text)}" loading="lazy">`;
       },
       // Columns, tabs and other HTML-backed blocks: their markdown inside still renders, the tags do not.
-      html() {
+      // Colored text is drawn from its parsed colors only, never from the tag as written.
+      html(token: Tokens.HTML | Tokens.Tag) {
+        if (token.block) return '';
+        const tag = token.text.trim();
+        if (SPAN_OPEN.test(tag)) {
+          const style = parseTextColorOpenTag(tag);
+          openSpans.push(style !== null);
+          return style ? `<span style="${escapeHtml(formatTextColorStyle(style))}">` : '';
+        }
+        if (SPAN_CLOSE.test(tag)) return openSpans.pop() ? '</span>' : '';
         return '';
       },
     },
@@ -115,7 +134,7 @@ export interface ShellPage {
 }
 
 /** Turns the app's built `index.html` into one exported page. */
-export function renderShell(template: string, wikiTitle: string, page: ShellPage, config: object): string {
+export function renderShell(template: string, wikiTitle: string, page: ShellPage, config: StaticSiteConfig): string {
   const fullTitle = page.title && page.title !== wikiTitle ? `${page.title} · ${wikiTitle}` : wikiTitle;
   const head = [
     `<meta name="description" content="${escapeHtml(page.description)}" />`,
@@ -126,7 +145,10 @@ export function renderShell(template: string, wikiTitle: string, page: ShellPage
     // Read by the app before it loads any data; `<` is escaped so no value can close the tag.
     `<script>window.__NIMBALYST_WIKI_STATIC__=${JSON.stringify(config).replace(/</g, '\\u003c')}</script>`,
   ].join('\n    ');
-  let html = template.replace(/<title>[\s\S]*?<\/title>/, `<title>${escapeHtml(fullTitle)}</title>`);
+  // Rebase only the app template, before adding the page's relative links.
+  let html = template.replace(/\b(src|href)=(['"])\/(?!\/)([^'"]*)\2/g,
+    (_match, attr: string, quote: string, url: string) => `${attr}=${quote}${escapeHtml(config.basePath ?? '/')}${url}${quote}`);
+  html = html.replace(/<title>[\s\S]*?<\/title>/, `<title>${escapeHtml(fullTitle)}</title>`);
   html = html.replace('</head>', `    ${head}\n  </head>`);
   html = html.replace('<div id="root"></div>', `<div id="root">${page.content}</div>`);
   return html;

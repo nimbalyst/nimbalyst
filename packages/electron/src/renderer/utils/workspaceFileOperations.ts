@@ -15,19 +15,21 @@ interface FileSelectOptions {
   currentFilePath: string | null;
   tabs: any;
   isInitializedRef: React.MutableRefObject<boolean>;
+  isCurrent?: () => boolean;
 }
 
-export async function handleWorkspaceFileSelect(options: FileSelectOptions): Promise<void> {
+export async function handleWorkspaceFileSelect(options: FileSelectOptions): Promise<boolean> {
   const {
     filePath,
     currentFilePath,
     tabs,
     isInitializedRef,
+    isCurrent = () => true,
   } = options;
 
   // NOTE: autoSaveCancellationRef removed - EditorContainer handles all autosave now
 
-  if (!window.electronAPI) return;
+  if (!window.electronAPI || !isCurrent()) return false;
 
   if (LOG_CONFIG.WORKSPACE_FILE_SELECT) console.log('[WORKSPACE_FILE_SELECT] Selecting file:', filePath);
 
@@ -48,7 +50,7 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
       } else {
         if (LOG_CONFIG.WORKSPACE_FILE_SELECT) console.log('[WORKSPACE_FILE_SELECT] File already active, ensuring tab focus');
         tabs.switchTab(existingTab.id);
-        return;
+        return true;
       }
     }
     // activeFilePath matches but tab not visible - fall through to open normally
@@ -66,7 +68,7 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
     if (isInVisibleTabs2) {
       if (LOG_CONFIG.WORKSPACE_FILE_SELECT) console.log('[WORKSPACE_FILE_SELECT] File already open in tab, switching');
       tabs.switchTab(existingTab2.id);
-      return;
+      return true;
     }
     // Tab exists in Map but not in tabOrder - fall through to load fresh
     // addTab will repair the state by adding the tab to tabOrder
@@ -79,22 +81,25 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
     const tabId = tabs.addTab(filePath, '');
     if (!tabId) {
       console.error('[TABS] Failed to add virtual tab:', filePath);
+      errorNotificationService.showError('Cannot open file', filePath);
     }
-    return;
+    return Boolean(tabId);
   }
 
   try {
     const result = await window.electronAPI.switchWorkspaceFile(filePath);
+    if (!isCurrent()) return false;
     if (!result) {
       console.error('[WORKSPACE_FILE_SELECT] switchWorkspaceFile returned null for:', filePath);
       console.error('[WORKSPACE_FILE_SELECT] This could mean the file does not exist or failed to load');
-      return;
+      errorNotificationService.showError('Cannot open file', filePath);
+      return false;
     }
 
     // Handle error response from main process
     if ('error' in result) {
       errorNotificationService.showWarning('Cannot Open File', (result as { error: string }).error, { duration: 5000 });
-      return;
+      return false;
     }
 
     // Now result is the success type
@@ -107,7 +112,8 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
     if (!tabId) {
       console.error('[TABS] Failed to add tab for file:', fileResult.filePath);
       console.error('[TABS] This should not happen - tabs should be unlimited');
-      // Could show a dialog here
+      errorNotificationService.showError('Cannot open file', fileResult.filePath);
+      return false;
     } else {
       console.log('[TABS] Added tab with ID:', tabId);
       // State updates (contentRef, currentFilePath, etc.) will be handled by onTabChange callback
@@ -152,7 +158,10 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
         console.error('Failed to create automatic snapshot:', error);
       }
     }
+    return true;
   } catch (error) {
     console.error('Failed to switch workspace file:', error);
+    if (isCurrent()) errorNotificationService.showError('Cannot open file', error instanceof Error ? error.message : filePath);
+    return false;
   }
 }

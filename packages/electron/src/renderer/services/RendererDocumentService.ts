@@ -137,9 +137,16 @@ export class RendererDocumentService implements DocumentService {
   }
 
   // Tracker items API methods
-  async listTrackerItems(): Promise<TrackerItem[]> {
+  // This service is one shared object for the whole window, so it is not tied to
+  // one project. The caller must name the project: falling back to the rail's
+  // active project at call time reintroduces the #1822 race. The parameter stays
+  // optional only to match the DocumentService interface.
+  async listTrackerItems(workspacePath?: string): Promise<TrackerItem[]> {
     if (!window.electronAPI) return [];
-    return window.electronAPI.invoke('document-service:tracker-items-list');
+    if (!workspacePath) {
+      throw new Error('[RendererDocumentService] listTrackerItems requires a workspacePath');
+    }
+    return window.electronAPI.invoke('document-service:tracker-items-list', workspacePath);
   }
 
   async getTrackerItemsByType(type: TrackerItemType): Promise<TrackerItem[]> {

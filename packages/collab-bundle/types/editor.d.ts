@@ -81,6 +81,8 @@ export type CollabEditorServerAccess =
   | 'not-applicable'
   | 'unknown'
   | 'writable'
+  /** A commenter: comment threads are accepted, the body is read-only. */
+  | 'comment-only'
   | 'read-only'
   | 'revoked';
 
@@ -90,10 +92,23 @@ export interface CollabEditorWriteRejection {
   clientUpdateId?: string;
 }
 
+
 export interface CollabEditorTermination {
-  reason: 'removed-from-org' | 'document-access-revoked' | 'deleted-document';
-  closeCode: 4002 | 4003 | 4004;
+  /**
+   * `comment-update-refused` (close 4009): the room refused a commenter's
+   * update that changed more than the comment threads. Terminal for this
+   * mount's Y.Doc; the host remounts with a fresh provider and tells the user
+   * the last comment was not saved.
+   */
+  reason:
+    | 'removed-from-org'
+    | 'document-access-revoked'
+    | 'deleted-document'
+    | 'comment-update-refused';
+  closeCode: 4002 | 4003 | 4004 | 4009;
   message: string;
+  /** The refused docUpdate, for `comment-update-refused` when the server named it. */
+  clientUpdateId?: string;
 }
 
 export type CollabEditorFlushResult =
@@ -109,7 +124,8 @@ export type CollabEditorFlushResult =
         | 'server-read-only'
         | 'removed-from-org'
         | 'document-access-revoked'
-        | 'deleted-document';
+        | 'deleted-document'
+        | 'comment-update-refused';
     }
   | { status: 'timed-out'; timeoutMs: number }
   | { status: 'failed'; message: string };
@@ -191,6 +207,12 @@ export interface CollabEditorCommentsOptions {
    * bundle treats as permitted.
    */
   canComment?: () => boolean;
+  /**
+   * Whether this user's role permits changing the document body. `false` with
+   * `canComment` true is a commenter. Combined with the room's verdict; the
+   * more restrictive answer wins. Omitted means permitted.
+   */
+  canEditBody?: () => boolean;
   onMention?: (recipientUserIds: string[], payload: CommentMentionPayload) => void;
   onReply?: (recipientUserIds: string[], payload: CommentReplyPayload) => void;
 }

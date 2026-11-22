@@ -1,11 +1,11 @@
 import type { ShellCoverageReason } from '@nimbalyst/runtime/ai/shellTrackingCoverage';
 import type { CodexShellToolKind } from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/shellTracking';
+import type { OtherWriterEvidence } from '@nimbalyst/runtime/ai/server/agentToolActivity';
 import type { ShellCheckoutBaseline } from './ShellCheckoutBaseline';
 import { SHELL_BASELINE_CAPTURE_MS } from './ShellContentBaseline';
 import { boundedDrain, type ShellHookDiagnostics } from './ShellTrackingCoverage';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { extractFilePathsFromCommand } from './extractFilePathsFromCommand';
 export interface ShellFileState {
   fingerprint: string;
   modifiedAt: number;
@@ -19,6 +19,8 @@ export interface ShellFileEvidence {
   source: 'shell-hook-inferred';
 }
 export type ShellPersistenceOutcome = 'persisted' | 'excluded' | 'throttled' | 'quota' | 'failed';
+/** The window a link came from, so persistence can recover the file's pre-command content. */
+export interface ShellPersistContext { windowStart: number; checkout?: ShellCheckoutBaseline }
 export class ExcludedShellCandidate extends Error {}
 export interface ShellHookIdentity { sessionId?: string; turnId?: string; agentType?: string }
 export interface ShellAttributionDependencies {
@@ -29,8 +31,11 @@ export interface ShellAttributionDependencies {
   observation?(generation: string, healthy: boolean): void;
   read(file: string): Promise<ShellFileState | null>;
   knownWrite(file: string, state: ShellFileState | null): boolean;
-  otherSessions(workspace: string, filePath: string): string[];
-  persist(evidence: ShellFileEvidence): Promise<ShellPersistenceOutcome>;
+  /** Sessions outside this service that may change `filePath`, frozen when its event arrives. */
+  otherSessions(workspace: string, filePath: string, observedAt: number): string[];
+  /** What another session's pre-execution tool reports say about this change. Absent means uninstrumented. */
+  otherWriter?(sessionId: string, filePath: string, observedAt: number): OtherWriterEvidence;
+  persist(evidence: ShellFileEvidence, context?: ShellPersistContext): Promise<ShellPersistenceOutcome>;
   report?(generation: string, reason: ShellCoverageReason, turnId?: string, toolUseId?: string, hook?: ShellHookDiagnostics): void;
   currentTurn?(generation: string): string | undefined;
   retryDelayMs?: number;
@@ -51,7 +56,6 @@ export class ShellFileAttribution {
       generation: string;
       id: string;
       tool: string;
-      command?: string;
       start: number;
       files: Set<string>;
       observation: { lost: boolean; events?: boolean };
@@ -96,7 +100,7 @@ export class ShellFileAttribution {
     }
     return generation;
   }
-  async pre(generation: string, id: string, tool: string, identity: ShellHookIdentity = {}, command?: string): Promise<void> {
+  async pre(generation: string, id: string, tool: string, identity: ShellHookIdentity = {}): Promise<void> {
     if (!this.sessions.has(generation) || !id || id.length > 256) return;
     const hook = this.hookDiagnostics(generation, tool, identity);
     if (this.foreignHook(generation, id, hook)) return;
@@ -142,7 +146,6 @@ export class ShellFileAttribution {
         generation,
         id,
         tool,
-        command,
         hook,
         start: this.now(),
         files: new Set(),
@@ -286,7 +289,7 @@ export class ShellFileAttribution {
                 this.report(generation, 'overflow', candidate.turnId, id);
                 break;
               }
-              await this.save(candidate.evidence, generation, candidate.turnId, window.files);
+              await this.save(candidate.evidence, generation, candidate.turnId, window.files, { windowStart: window.start, checkout: window.checkout });
             }
             else this.report(generation, result === 'initialization' ? 'initialization' : 'checkoutBaseline', candidate.turnId, id,
               result === 'initialization' ? window.hook : baselineFailure(window.hook, 'finish', 'candidate baseline unavailable or unstable'));
@@ -386,7 +389,6 @@ export class ShellFileAttribution {
       .map((w) => ({
         ...w,
         sessionId: this.sessions.get(w.generation)!.sessionId,
-        workspacePath: this.sessions.get(w.generation)!.workspace,
         turnId: this.deps.currentTurn?.(w.generation),
       }));
     // Idle cached providers must not hash every workspace event. Invalidate a
@@ -404,9 +406,16 @@ export class ShellFileAttribution {
     const registered = new Set(
       [...this.sessions.values()].filter((s) => this.contains(s.workspace, filePath)).map((s) => s.sessionId)
     );
-    const hasUninstrumentedSession = this.deps
-      .otherSessions(workspace, filePath)
-      .some((id) => !registered.has(id));
+    // Frozen now so a session whose turn ends before the read still counts;
+    // its reported tool windows are judged after the read, when late-arriving
+    // pre-execution reports for the same instant have landed.
+    const others = [...new Set(this.deps.otherSessions(workspace, filePath, timestamp))].filter((id) => !registered.has(id));
+    // A registered session with no open window here may still be writing
+    // through a path tool. Claude registers the whole session but opens tracker
+    // windows only for Bash, so its Edit/Write evidence must still count.
+    // Sessions that report no tool activity (Codex app-server) answer
+    // 'unknown' and are judged by their tracker windows alone, as before.
+    const registeredIdle = [...registered].filter((id) => !candidates.some((w) => w.sessionId === id));
     this.pending++;
     this.queue = this.queue
       .then(async () => {
@@ -429,29 +438,33 @@ export class ShellFileAttribution {
           return;
         }
         if (candidates.length === 0) return;
-        let eligible = candidates;
-        let owners = new Set(eligible.map((w) => w.sessionId));
-        if (owners.size !== 1 && candidates.every(w => w.tool === 'Bash')) {
-          const named = candidates.filter(w => w.command !== undefined &&
-            extractFilePathsFromCommand(w.command, w.workspacePath)
-              .some(candidate => path.resolve(candidate) === filePath));
-          // Select a window, not merely a session. Observation loss anywhere in
-          // the frozen overlap still abstains, and checkout reconciliation below
-          // remains authoritative for whether the changed bytes are an edit.
-          if (named.length === 1) {
-            eligible = named;
-            owners = new Set(named.map(w => w.sessionId));
-          }
+        // Another session's Edit or Write named this file while it changed.
+        // That session already holds an exact link; a shell window has none.
+        const reported = others.map((id) => this.deps.otherWriter?.(id, filePath, timestamp) ?? 'unknown');
+        const registeredEvidence = registeredIdle
+          .map((id) => this.deps.otherWriter?.(id, filePath, timestamp) ?? 'unknown')
+          .filter((evidence) => evidence !== 'unknown');
+        const foreign = [...reported, ...registeredEvidence];
+        if (foreign.includes('edited')) {
+          this.stats.suppressed++;
+          return;
         }
+        // An idle or reading session is not a competitor. Only an overlapping
+        // write-capable tool, or a session that reports no tools, is. Command
+        // text is not write evidence: `cat ./x.ts` names x.ts without writing it.
+        const uninstrumented = reported.includes('unknown');
+        const owners = new Set(candidates.map((w) => w.sessionId));
         if (
           disabledAtArrival ||
+          uninstrumented ||
+          foreign.includes('possible') ||
           owners.size !== 1 ||
           candidates.some((w) => w.tool !== 'Bash' || w.observation.lost || this.disabled.has(w.generation))
         ) {
           this.stats.ambiguous++;
           const reason =
             disabledAtArrival || candidates.some(w => w.observation.lost || this.disabled.has(w.generation)) ? 'observationGap' :
-            owners.size !== 1 ? 'competingOwners' : 'toolOverlap';
+            uninstrumented ? 'unreportedSession' : owners.size !== 1 || foreign.includes('possible') ? 'competingOwners' : 'toolOverlap';
           if (candidates.some((w) => w.tool === 'Bash' || w.tool === 'Uninstrumented'))
             for (const generation of new Set(candidates.map((w) => w.generation))) {
               const candidate = candidates.find(w => w.generation === generation && w.checkout) ?? candidates.find(w => w.generation === generation)!;
@@ -475,7 +488,7 @@ export class ShellFileAttribution {
             }
           return;
         }
-        const winner = eligible.find((w) => this.sessions.has(w.generation));
+        const winner = candidates.find((w) => this.sessions.has(w.generation));
         if (!winner) return;
         // A metadata-only notification for an old file is not a new edit. An
         // uncached disappearance might be a directory; only known files qualify.
@@ -497,11 +510,6 @@ export class ShellFileAttribution {
           timestamp,
           source: 'shell-hook-inferred',
         };
-        // Another agent's turn in this workspace is weaker evidence than a
-        // hook-bounded shell window. Links are inferred and non-exclusive, so
-        // note the overlap for diagnostics without withholding the link;
-        // suppressing it made every parallel session a permanent warning.
-        if (hasUninstrumentedSession) this.report(winner.generation, 'uninstrumented', winner.turnId, winner.id);
         if (winner.checkout) {
           let defer: boolean;
           try { defer = await winner.checkout.defer(filePath); }
@@ -521,7 +529,7 @@ export class ShellFileAttribution {
         }
         if (!state && (cached === undefined || cached === null)) return;
         if (winner.observation.lost || this.disabled.has(winner.generation) || !this.sessions.has(winner.generation)) return;
-        await this.save(evidence, winner.generation, winner.turnId, winner.files);
+        await this.save(evidence, winner.generation, winner.turnId, winner.files, { windowStart: winner.start, checkout: winner.checkout });
       })
       .catch((error) => {
         for (const generation of new Set(candidates.map((w) => w.generation)))
@@ -537,11 +545,11 @@ export class ShellFileAttribution {
         this.pending--;
       });
   }
-  private async save(evidence: ShellFileEvidence, generation: string, turnId: string | undefined, files: Set<string>): Promise<void> {
+  private async save(evidence: ShellFileEvidence, generation: string, turnId: string | undefined, files: Set<string>, context: ShellPersistContext): Promise<void> {
     let outcome: ShellPersistenceOutcome = 'failed';
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        outcome = await this.deps.persist(evidence);
+        outcome = await this.deps.persist(evidence, context);
       } catch {
         outcome = 'failed';
       }

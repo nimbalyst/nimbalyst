@@ -51,6 +51,8 @@ export interface StaticSiteLink {
 /** Set on `window.__NIMBALYST_WIKI_STATIC__` by every exported page before the app loads. */
 export interface StaticSiteConfig {
   format: number;
+  /** URL mount path with leading/trailing slashes; absent in older root exports. */
+  basePath?: string;
   /** Site path of the data folder, with slashes (`/_wiki/`). */
   dataPath: string;
 }

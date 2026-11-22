@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   activeWorkspacePathAtom,
+  multiProjectModeAtom,
   openProjectsAtom,
 } from '../../atoms/openProjects';
 import { initWorkspaceActivationListeners } from '../workspaceActivationListeners';
@@ -61,6 +62,7 @@ describe('initWorkspaceActivationListeners', () => {
     // switched it to Project-B, and main has now routed an open-Project-A
     // request back to this window.
     const store = createStore();
+    store.set(multiProjectModeAtom, true);
     store.set(openProjectsAtom, [openProject(PROJECT_A), openProject(PROJECT_B)]);
     store.set(activeWorkspacePathAtom, PROJECT_B);
 
@@ -76,6 +78,7 @@ describe('initWorkspaceActivationListeners', () => {
 
   it('registers with main before activating a project the rail has dropped', async () => {
     const store = createStore();
+    store.set(multiProjectModeAtom, true);
     store.set(openProjectsAtom, [openProject(PROJECT_B)]);
     store.set(activeWorkspacePathAtom, PROJECT_B);
 
@@ -101,6 +104,7 @@ describe('initWorkspaceActivationListeners', () => {
 
   it('leaves the rail alone when main refuses the registration', async () => {
     const store = createStore();
+    store.set(multiProjectModeAtom, true);
     store.set(openProjectsAtom, [openProject(PROJECT_B)]);
     store.set(activeWorkspacePathAtom, PROJECT_B);
 
@@ -117,6 +121,7 @@ describe('initWorkspaceActivationListeners', () => {
 
   it('ignores an empty payload and a project that is already visible', async () => {
     const store = createStore();
+    store.set(multiProjectModeAtom, true);
     store.set(openProjectsAtom, [openProject(PROJECT_A)]);
     store.set(activeWorkspacePathAtom, PROJECT_A);
 
@@ -129,6 +134,23 @@ describe('initWorkspaceActivationListeners', () => {
 
     expect(invoke).not.toHaveBeenCalled();
     expect(store.get(activeWorkspacePathAtom)).toBe(PROJECT_A);
+  });
+
+  // With the rail off the window renders only the project it opened with.
+  // Flipping the active path would move main and every workspace-scoped
+  // operation to a project the screen does not show.
+  it('never activates another project while the project rail is off', async () => {
+    const store = createStore();
+    store.set(multiProjectModeAtom, false);
+    store.set(openProjectsAtom, [openProject(PROJECT_A), openProject(PROJECT_B)]);
+    store.set(activeWorkspacePathAtom, PROJECT_B);
+
+    const { invoke, activate } = installWindow();
+    initWorkspaceActivationListeners(store);
+    await activate({ workspacePath: PROJECT_A });
+
+    expect(store.get(activeWorkspacePathAtom)).toBe(PROJECT_B);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('unsubscribes through the closure electronAPI.on returned', () => {

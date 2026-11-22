@@ -487,6 +487,49 @@ describe('ExcalidrawBinding initial render', () => {
     docB.destroy();
   });
 
+  it('writes nothing to the shared doc while the host is read-only (commenter)', () => {
+    const docA = new Y.Doc();
+    const docB = new Y.Doc();
+    docA.clientID = 1;
+    docB.clientID = 2;
+    seedExcalidrawYDoc(docA, SAMPLE_FILE);
+    seedExcalidrawYDoc(docB, SAMPLE_FILE);
+    const aliceEntry = docA.getArray<Y.Map<unknown>>('elements').get(0);
+    aliceEntry.set('el', { ...(aliceEntry.get('el') as Record<string, unknown>), version: 2, x: 200 });
+
+    const api = createMockApi();
+    const binding = new ExcalidrawBinding(
+      docB.getArray('elements'),
+      docB.getMap('assets'),
+      api,
+      undefined,
+      undefined,
+      { isReadOnly: () => true },
+    );
+    const localWrites = vi.fn();
+    docB.on('update', (_update: Uint8Array, origin: unknown) => {
+      if (origin !== 'network') localWrites(origin);
+    });
+
+    // A merge that lands duplicate ids: a writer would repair the array; a
+    // read-only client only shows the newest revision.
+    Y.applyUpdate(docB, Y.encodeStateAsUpdate(docA), 'network');
+    expect(docB.getArray('elements').length).toBe(2);
+    const shown = api.__updateSceneCalls.at(-1)?.elements ?? [];
+    expect(shown.map((el: { id: string; x: number }) => [el.id, el.x])).toEqual([['rect-1', 200]]);
+
+    // A local change event (Excalidraw normalising the scene) is not pushed.
+    const element = { id: 'stray', type: 'text', version: 1, isDeleted: false };
+    api.__setSceneElements([element]);
+    api.__emitChangeSnapshot([element]);
+    binding.syncNow();
+
+    expect(localWrites).not.toHaveBeenCalled();
+    binding.destroy();
+    docA.destroy();
+    docB.destroy();
+  });
+
   it('uses Excalidraw versionNonce ordering to break duplicate revision ties', () => {
     const docA = new Y.Doc();
     const docB = new Y.Doc();

@@ -50,6 +50,12 @@ export interface GutterItemMeta {
  */
 export interface GutterItem extends GutterItemMeta {
   render: () => ReactNode;
+  /**
+   * `'app'` marks items that show the same thing no matter which project is
+   * selected (usage, theme, feedback). They render in the multi-project rail
+   * while it is visible and fall back to the gutter when it is not.
+   */
+  scope?: 'app';
 }
 
 /**

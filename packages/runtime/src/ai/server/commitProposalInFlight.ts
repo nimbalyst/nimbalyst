@@ -6,6 +6,10 @@
  * still land. Send-now, meta-agent interrupts and teammate messages wait here
  * until the call settles instead. A real Stop (cancel/abort) does not consult
  * this and is always honored.
+ *
+ * The user's own send-now is the exception (NIM-7642): it first closes a
+ * proposal still waiting on them (`closeWaitingCommitProposals`), so it waits
+ * only for a commit the user already confirmed, not for the user.
  */
 const inFlight = new Map<string, number>();
 const waiters = new Map<string, Array<() => void>>();
@@ -46,4 +50,34 @@ export async function afterCommitProposalSettles<T>(
     });
   }
   return action();
+}
+
+/**
+ * Closes a proposal waiting for the user. Resolves false when it cannot be
+ * closed because a commit the user confirmed already owns it.
+ */
+type CloseWaitingProposal = () => Promise<boolean>;
+
+const waitingProposals = new Map<string, Set<CloseWaitingProposal>>();
+
+/** A proposal is waiting for the user; the returned function withdraws it (idempotent). */
+export function registerWaitingCommitProposal(sessionId: string, close: CloseWaitingProposal): () => void {
+  const set = waitingProposals.get(sessionId) ?? new Set<CloseWaitingProposal>();
+  set.add(close);
+  waitingProposals.set(sessionId, set);
+  return () => {
+    set.delete(close);
+    if (set.size === 0 && waitingProposals.get(sessionId) === set) waitingProposals.delete(sessionId);
+  };
+}
+
+/**
+ * NIM-7642: the user sent a new message instead of answering. Closes every
+ * proposal of the session still waiting on them and resolves how many closed.
+ * Their calls then return, ending the in-flight mark a deferred send-now waits on.
+ */
+export async function closeWaitingCommitProposals(sessionId: string): Promise<number> {
+  const closes = [...(waitingProposals.get(sessionId) ?? [])];
+  const closed = await Promise.all(closes.map(close => close().catch(() => false)));
+  return closed.filter(Boolean).length;
 }

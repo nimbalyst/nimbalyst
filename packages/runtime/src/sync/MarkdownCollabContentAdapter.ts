@@ -17,6 +17,7 @@
  */
 import { $getRoot } from 'lexical';
 import type { Doc } from 'yjs';
+import { readWithoutCommentMarks } from './commentMarkExport';
 import type { Transformer } from '@lexical/markdown';
 import type { CollabContentAdapter } from '@nimbalyst/collab-adapters';
 import {
@@ -63,6 +64,17 @@ function getHeadlessEditorTransformers() {
  */
 function withHeadless<T>(yDoc: Doc, fn: (headless: HeadlessLexicalYDoc) => T): T {
   return withHeadlessLexicalBridge(yDoc, { nodes: HeadlessBodyNodes }, fn);
+}
+
+/**
+ * The live document's markdown with comment marks treated as transparent, read
+ * from a private copy when it has any so the live Y.Doc is never written. Uses
+ * this adapter's own transformer set. See commentMarkExport.ts.
+ */
+function exportMarkdown(yDoc: Doc): string {
+  return readWithoutCommentMarks(yDoc, withHeadless, () =>
+    $convertToEnhancedMarkdownString(getHeadlessEditorTransformers()),
+  );
 }
 
 function toMarkdownString(source: string | Uint8Array): string {
@@ -113,22 +125,10 @@ export const MarkdownCollabContentAdapter: CollabContentAdapter = {
   },
 
   exportToFile(yDoc) {
-    return withHeadless(yDoc, (headless) => {
-      return headless.editor.getEditorState().read(() => {
-        return $convertToEnhancedMarkdownString(
-          getHeadlessEditorTransformers(),
-        );
-      });
-    });
+    return exportMarkdown(yDoc);
   },
 
   toPlainText(yDoc) {
-    return withHeadless(yDoc, (headless) => {
-      return headless.editor.getEditorState().read(() => {
-        return $convertToEnhancedMarkdownString(
-          getHeadlessEditorTransformers(),
-        );
-      });
-    });
+    return exportMarkdown(yDoc);
   },
 };

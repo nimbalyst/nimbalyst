@@ -33,6 +33,7 @@ vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({ MaterialSymbol: (
 vi.mock('@nimbalyst/runtime/ui/icons/ProviderIcons', () => ({ ProviderIcon: () => null }));
 
 import { MenuBarIslandApp } from '../MenuBarIslandApp';
+import { resizeIslandPanel } from '../IslandResizeHandles';
 
 const send = vi.fn();
 
@@ -50,6 +51,7 @@ function namedFrame(): MenuBarIslandState {
     snippets: {},
     expanded: true,
     anchor: 'center',
+    panelSize: { width: 420, listHeight: 340 },
     settings: { style: 'island', showFleetStatus: true, osNotifications: true, preventSleep: null },
   };
 }
@@ -102,5 +104,42 @@ describe('MenuBarIslandApp', () => {
     expect(channels).toContain(MENU_BAR_ISLAND_CHANNELS.dragStart);
     expect(channels).toContain(MENU_BAR_ISLAND_CHANNELS.dragEnd);
     expect(channels).not.toContain(MENU_BAR_ISLAND_CHANNELS.selectSession);
+  });
+});
+
+describe('island panel resize', () => {
+  const canvas = { width: 1200, height: 1100 };
+  const start = { screenX: 500, screenY: 300, size: { width: 420, listHeight: 340 } };
+
+  it('counts a side drag twice for a centred panel, which grows from both sides', () => {
+    const next = resizeIslandPanel({ ...start, edge: 'right' }, { screenX: 550, screenY: 300 }, 'center', canvas);
+    expect(next.width).toBe(520);
+  });
+
+  it('grows a notch-anchored panel leftward one-for-one from its left edge', () => {
+    const next = resizeIslandPanel({ ...start, edge: 'left' }, { screenX: 450, screenY: 300 }, 'notch-left', canvas);
+    expect(next.width).toBe(470);
+  });
+
+  it('clamps to the canvas and to the minimum size', () => {
+    const big = resizeIslandPanel({ ...start, edge: 'bottom-right' }, { screenX: 2000, screenY: 3000 }, 'center', { width: 700, height: 600 });
+    expect(big.width).toBe(700 - 80);
+    expect(big.listHeight).toBe(600 - 30 - 40 - 40);
+
+    const small = resizeIslandPanel({ ...start, edge: 'bottom-left' }, { screenX: 900, screenY: 0 }, 'center', canvas);
+    expect(small.width).toBe(320);
+    expect(small.listHeight).toBe(160);
+  });
+
+  it('a grip press resizes and never reaches the pill as a move or pin toggle', () => {
+    render(<MenuBarIslandApp />);
+    const grip = screen.getByTestId('menu-bar-island-resize-bottom-right');
+    fireEvent.pointerDown(grip, { button: 0, pointerId: 1, screenX: 500, screenY: 300 });
+    fireEvent.pointerUp(grip, { button: 0, pointerId: 1, screenX: 560, screenY: 340 });
+
+    const channels = send.mock.calls.map(([channel]) => channel);
+    expect(channels).toContain(MENU_BAR_ISLAND_CHANNELS.resizeStart);
+    expect(channels).toContain(MENU_BAR_ISLAND_CHANNELS.resizeEnd);
+    expect(channels).not.toContain(MENU_BAR_ISLAND_CHANNELS.dragStart);
   });
 });

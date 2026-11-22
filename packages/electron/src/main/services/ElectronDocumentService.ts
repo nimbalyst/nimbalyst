@@ -1834,7 +1834,7 @@ export class ElectronDocumentService implements DocumentService {
    * one of them drifts. Rows already numbered cost nothing: in the steady
    * state `unnumbered` is empty and this returns without a query. New items
    * and the one-time backfill of items that predate local numbering are the
-   * same path. Only types that opt in (`localNumbers: true`) are numbered.
+   * same path. Types that opt out (`localNumbers: false`) are not numbered.
    *
    * Failure is not fatal -- an item with no number still works everywhere,
    * so a broken sweep must not take the tracker list down with it.
@@ -3544,18 +3544,28 @@ export class ElectronDocumentService implements DocumentService {
   }
 }
 
-type DocumentServiceResolver = (event: IpcMainEvent | IpcMainInvokeEvent) => ElectronDocumentService | null;
+// `workspacePath` is optional: most channels still answer for the window's active
+// project. A channel that names its project passes it so the answer does not
+// depend on which project the rail has marked active at that instant (#1822).
+type DocumentServiceResolver = (
+  event: IpcMainEvent | IpcMainInvokeEvent,
+  workspacePath?: string,
+) => ElectronDocumentService | null;
 
 let handlersRegistered = false;
 let resolveDocumentService: DocumentServiceResolver | null = null;
 
-function requireDocumentService(event: IpcMainEvent | IpcMainInvokeEvent): ElectronDocumentService {
+function requireDocumentService(event: IpcMainEvent | IpcMainInvokeEvent, workspacePath?: string): ElectronDocumentService {
   if (!resolveDocumentService) {
     throw new Error('[DocumentService] Resolver not registered');
   }
-  const service = resolveDocumentService(event);
+  const service = resolveDocumentService(event, workspacePath);
   if (!service) {
-    throw new Error('[DocumentService] No document service available for sender');
+    throw new Error(
+      workspacePath
+        ? `[DocumentService] No document service for ${workspacePath}: this window does not have it open`
+        : '[DocumentService] No document service available for sender',
+    );
   }
   return service;
 }
@@ -3746,9 +3756,18 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
   });
 
   // Tracker items handlers
-  safeHandle('document-service:tracker-items-list', async (event) => {
+  // The request names its project (#1822). Without it, a request that arrived
+  // just after a rail switch was answered from the previous project. A missing
+  // path, or a path this window does not have open, throws so the caller sees the
+  // failure instead of getting another project's items. A database failure is
+  // different: listTrackerItems() logs it and returns [], so the board shows empty.
+  safeHandle('document-service:tracker-items-list', async (event, workspacePath: string) => {
+    if (typeof workspacePath !== 'string' || workspacePath.length === 0) {
+      throw new Error('[DocumentService] tracker-items-list requires a workspacePath');
+    }
+    const service = requireDocumentService(event, workspacePath);
     try {
-      return await requireDocumentService(event).listTrackerItems();
+      return await service.listTrackerItems();
     } catch (error) {
       console.error('[DocumentService] tracker-items-list failed:', error);
       return [];

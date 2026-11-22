@@ -24,6 +24,10 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # onnxruntime-node downloads its CUDA build from a GitHub release on Linux x64
+  # during postinstall; that asset 404s for 1.21.0 (2026-11-18) and nothing
+  # uses the CUDA provider, so skip it.
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
   # Retry transient registry socket drops (ECONNRESET) instead of aborting the
   # whole install. pnpm reads the pnpm_config_* names; the npm_config_* names
   # cover the npm installs in the tarball smoke tests.

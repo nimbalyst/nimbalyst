@@ -35,6 +35,42 @@ export function bindMockupPinStore(store: MockupPinStore): MockupPinStore {
 }
 
 /**
+ * A store whose writes are skipped while `canWrite()` is false.
+ *
+ * Pins live in `mockupPins`, outside the `comments` array. A user who may not
+ * write the body (a commenter) has every write there refused, and for a
+ * commenter the refusal ends the session. Some writes happen with no action
+ * from that user -- collecting a pin when another user deletes its thread,
+ * healing a selector on render -- so the gate sits on the store itself rather
+ * than on the overlay's buttons. Reads are untouched.
+ */
+export function guardMockupPinWrites(
+  store: MockupPinStore,
+  canWrite: () => boolean
+): MockupPinStore {
+  return {
+    create: (pin) => {
+      if (canWrite()) store.create(pin);
+    },
+    updateSelector: (pinId, selector) => (canWrite() ? store.updateSelector(pinId, selector) : false),
+    delete: (pinId) => (canWrite() ? store.delete(pinId) : false),
+    snapshot: () => store.snapshot(),
+    subscribe: (listener) => store.subscribe(listener),
+  };
+}
+
+/**
+ * Whether a comments service lets this user write the document outside the
+ * `comments` array. `editBody` absent means yes; no service (outside a room)
+ * means the private store, which is always writable.
+ */
+export function canWriteMockupPins(
+  service: { getCapabilities(): { editBody?: boolean } } | null | undefined
+): boolean {
+  return service?.getCapabilities().editBody !== false;
+}
+
+/**
  * A pin store over a private, unshared Y.Doc.
  *
  * This is the production repository, not a second implementation of it: an

@@ -15,6 +15,7 @@ declare global {
 }
 
 export const staticConfig: StaticSiteConfig | null = typeof window === 'undefined' ? null : window.__NIMBALYST_WIKI_STATIC__ ?? null;
+export const staticBasePath = staticConfig?.basePath ?? '/';
 
 export function isStaticSite(): boolean {
   return staticConfig !== null;
@@ -104,26 +105,26 @@ export type StaticRoute =
   | { kind: 'search'; query: string }
   | { kind: 'types' };
 
-const folder = (sitePath: string) => (sitePath ? `/${sitePath.split('/').map(encodeURIComponent).join('/')}/` : '/');
+const folder = (sitePath: string) => (sitePath ? `${staticBasePath}${sitePath.split('/').map(encodeURIComponent).join('/')}/` : staticBasePath);
 
 export function staticRoutePath(route: StaticRoute): string {
   const site = loaded();
   switch (route.kind) {
     case 'home':
-      return '/';
+      return staticBasePath;
     case 'page':
     case 'item': {
       const sitePath = site.manifest.pages[route.id];
-      return sitePath === undefined ? '/' : folder(sitePath);
+      return sitePath === undefined ? staticBasePath : folder(sitePath);
     }
     case 'type': {
       const sitePath = site.manifest.types[route.typeId];
-      return sitePath === undefined ? '/types/' : folder(sitePath);
+      return sitePath === undefined ? folder('types') : folder(sitePath);
     }
     case 'search':
-      return route.query ? `/search/?q=${encodeURIComponent(route.query)}` : '/search/';
+      return route.query ? `${folder('search')}?q=${encodeURIComponent(route.query)}` : folder('search');
     case 'types':
-      return '/types/';
+      return folder('types');
   }
 }
 
@@ -132,7 +133,9 @@ export const MISSING_PAGE_ID = '__not-in-export__';
 
 export function parseStaticLocation(pathname: string, search: string): StaticRoute {
   const site = loaded();
-  let sitePath = pathname.replace(/^\/+|\/+$/g, '').replace(/\/index\.html$/i, '');
+  if (pathname === staticBasePath.slice(0, -1)) return { kind: 'home' };
+  if (!pathname.startsWith(staticBasePath)) return { kind: 'page', id: MISSING_PAGE_ID };
+  let sitePath = pathname.slice(staticBasePath.length).replace(/^\/+|\/+$/g, '').replace(/\/index\.html$/i, '');
   try {
     sitePath = decodeURIComponent(sitePath);
   } catch {

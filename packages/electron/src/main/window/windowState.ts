@@ -1,4 +1,5 @@
 import type { BrowserWindow } from 'electron';
+import { isAbsolute, relative, resolve as resolvePath, sep } from 'path';
 import type { WindowState } from '../types';
 import { getAttachedFolders } from '../utils/store';
 
@@ -14,6 +15,25 @@ export function getWindowProjectPaths(state: WindowState): string[] {
         .filter((path): path is string => typeof path === 'string' && path.length > 0));
     return [...new Set([...(state.projectRailOrder ?? []), ...registered])]
         .filter(path => registered.has(path));
+}
+
+/**
+ * The rail a renderer boots with. A window restored from the session state
+ * knows only its primary project until the renderer re-registers the others,
+ * so until then the rail saved at last close is served instead.
+ */
+export function getInitialRailState(state: WindowState, primaryPath: string): {
+    openProjectPaths: string[];
+    activeWorkspacePath: string;
+} {
+    const liveProjectPaths = getWindowProjectPaths(state);
+    const restoredRail = liveProjectPaths.length <= 1 ? state.restoredRail : undefined;
+    const openProjectPaths = restoredRail?.projectPaths ?? liveProjectPaths;
+    const candidate = restoredRail ? restoredRail.activeWorkspacePath : state.activeWorkspacePath;
+    return {
+        openProjectPaths,
+        activeWorkspacePath: candidate && openProjectPaths.includes(candidate) ? candidate : primaryPath,
+    };
 }
 
 /** Workspace/document windows registered by WindowManager, including hidden ones. */
@@ -73,11 +93,78 @@ export function resolveActiveWorkspacePathForWindowId(windowId: number | null | 
  * both the WindowManager and MultiProjectRailHandlers resolvers so they
  * can't diverge again (issue #591: WindowManager's resolver read the raw
  * `workspacePath`, leaking another project's tracker items in the rail).
+ *
+ * When the request names its own project (`requestedPath`), answer for that
+ * project, not the active one (#1822). The rail tells main about a project
+ * switch without waiting, so a request for project A can arrive while main
+ * already marks B active. A named project is accepted only if this window has
+ * it open (its primary project or a rail project). Otherwise the result is
+ * null, so main never answers with some other project's data.
  */
-export function resolveDocumentServicePath(state: WindowState | undefined): string | null {
+export function resolveDocumentServicePath(
+    state: WindowState | undefined,
+    requestedPath?: string | null,
+): string | null {
     if (!state) return null;
     if (state.mode !== 'workspace' && state.mode !== 'agentic-coding') return null;
+    if (requestedPath) {
+        return getWindowProjectPaths(state).includes(requestedPath) ? requestedPath : null;
+    }
     return resolveActiveWorkspacePath(state);
+}
+
+/**
+ * The project a window-scoped request acts on, for any window mode. A request
+ * that names its project gets that project when this window has it in its
+ * rail, and null otherwise. A request that names nothing gets the active
+ * project. Reading the raw `workspacePath` instead routes the request to the
+ * window's first rail project while the user is looking at another one.
+ */
+export function resolveRequestWorkspacePath(
+    state: WindowState | undefined,
+    requestedPath?: string | null,
+): string | null {
+    if (!state) return null;
+    if (requestedPath) {
+        return getWindowProjectPaths(state).includes(requestedPath) ? requestedPath : null;
+    }
+    return resolveActiveWorkspacePath(state);
+}
+
+/**
+ * The rail project of this window that contains `filePath`, deepest root
+ * first, or null when none does. Used where an action follows the file (save
+ * refresh, recent files) rather than whichever project is on screen.
+ */
+export function resolveProjectForFile(state: WindowState | undefined, filePath: string): string | null {
+    if (!state) return null;
+    const target = resolvePath(filePath);
+    let best: string | null = null;
+    for (const project of getWindowProjectPaths(state)) {
+        const rel = relative(resolvePath(project), target);
+        const inside = rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+        if (inside && (!best || project.length > best.length)) best = project;
+    }
+    return best;
+}
+
+/**
+ * Open windows that have `workspacePath` anywhere in their rail, not only as
+ * the first project. Broadcasts scoped to a project go to these; the renderer
+ * filters a delta for a project it is not showing.
+ */
+export function listWindowsWithProject(workspacePath: string): BrowserWindow[] {
+    const target = resolvePath(workspacePath);
+    const result: BrowserWindow[] = [];
+    for (const [windowId, browserWindow] of windows) {
+        if (browserWindow.isDestroyed()) continue;
+        const state = windowStates.get(windowId);
+        if (!state) continue;
+        if (getWindowProjectPaths(state).some(project => resolvePath(project) === target)) {
+            result.push(browserWindow);
+        }
+    }
+    return result;
 }
 
 /**

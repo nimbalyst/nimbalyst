@@ -11,6 +11,10 @@
  * which is why a watcher is started for it too.
  * Codex app-server is listener-disabled because its structured fileChange
  * items are the authoritative source of paths, diffs, and attribution.
+ * Claude Code runs in `'shell-window'` mode: its Bash edits are linked by the
+ * hook-window tracker (`claudeShellTrackingHost.ts`), so its watcher feeds
+ * only the before-content ledger, never the fuzzy matcher or the command
+ * scraper.
  *
  * Lifecycle:
  *   - `ensureForSession` — start (or reuse) a watcher for a session/workspace
@@ -50,6 +54,7 @@ import {
   type WorkspaceFileAttributionMode,
 } from '../WorkspaceFileAttributionPolicy';
 import { sessionEditQuota } from '../SessionEditQuota';
+import { shellBeforeContentLedger } from './shellBeforeContentLedger';
 import { notifySessionFilesUpdated } from '../sessionFilesNotify';
 import { pathContainsExcludedDir } from '../../utils/fileFilters';
 import { isFileInWorkspaceOrWorktree } from '../../utils/workspaceDetection';
@@ -66,10 +71,25 @@ interface WatcherEntry {
   attributionMode: WorkspaceFileAttributionMode;
 }
 
+/** Set from main init; absent in tests and on hosts without a shell tracker. */
+export interface ShellWindowLifecycle {
+  register(sessionId: string, workspacePath: string): Promise<void>;
+  release(sessionId: string): Promise<void>;
+}
+let shellWindowLifecycle: ShellWindowLifecycle | undefined;
+export function setShellWindowLifecycle(value: ShellWindowLifecycle | undefined): void {
+  shellWindowLifecycle = value;
+}
+export function isShellWindowLifecycleConfigured(): boolean {
+  return !!shellWindowLifecycle;
+}
+
 export class HooklessAgentFileWatcher {
   private readonly watchers = new Map<string, WatcherEntry>();
   private readonly stopTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly policySessionIds = new Set<string>();
+  /** Stops in progress; a new start for the same session waits for them. */
+  private readonly stopping = new Map<string, Promise<void>>();
 
   /**
    * Start (or reuse) a watcher for a session at the given workspace path.
@@ -84,6 +104,9 @@ export class HooklessAgentFileWatcher {
     // Cancel any pending delayed-stop timer so it doesn't destroy the watcher
     // we're about to reuse (race: new turn starts within the 500ms drain delay).
     this.cancelScheduledStop(sessionId);
+    // A stop already under way has detached its entry; let it finish tearing
+    // down (its bus subscription shares this session id) before starting fresh.
+    await this.stopping.get(sessionId);
 
     const existing = this.watchers.get(sessionId);
     const attributionMode = options?.attributionMode
@@ -91,6 +114,9 @@ export class HooklessAgentFileWatcher {
       ?? 'fuzzy';
 
     this.policySessionIds.add(sessionId);
+    if (attributionMode !== 'shell-window' && existing?.attributionMode === 'shell-window') {
+      await shellWindowLifecycle?.release(sessionId);
+    }
     if (attributionMode === 'disabled') {
       if (existing) {
         try {
@@ -108,6 +134,7 @@ export class HooklessAgentFileWatcher {
     if (existing && existing.workspacePath === workspacePath) {
       existing.attributionMode = attributionMode;
       workspaceFileAttributionPolicy.set(sessionId, workspacePath, attributionMode);
+      if (attributionMode === 'shell-window') await shellWindowLifecycle?.register(sessionId, workspacePath);
       return;
     }
 
@@ -158,6 +185,12 @@ export class HooklessAgentFileWatcher {
         sessionId,
         cache,
         async (watchEvent) => {
+          if ((this.watchers.get(sessionId)?.attributionMode ?? attributionMode) === 'shell-window') {
+            // The hook window links the file; this watcher only remembers
+            // what the file held before the change, for the link's baseline.
+            shellBeforeContentLedger.record(sessionId, watchEvent.filePath, watchEvent.beforeContent, watchEvent.timestamp);
+            return;
+          }
           workspaceFileEditAttributionService.ingestWatcherEvent({
             workspacePath: watchEvent.workspacePath,
             filePath: watchEvent.filePath,
@@ -178,6 +211,7 @@ export class HooklessAgentFileWatcher {
       throw error;
     }
     this.watchers.set(sessionId, { cache, watcher, workspacePath, attributionMode });
+    if (attributionMode === 'shell-window') await shellWindowLifecycle?.register(sessionId, workspacePath);
   }
 
   /**
@@ -204,24 +238,28 @@ export class HooklessAgentFileWatcher {
 
   async stopForSession(sessionId: string): Promise<void> {
     this.cancelScheduledStop(sessionId);
+    const inFlight = this.stopping.get(sessionId);
+    if (inFlight) return inFlight;
 
+    // Detach synchronously: a turn that starts while this stop awaits must get
+    // a fresh watcher and policy, not reuse (and then lose) this one.
     const entry = this.watchers.get(sessionId);
-    if (!entry) {
-      workspaceFileAttributionPolicy.clear(sessionId);
-      this.policySessionIds.delete(sessionId);
-      return;
-    }
+    this.watchers.delete(sessionId);
+    workspaceFileAttributionPolicy.clear(sessionId);
+    this.policySessionIds.delete(sessionId);
+    if (!entry) return;
 
-    try {
-      await entry.watcher?.stop();
-      entry.cache.stopSession();
-    } catch (error) {
-      logger.main.error('[HooklessAgentFileWatcher] Error stopping watcher:', error);
-    } finally {
-      this.watchers.delete(sessionId);
-      workspaceFileAttributionPolicy.clear(sessionId);
-      this.policySessionIds.delete(sessionId);
-    }
+    const stop = (async () => {
+      try {
+        if (entry.attributionMode === 'shell-window') await shellWindowLifecycle?.release(sessionId);
+        await entry.watcher?.stop();
+        entry.cache.stopSession();
+      } catch (error) {
+        logger.main.error('[HooklessAgentFileWatcher] Error stopping watcher:', error);
+      }
+    })().finally(() => this.stopping.delete(sessionId));
+    this.stopping.set(sessionId, stop);
+    return stop;
   }
 
   getEntry(sessionId: string): WatcherEntry | undefined {
@@ -267,7 +305,7 @@ export class HooklessAgentFileWatcher {
     command: string,
   ): Promise<void> {
     const watcherEntry = this.watchers.get(sessionId);
-    if (!watcherEntry) return;
+    if (!watcherEntry || watcherEntry.attributionMode === 'shell-window') return;
 
     const cwd = watcherEntry.workspacePath;
     const filePaths = await this.extractFilePathsFromCommand(command, workspacePath, cwd);
@@ -304,6 +342,9 @@ export class HooklessAgentFileWatcher {
       return false;
     }
     const watcherEntry = this.watchers.get(session.id);
+    // Hook windows are the only source of Bash links in this mode. Command
+    // text is not write evidence: `cat x.ts` names x.ts as plainly as `sed -i`.
+    if (watcherEntry?.attributionMode === 'shell-window' || workspaceFileAttributionPolicy.isShellWindow(session.id)) return false;
     const filePaths = await this.extractFilePathsFromCommand(command, workspacePath, effectivePath);
     if (filePaths.length === 0) return false;
 
@@ -457,6 +498,7 @@ export class HooklessAgentFileWatcher {
     this.stopTimers.clear();
 
     for (const [sessionId, entry] of this.watchers) {
+      if (entry.attributionMode === 'shell-window') void shellWindowLifecycle?.release(sessionId);
       try {
         entry.watcher?.stop();
         entry.cache.stopSession();

@@ -466,7 +466,11 @@ export async function subscribe(
     }
     return watcher;
   }, health => {
-    logger.main.info('[WorkspaceEventBus] Watcher health:', { workspacePath: key, ...health, subscriberCount: entry.listeners.size });
+    // Routine startup/stop is diagnostic; retain failures and successful recovery.
+    const logHealth = health.state === 'recovering' ? logger.main.warn
+      : health.state === 'watching' && health.generation > 1 ? logger.main.info
+      : logger.main.debug;
+    logHealth('[WorkspaceEventBus] Watcher health:', { workspacePath: key, ...health, subscriberCount: entry.listeners.size });
     for (const subscriber of entry.listeners.values()) {
       try { subscriber.onHealthChanged?.(health); }
       catch (error) { logger.main.error('[WorkspaceEventBus] Health listener failed:', error); }

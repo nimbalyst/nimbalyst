@@ -10,6 +10,7 @@ export function registerRemoteSessionHandlers(): void {
     return {...context, commands: [...explicit, ...context.commands.filter(command => !explicit.some(entry => entry.name === command.name))]};
   });
   safeHandle('ai:remoteHosts', (_event, workspace: string) => remoteSessions.hosts(workspace));
+  safeHandle('ai:localDeviceName', () => remoteSessions.localDeviceName());
   safeHandle('ai:createRemoteSession', (_event, workspace: string, host: string, options) => remoteSessions.create(workspace, host, options));
   safeHandle('ai:loadRemoteDraft', async (_event, id: string, workspace: string) => {
     if (!await remoteSessions.get(id, workspace)) throw new Error('Remote session unavailable.');

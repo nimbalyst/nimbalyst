@@ -14,14 +14,16 @@ import { initialsFor } from './commentBodyParser';
 
 export type ComposerPillKind = 'person' | 'agent' | 'resource';
 
-export interface ComposerPillPayload {
+// A type alias, not an interface: Lexical 0.53's static importJSON takes a
+// Record<string, unknown>, which only type aliases satisfy implicitly.
+export type ComposerPillPayload = {
   /** Display label, exactly as it will appear inside the exported token. */
   label: string;
   urn: string;
   kind: ComposerPillKind;
   /** Material symbol for resource pills; person and agent pills have fixed marks. */
   icon?: string;
-}
+};
 
 export type SerializedComposerPillNode = Spread<ComposerPillPayload, SerializedLexicalNode>;
 

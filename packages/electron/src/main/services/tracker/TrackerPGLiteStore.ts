@@ -200,6 +200,7 @@ interface PGLiteTrackerTransactionRow {
   started_at: Date | null;
   confirmed_sync_id: string | number | null;
   last_rejection: unknown;
+  base_sync_id?: string | number | null;
 }
 
 // ============================================================================
@@ -703,12 +704,13 @@ export class TrackerPGLiteStore implements TrackerPersistence {
       const enqueuedAt = await causalEnqueuedAt(this.db, workspacePath, row.itemId, row.enqueuedAt);
       await this.db.query(
         `INSERT INTO tracker_transactions (
-          client_mutation_id, item_id, workspace_path, state, kind, payload, enqueued_at
-        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::timestamptz)
+          client_mutation_id, item_id, workspace_path, state, kind, payload, enqueued_at, base_sync_id
+        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::timestamptz, $8)
         ON CONFLICT (client_mutation_id) DO UPDATE SET
           state = EXCLUDED.state,
           kind = EXCLUDED.kind,
-          payload = EXCLUDED.payload`,
+          payload = EXCLUDED.payload,
+          base_sync_id = EXCLUDED.base_sync_id`,
         [
           row.clientMutationId,
           row.itemId,
@@ -717,6 +719,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
           row.kind,
           row.payload ? JSON.stringify(row.payload) : null,
           enqueuedAt,
+          row.expectedSyncId ?? null,
         ],
       );
     });
@@ -752,7 +755,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
     // BEGIN/COMMIT -- but the ordering above makes every crash window
     // recoverable.
     const snapshot = await this.snapshotRow(itemId);
-    await this.enqueueTransaction({ ...row, state: 'pendingApply' });
+    await this.enqueueTransaction({ ...row, expectedSyncId: snapshot.syncId ?? 0, state: 'pendingApply' });
     await this.applyOptimistic(itemId, payload);
     await this.markTransactionState(row.clientMutationId, 'persistedEnqueue');
     return snapshot;
@@ -822,6 +825,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
         state: 'queued',
         kind: 'update',
         payload,
+        expectedSyncId: local.sync_id == null ? 0 : Number(local.sync_id),
         enqueuedAt: Date.now(),
       });
       queued += 1;
@@ -846,7 +850,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
     // snapshots, and loading them all once needed 257 MB (NIM-7336).
     const result = await this.db.query<PGLiteTrackerTransactionRow>(
       `SELECT client_mutation_id, item_id, workspace_path, state, kind, payload,
-              enqueued_at, started_at, confirmed_sync_id, last_rejection
+              enqueued_at, started_at, confirmed_sync_id, last_rejection, base_sync_id
          FROM tracker_transactions
         WHERE workspace_path = $1
           AND confirmed_sync_id IS NULL
@@ -863,6 +867,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
         kind: row.kind,
         enqueuedAt: enqueuedAtMillis(row.enqueued_at),
       };
+      if (row.base_sync_id != null) out.expectedSyncId = Number(row.base_sync_id);
       if (row.payload) {
         try {
           out.payload =

@@ -37,6 +37,12 @@ export interface CollaborativeCommentsPanelProps extends CommentThreadActions {
     threads: CommentThreadView[];
     activeThreadId: string | null;
     capabilities: CommentCapabilities;
+    /**
+     * The signed-in user's id, as written in `actor.userId`. A commenter
+     * (`editBody: false`) is offered resolve and delete only on their own
+     * threads and comments; without it they are offered neither.
+     */
+    currentUserId?: string;
     getMembers(): CommentMember[];
     title?: string;
     /** Shown when there are no threads at all. */
@@ -54,5 +60,5 @@ export interface CollaborativeCommentsPanelProps extends CommentThreadActions {
     /** Restore focus to whatever was focused before the panel mounted. */
     restoreFocusOnUnmount?: boolean;
 }
-export declare function CollaborativeCommentsPanel({ threads, activeThreadId, capabilities, getMembers, title, emptyMessage, headerExtra, onClose, defaultShowResolved, showResolved: controlledShowResolved, onShowResolvedChange, autoFocusThreadId, className, restoreFocusOnUnmount, ...actions }: CollaborativeCommentsPanelProps): JSX.Element;
+export declare function CollaborativeCommentsPanel({ threads, activeThreadId, capabilities, currentUserId, getMembers, title, emptyMessage, headerExtra, onClose, defaultShowResolved, showResolved: controlledShowResolved, onShowResolvedChange, autoFocusThreadId, className, restoreFocusOnUnmount, ...actions }: CollaborativeCommentsPanelProps): JSX.Element;
 export {};

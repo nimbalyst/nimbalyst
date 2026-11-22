@@ -44,6 +44,8 @@ public final class AnalyticsManager: Sendable {
         let config = PostHogConfig(apiKey: Self.posthogKey, host: Self.posthogHost)
         config.captureScreenViews = false
         config.captureApplicationLifecycleEvents = false
+        // The app reads no feature flags; preloading bills a /flags request per launch.
+        config.preloadFeatureFlags = false
 
         PostHogSDK.shared.setup(config)
 

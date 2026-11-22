@@ -43,4 +43,25 @@ describe('getCommentToolbarActions', () => {
     capabilities.comment = true;
     expect(getCommentToolbarActions(comments, editor)).toHaveLength(1);
   });
+
+  it('offers the action in a read-only editor only to a commenter', () => {
+    const editor = { dispatchCommand: vi.fn() };
+    const config = (capabilities: { read: boolean; comment: boolean; editBody?: boolean }) =>
+      ({ getCapabilities: () => capabilities }) as unknown as CommentsConfig;
+
+    // A commenter's thread writes only the comments array.
+    expect(
+      getCommentToolbarActions(config({ read: true, comment: true, editBody: false }), editor)[0]
+        .availableWhenReadOnly,
+    ).toBe(true);
+    // Anyone with body rights would write a MarkNode from a read-only view.
+    expect(
+      getCommentToolbarActions(config({ read: true, comment: true }), editor)[0]
+        .availableWhenReadOnly,
+    ).toBe(false);
+    expect(
+      getCommentToolbarActions(config({ read: true, comment: true, editBody: true }), editor)[0]
+        .availableWhenReadOnly,
+    ).toBe(false);
+  });
 });

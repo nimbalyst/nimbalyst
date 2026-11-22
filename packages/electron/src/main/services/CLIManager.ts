@@ -1,5 +1,6 @@
 import { spawn, ChildProcess, exec, execSync } from 'child_process';
-import { BrowserWindow, shell } from 'electron';
+import { BrowserWindow } from 'electron';
+import { openExternalInBackground } from '../utils/systemShell';
 import { safeHandle } from '../utils/ipcRegistry';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
@@ -1003,7 +1004,7 @@ export class CLIManager {
             // Node not found, which is fine
           }
 
-          shell.openExternal('https://nodejs.org/en/download/');
+          openExternalInBackground('https://nodejs.org/en/download/');
 
           reject(new Error('Please download and install Node.js from the opened webpage (NOT via Homebrew), then restart Nimbalyst.'));
         } else if (platform === 'win32') {
@@ -1014,7 +1015,7 @@ export class CLIManager {
             log: 'Please download and run the Windows installer'
           });
 
-          shell.openExternal('https://nodejs.org/en/download/');
+          openExternalInBackground('https://nodejs.org/en/download/');
 
           reject(new Error('Please download and install Node.js from the opened webpage, then restart Nimbalyst.'));
         } else if (platform === 'linux') {
@@ -1058,7 +1059,7 @@ export class CLIManager {
           }
 
           if (!installed) {
-              shell.openExternal('https://nodejs.org/en/download/');
+              openExternalInBackground('https://nodejs.org/en/download/');
             reject(new Error('Could not install Node.js automatically. Please install from the opened webpage.'));
             return;
           }

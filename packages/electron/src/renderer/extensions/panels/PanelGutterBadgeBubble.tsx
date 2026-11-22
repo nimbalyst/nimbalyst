@@ -3,13 +3,24 @@
 import type { JSX } from 'react';
 import React, { useSyncExternalStore } from 'react';
 import { formatUnreadCount } from '../../store/projectWindowUnreadViewModel';
-import { getPanelGutterBadge, subscribePanelGutterBadges } from './panelGutterBadges';
+import { getPanelGutterBadge, subscribePanelGutterBadges, type PanelGutterBadgeTone } from './panelGutterBadges';
+
+/**
+ * `default` is the attention color shared with unread counts. `error` is the
+ * same red: a state badge that reports a failure should look like one.
+ */
+const GUTTER_BADGE_COLOR: Record<PanelGutterBadgeTone, string> = {
+  default: 'bg-nim-error',
+  warning: 'bg-nim-warning',
+  success: 'bg-nim-success',
+  error: 'bg-nim-error',
+};
 
 /** Subscribes on its own so a badge change never re-renders the whole gutter. */
 export function PanelGutterBadgeBubble({ panelId }: { panelId: string }): JSX.Element | null {
   const badge = useSyncExternalStore(subscribePanelGutterBadges, () => getPanelGutterBadge(panelId));
   if (!badge) return null;
-  const color = badge.tone === 'warning' ? 'bg-nim-warning' : 'bg-nim-error';
+  const color = GUTTER_BADGE_COLOR[badge.tone];
   // Lower corner, like the Organization unread bubble, so it clears the alpha dot.
   return badge.count > 0 ? (
     <span

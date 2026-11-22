@@ -75,7 +75,7 @@ describe('initTrackerSyncListeners relationship reconcile (NIM-1305)', () => {
   async function startAndSettleInitialLoad() {
     cleanup = initTrackerSyncListeners();
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list');
+      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list', '/ws/A');
     });
     return invoke.mock.calls.filter(([c]) => c === 'document-service:tracker-items-list').length;
   }

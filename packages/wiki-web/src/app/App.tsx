@@ -256,9 +256,18 @@ function Shell({
   const [createMenu, setCreateMenu] = useState<CollabSidebarCreateMenu | null>(null);
   const reachable = useServerReachable();
   const published = isStaticSite();
-  // Narrow screens: the tree is a panel above the page, opened from the bar. It stays open across
-  // navigation until the reader closes it.
+  // Narrow screens: the tree is a drawer over the page, opened from the bar; picking a page,
+  // tapping outside it or Escape closes it. Wide screens show the tree as a column and ignore this.
   const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => setNavOpen(false), [route]);
+  useEffect(() => {
+    if (!navOpen) return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setNavOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navOpen]);
 
   // Home is the first top-level page, as `nim wiki init` writes one.
   const home = useMemo(
@@ -274,6 +283,12 @@ function Shell({
   useEffect(() => {
     if (!openPageId) return undefined;
     setWorkspaceFileLinkOpener((href) => {
+      // A published wiki writes links to the items it carries from the app's tracker as site paths (`/items/<id>/`).
+      if (published && href.startsWith('/') && !href.startsWith('//')) {
+        const [pathname, search = ''] = href.split('?');
+        navigate(parseStaticLocation(pathname, search ? `?${search}` : ''));
+        return;
+      }
       const target = host.resolveLink(openPageId, href);
       // An attachment or other file beside the page opens from the server, as the browser shows it.
       if (target.kind === 'outside' && !/\.md$/i.test(target.path) && !/^[a-z][a-z0-9+.-]*:/i.test(href)) {
@@ -293,6 +308,7 @@ function Shell({
           </button>
         </div>
       ) : null}
+      {published ? <button type="button" className="wiki-static-scrim" data-open={navOpen} aria-label="Hide pages" tabIndex={-1} onClick={() => setNavOpen(false)} /> : null}
       {published ? (
         // Shown and hidden by styles.css, not utilities: an extension bundle injects its own `.flex`/`.hidden` later in the page.
         <aside className="wiki-web-sidebar wiki-static-sidebar-panel w-[280px] shrink-0 flex-col border-r border-nim bg-nim-secondary" data-open={navOpen}>

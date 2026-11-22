@@ -256,6 +256,42 @@ test.describe('Image Attachments', () => {
     await page.waitForTimeout(300);
   });
 
+  test('should attach the Windows clipboard image when a paste arrives empty', async () => {
+    // Under WSL, an image copied in Windows reaches the paste as an empty text
+    // entry. Stand in for the main process's PowerShell read of the image.
+    const agentMode = page.locator(PLAYWRIGHT_TEST_SELECTORS.agentMode);
+    const chatInput = page.locator(PLAYWRIGHT_TEST_SELECTORS.agentChatInput);
+    await expect(chatInput).toBeVisible();
+
+    const fileBuffer = await fs.readFile(testImagePath);
+    await electronApp.evaluate(({ ipcMain }, data) => {
+      ipcMain.removeHandler('read-image-from-windows-clipboard');
+      ipcMain.handle('read-image-from-windows-clipboard', () => ({
+        mimeType: 'image/png',
+        data: new Uint8Array(data),
+      }));
+    }, Array.from(fileBuffer));
+
+    await chatInput.click();
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', '');
+      const pasteEvent = new ClipboardEvent('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(pasteEvent, 'clipboardData', { value: dt });
+      document.querySelector('[data-testid="agent-mode-chat-input"]')?.dispatchEvent(pasteEvent);
+    });
+
+    const filename = agentMode.locator(PLAYWRIGHT_TEST_SELECTORS.attachmentFilename);
+    await expect(filename).toContainText(/pasted-image-.*\.png/, { timeout: 3000 });
+    expect(await chatInput.inputValue()).toMatch(/@pasted-image-.*\.png/);
+
+    // Clean up
+    await chatInput.clear();
+    const removeButton = agentMode.locator(PLAYWRIGHT_TEST_SELECTORS.attachmentRemoveButton);
+    if (await removeButton.isVisible()) await removeButton.click();
+    await page.waitForTimeout(300);
+  });
+
   test('should clear attachments after sending message', async () => {
     const agentMode = page.locator(PLAYWRIGHT_TEST_SELECTORS.agentMode);
     const chatInput = page.locator(PLAYWRIGHT_TEST_SELECTORS.agentChatInput);

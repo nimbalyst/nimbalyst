@@ -505,12 +505,9 @@ const config = {
         // Copy es-module-shims for extension loading (enables dynamic import maps)
         const esModuleShims = installedPackageFile('es-module-shims', 'dist/es-module-shims.js');
         targets.push({ src: toPosix(esModuleShims), dest: '', overwrite: true });
-        // Copy ghostty-web WASM file for terminal emulation
-        const ghosttyWasm = installedPackageFile('ghostty-web', 'ghostty-vt.wasm');
-        targets.push({ src: toPosix(ghosttyWasm), dest: '', overwrite: true });
         // Copy prismjs core so index.html can load it as a classic <script>
         // BEFORE any ESM module evaluates. Vite/esbuild's prebundling of
-        // @lexical/code (which transitively imports @lexical/code-prism) ends
+        // @lexical/code-prism (imported by CodeHighlightPlugin) ends
         // up reordering chunk imports so the prism-* language chunks evaluate
         // before prismjs main, which the language files need to have set
         // `window.Prism`. Loading prismjs as a classic script in the HTML
@@ -586,6 +583,7 @@ const config = {
         '@lexical/clipboard',
         '@lexical/code',
         '@lexical/code-core',
+        '@lexical/code-prism',
         '@lexical/devtools-core',
         '@lexical/dragon',
         '@lexical/file',
@@ -631,6 +629,7 @@ const config = {
         '@lexical/clipboard',
         '@lexical/code',
         '@lexical/code-core',
+        '@lexical/code-prism',
         '@lexical/dragon',
         '@lexical/extension',
         '@lexical/hashtag',

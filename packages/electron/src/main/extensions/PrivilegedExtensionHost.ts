@@ -116,6 +116,10 @@ const BROKER_METHOD_PERMISSIONS: {
   // Ungated: only the badge on a panel the caller's own manifest declares
   // (see backendPanelBadges.ts), which its panel can already set.
   panels: null,
+  // ctx.services.terminals. Running a command in a terminal is running code as
+  // the user; every op is scoped to terminals the caller's own extension
+  // created in its bound workspace (see backendTerminals.ts).
+  terminals: 'terminals',
 } as const;
 
 /** Public state of a single module the host is tracking. */

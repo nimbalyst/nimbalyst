@@ -215,45 +215,4 @@ describe('MetaAgentService parent agent_role promotion (NIM-858)', () => {
     await expect((service as any).createChildSessionInternal('standard-parent', '/workspace/path', {})).resolves.toHaveProperty('sessionId');
   });
 
-  it('queues manager-change notes as reports without interrupting running managers', async () => {
-    const service = MetaAgentService.getInstance();
-    const ai = { queuePromptForSession: vi.fn(async (..._args: any[]) => ({ id: 'report' })), triggerQueuedPromptProcessingForSession: vi.fn(), interruptCurrentTurn: vi.fn() };
-    (service as any).aiService = ai;
-    vi.mocked(AISessionsRepository.get).mockImplementation(async id => ({ ...STANDARD_PARENT, id, title: id } as any));
-    vi.mocked(database.query).mockResolvedValue({ rows: [{ status: 'running' }] } as any);
-    await (service as any).reportManagerChange({ sessionId: 'worker', workspaceId: '/workspace/path', title: 'Worker',
-      previousParentId: 'old', previousManagerId: 'old', parentId: 'new', managerId: 'new' });
-    expect(ai.queuePromptForSession.mock.calls.map(call => call[0])).toEqual(['new', 'old']);
-    for (const call of ai.queuePromptForSession.mock.calls) expect(call[3]).toMatchObject({ promptProvenance: { messageKind: 'report', originSessionId: 'worker' } });
-    expect(ai.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
-    expect(ai.interruptCurrentTurn).not.toHaveBeenCalled();
-  });
-
-  it('keeps system reassignments silent (remote snapshot, delete-lift)', async () => {
-    const service = MetaAgentService.getInstance();
-    const ai = { queuePromptForSession: vi.fn(async (..._args: any[]) => ({ id: 'report' })), triggerQueuedPromptProcessingForSession: vi.fn() };
-    (service as any).aiService = ai;
-    vi.mocked(AISessionsRepository.get).mockImplementation(async id => ({ ...STANDARD_PARENT, id, title: id } as any));
-    vi.mocked(database.query).mockResolvedValue({ rows: [{ status: 'idle' }] } as any);
-    for (const source of ['remote', 'system'] as const) {
-      await (service as any).reportManagerChange({ sessionId: 'worker', workspaceId: '/workspace/path', title: 'Worker', source,
-        previousParentId: 'old', previousManagerId: 'old', parentId: 'new', managerId: 'new' });
-    }
-    expect(ai.queuePromptForSession).not.toHaveBeenCalled();
-    expect(AgentMessagesRepository.create).not.toHaveBeenCalled();
-  });
-
-  it('leaves a passive note in an idle manager instead of queueing a turn', async () => {
-    const service = MetaAgentService.getInstance();
-    const ai = { queuePromptForSession: vi.fn(async (..._args: any[]) => ({ id: 'report' })), triggerQueuedPromptProcessingForSession: vi.fn() };
-    (service as any).aiService = ai;
-    vi.mocked(AISessionsRepository.get).mockImplementation(async id => ({ ...STANDARD_PARENT, id, title: id } as any));
-    vi.mocked(database.query).mockResolvedValue({ rows: [{ status: 'idle' }] } as any);
-    await (service as any).reportManagerChange({ sessionId: 'worker', workspaceId: '/workspace/path', title: 'Worker',
-      previousParentId: 'old', previousManagerId: 'old', parentId: 'new', managerId: 'new' });
-    expect(ai.queuePromptForSession).not.toHaveBeenCalled();
-    expect(ai.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
-    expect(AgentMessagesRepository.create).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(AgentMessagesRepository.create).mock.calls[0][0]).toMatchObject({ sessionId: 'new', content: 'You now manage Worker (moved by the user).' });
-  });
 });

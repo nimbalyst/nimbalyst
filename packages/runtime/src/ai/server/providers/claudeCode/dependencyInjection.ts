@@ -84,6 +84,10 @@ export const ClaudeCodeDeps = {
   // Re-read on each query so the settings toggle takes effect on the next turn.
   promptSuggestionsEnabledLoader: null as (() => boolean) | null,
 
+  // Whether to start the CLI with --chrome so the Claude in Chrome extension's
+  // browser tools are available. Off when no host wires it. Re-read on each query.
+  claudeInChromeEnabledLoader: null as (() => boolean) | null,
+
   // ---- Internal MCP server enablement ----
   // Ports, kill-switches, extension/tracker loaders, and the per-launch bearer
   // token now live in the shared `mcpServerConfig` registry (configured once
@@ -147,6 +151,11 @@ export const ClaudeCodeDeps = {
   // Checks if a pattern is in the allow list of .claude/settings.local.json
   claudeSettingsPatternChecker: null as PatternChecker | null,
 
+  // Checks ONLY the project-local allow list (.claude/settings.local.json, where
+  // "Always" approvals are written). Auto mode honours these in PreToolUse
+  // because the CLI drops rules such as `Agent` before its classifier runs.
+  claudeLocalAllowRuleChecker: null as PatternChecker | null,
+
   // ---- Feature Capabilities ----
 
   // Compresses images to fit within API limits before sending
@@ -182,6 +191,10 @@ export const ClaudeCodeDeps = {
 
   setPromptSuggestionsEnabledLoader(loader: (() => boolean) | null): void {
     this.promptSuggestionsEnabledLoader = loader;
+  },
+
+  setClaudeInChromeEnabledLoader(loader: (() => boolean) | null): void {
+    this.claudeInChromeEnabledLoader = loader;
   },
 
   setMCPConfigLoader(loader: McpConfigLoader | null): void {
@@ -234,6 +247,10 @@ export const ClaudeCodeDeps = {
 
   setClaudeSettingsPatternChecker(checker: PatternChecker | null): void {
     this.claudeSettingsPatternChecker = checker;
+  },
+
+  setClaudeLocalAllowRuleChecker(checker: PatternChecker | null): void {
+    this.claudeLocalAllowRuleChecker = checker;
   },
 
   setImageCompressor(compressor: ImageCompressor | null): void {

@@ -891,7 +891,9 @@ export class AgentWorkflowService {
         const fullPath = path.join(currentPath, entry.name);
 
         if (isDirectoryEntry(entry, fullPath)) {
-          if (entry.name === '.claude-plugin' || entry.name === 'skills') {
+          // node_modules READMEs are not commands; exporting them to Codex
+          // wrote many skill folders into the workspace.
+          if (entry.name === '.claude-plugin' || entry.name === 'skills' || entry.name === 'node_modules') {
             continue;
           }
           recurse(fullPath);

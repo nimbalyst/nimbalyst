@@ -9,8 +9,8 @@
  *
  * When an applied item carries a `bodyVersion` newer than anything cached
  * locally, read the room's markdown, store it in `tracker_body_cache` at that
- * version (which the workspace rebuild then prefers for shared items), and
- * reindex the item's body links. Reads run one at a time so a reconnect that
+ * version (which the workspace rebuild then prefers for shared items) and in
+ * the item's local copy, and reindex the item's body links. Reads run one at a time so a reconnect that
  * replays many items does not open many rooms at once.
  */
 import { getDatabase } from '../../database/initialize';
@@ -59,6 +59,12 @@ export async function refreshRemoteBodyLinks(
      VALUES ($1, $2, $3, NOW())
      ON CONFLICT (item_id, body_version) DO NOTHING`,
     [itemId, bodyVersion, JSON.stringify(markdown)],
+  );
+  // tracker_get and search read the local copy. A local save past this version
+  // is newer than what the room returned here, so it is left alone.
+  await db.query(
+    `UPDATE tracker_items SET content = $1 WHERE id = $2 AND COALESCE(body_version, 0) <= $3`,
+    [JSON.stringify(markdown), itemId, bodyVersion],
   );
   await reindexItemBodyLinks(workspacePath, itemId, markdown, null, db);
   return true;

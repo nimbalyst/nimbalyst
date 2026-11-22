@@ -21,9 +21,9 @@ import { loadCredentials } from '../cloud/credentials.js';
 import { callTool } from '../cloud/pagesClient.js';
 import { resolveTeamsTarget, type ProjectPin } from '../cloud/repo.js';
 import { createTeamContentWriter, type TeamContentWriter } from '../cloud/teamContent.js';
-import { importToTeam, pacedCaller, planBatches, planTypeBatches, type ImportDeps, type ImportError, type ToolCaller } from '../cloud/teamImport.js';
+import { importToTeam, pacedCaller, planBatches, planTypeBatches, TYPE_BATCH_MAX, type ImportDeps, type ImportError, type ToolCaller } from '../cloud/teamImport.js';
 import type { EditorModels, EditorModelsLoader } from '../mcp/editorTools.js';
-import { readMigratedTo, writeMigratedTo, type MigratedTo } from './locate.js';
+import { readMigratedTo, readPublishTarget, writeMigratedTo, type MigratedTo } from './locate.js';
 import type { OpenedWiki } from './open.js';
 import { collectLocalWiki, MIGRATION_BANNER_PREFIX, migrationBanner, type CollectOptions } from './teamExport.js';
 
@@ -84,6 +84,13 @@ async function editorModels(opened: OpenedWiki, load: EditorModelsLoader | undef
 }
 
 export async function moveLocalWikiToTeam(opened: OpenedWiki, options: MoveOptions, deps: MoveDeps = {}): Promise<MoveReport> {
+  const publishing = readPublishTarget(opened.projectRoot);
+  if (publishing) {
+    throw new MoveRefusal(
+      `This local wiki publishes to team project ${publishing.orgId}/${publishing.projectId} (\`nim wiki publish\`), with the files as the source. ` +
+        'Moving it would make the team copy the source instead. Remove `publish` from .nimbalyst/local-wiki.json first if that is what the user wants.',
+    );
+  }
   const { models, editorTypes } = await editorModels(opened, deps.loadEditorModels);
   const wikiPrefix = path.relative(opened.projectRoot, opened.dir).split(path.sep).join('/');
   const exported = await collectLocalWiki(opened.wiki, { editorTypes, wikiPrefix, wikiDir: opened.dir });
@@ -95,7 +102,7 @@ export async function moveLocalWikiToTeam(opened: OpenedWiki, options: MoveOptio
     project: null,
     counts: { pages: exported.pages.length - typedPages - editorPages, editorPages, typedPages, types: exported.types.length, files, skipped: exported.skipped.length },
     skipped: exported.skipped.map(({ title, reason }) => ({ title, reason })),
-    batches: planTypeBatches(exported.types).batches.length + planBatches(exported.pages).batches.length,
+    batches: planTypeBatches(exported.types).batches.length + planBatches(exported.pages).batches.length + Math.ceil(exported.typePlacements.length / TYPE_BATCH_MAX),
   };
 
   const server = resolveServer();
@@ -134,7 +141,7 @@ export async function moveLocalWikiToTeam(opened: OpenedWiki, options: MoveOptio
   const outcome = await importToTeam(exported, { repo: target.repo, project, wikiId }, call, content);
   const titles = new Map(exported.pages.map((page) => [page.localId, page.title]));
   const home = exported.homeLocalId ? outcome.idMap[exported.homeLocalId] : undefined;
-  // The imported Home is the user's own; the project's seeded Home stays as it is, unlinked from here.
+  // A local Home titled Home is imported into the project's Home page, so this is that page's link.
   const homeLink = home?.link ?? (typeof status.homeLink === 'string' ? status.homeLink : undefined);
   Object.assign(report, {
     batches: outcome.batches,

@@ -12,10 +12,10 @@ import { readHtmlEmbedTheme } from '@nimbalyst/runtime-source/ui/htmlEmbed/htmlE
 import type { HtmlEmbedTheme } from '@nimbalyst/runtime-source/ui/htmlEmbed/htmlEmbedProtocol';
 import type { HtmlEmbedNavigateOptions } from '@nimbalyst/runtime-source/ui/htmlEmbed/HtmlEmbedFrame';
 import { currentTheme, onThemeChange } from '../../theme';
-import { isStaticSite } from '../../api/staticSite';
+import { isStaticSite, staticBasePath } from '../../api/staticSite';
 
 // A static host serves a folder's index.html for the trailing-slash path; `nim wiki export` writes the shell there.
-export const WIKI_HTML_EMBED_SHELL_URL = isStaticSite() ? '/html-embed/shell/' : '/html-embed/shell';
+export const WIKI_HTML_EMBED_SHELL_URL = isStaticSite() ? `${staticBasePath}html-embed/shell/` : '/html-embed/shell';
 
 export const HTML_PAGE_MANIFEST: BrowserExtensionManifest = {
   id: 'builtin.html',

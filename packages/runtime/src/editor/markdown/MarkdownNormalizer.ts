@@ -98,7 +98,25 @@ export function detectMarkdownIndentSize(markdown: string): number | null {
 }
 
 /**
- * Normalizes list indentation in markdown to a consistent size
+ * Column width of leading whitespace, with tabs advancing to the next multiple of 4.
+ */
+function getIndentColumns(whitespace: string): number {
+  let columns = 0;
+  for (const char of whitespace) {
+    columns = char === '\t' ? columns + 4 - (columns % 4) : columns + 1;
+  }
+  return columns;
+}
+
+/**
+ * Normalizes list indentation to `targetIndentSize` spaces per nesting level.
+ *
+ * Nesting is decided against the enclosing list item, not a document-wide
+ * indent size: an item is a child when it is indented at least two columns past
+ * its parent's marker. CommonMark requires the child to reach the parent's
+ * content column (3 under `1. `, 4 under `10. `), but Nimbalyst used to save
+ * ordered children at two spaces, so those files still import as nested (#1937).
+ *
  * @param markdown The markdown string to normalize
  * @param config Normalization configuration
  * @returns The normalized markdown string
@@ -117,30 +135,20 @@ export function normalizeMarkdownLists(
     return markdown;
   }
 
-  // Detect the indent size if not specified
-  const detectedSize = detectMarkdownIndentSize(markdown);
-
-  // Default target to 2 for consistent handling
   const targetSize = targetIndentSize || 2;
-
-  // If no lists found, return as-is
-  if (!detectedSize) {
-    return markdown;
-  }
-
-  // If already using target size, return as-is
-  if (detectedSize === targetSize) {
-    return markdown;
-  }
-
   const lines = markdown.split('\n');
   const result: string[] = [];
   let inCodeBlock = false;
+  // Marker columns of the open list items, outermost first
+  const openItemColumns: number[] = [];
 
   for (const line of lines) {
     // Handle code blocks
     if (line.trim().startsWith('```')) {
       inCodeBlock = !inCodeBlock;
+      if (!/^\s/.test(line)) {
+        openItemColumns.length = 0;
+      }
       result.push(line);
       continue;
     }
@@ -156,24 +164,35 @@ export function normalizeMarkdownLists(
       line.match(UNORDERED_LIST_REGEX) ||
       line.match(CHECK_LIST_REGEX);
 
-    if (listMatch) {
-      const leadingWhitespace = listMatch[1];
-      const restOfLine = line.substring(leadingWhitespace.length);
-
-      // Convert tabs to spaces first
-      const spacesOnly = leadingWhitespace.replace(/\t/g, ' '.repeat(detectedSize));
-      const spaceCount = spacesOnly.length;
-
-      // Calculate the indent level based on detected size
-      const indentLevel = Math.round(spaceCount / detectedSize);
-
-      // Create new indentation with target size
-      const newIndent = ' '.repeat(indentLevel * targetSize);
-
-      result.push(newIndent + restOfLine);
-    } else {
+    if (!listMatch) {
+      // Unindented text ends any open list; blank and indented lines do not.
+      if (line.trim() !== '' && !/^\s/.test(line)) {
+        openItemColumns.length = 0;
+      }
       result.push(line);
+      continue;
     }
+
+    const leadingWhitespace = listMatch[1];
+    const restOfLine = line.substring(leadingWhitespace.length);
+    const column = getIndentColumns(leadingWhitespace);
+
+    while (
+      openItemColumns.length > 0 &&
+      column < openItemColumns[openItemColumns.length - 1] + 2
+    ) {
+      openItemColumns.pop();
+    }
+
+    // An indented item with no open parent keeps a single level of indent,
+    // tracked as a virtual parent so its own children still nest under it.
+    if (openItemColumns.length === 0 && column >= 2) {
+      openItemColumns.push(column - 2);
+    }
+    const level = openItemColumns.length;
+    openItemColumns.push(column);
+
+    result.push(' '.repeat(level * targetSize) + restOfLine);
   }
 
   return result.join('\n');

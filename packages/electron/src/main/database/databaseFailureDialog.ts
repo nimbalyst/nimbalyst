@@ -202,7 +202,8 @@ export interface DatabaseFailureRestoreResult {
 export interface DatabaseFailureDialogHandlers {
   restore(candidate: RestorableBackup): Promise<DatabaseFailureRestoreResult>;
   rollback?(candidate: RestorableBackup): Promise<DatabaseFailureRestoreResult>;
-  copyDiagnostics?(text: string): void;
+  /** May be async; the choice does not resolve until the copy settles. */
+  copyDiagnostics?(text: string): void | Promise<void>;
   retryStartup?(): void;
   reveal(revealPath: string): void;
   /** Called with the text to put in front of the user when a restore fails. */
@@ -250,7 +251,14 @@ export async function applyDatabaseFailureChoice(
     return { action, reportedAction: result.ok ? 'restore_succeeded' : 'restore_failed', restored: result.ok };
   }
   if (action === 'diagnostics' && content.diagnostics) {
-    handlers.copyDiagnostics?.(content.diagnostics);
+    // Electron's clipboard writes are async. Await so the app does not quit
+    // before the diagnostics reach the clipboard; a failed copy is logged and
+    // the dialog outcome is unchanged.
+    try {
+      await handlers.copyDiagnostics?.(content.diagnostics);
+    } catch (error) {
+      console.error('[database] Failed to copy startup diagnostics to the clipboard:', error);
+    }
     return { action, reportedAction: 'copy_diagnostics', restored: false };
   }
 

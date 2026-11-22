@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.nimbalyst.dictation-helper</string>
+    <key>CFBundleName</key>
+    <string>Nimbalyst Dictation</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <!-- Embedded into the binary with -sectcreate __TEXT __info_plist so the -->
+    <!-- Speech framework finds a usage description when the legacy -->
+    <!-- SFSpeechRecognizer path asks for authorization. The prompt itself is -->
+    <!-- attributed to the responsible app (Nimbalyst). -->
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Nimbalyst uses on-device speech recognition to turn your dictation into text.</string>
+</dict>
+</plist>

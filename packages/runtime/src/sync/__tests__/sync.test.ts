@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createMessageSyncHandler, createSyncedSessionStore } from '../SyncedSessionStore';
 import { resetPushOutcomeWarnings } from '../pushOutcome';
+import { buildClientMetadataFromRaw } from '../sessionClientMetadata';
 import type { SessionStore } from '../../ai/adapters/sessionStore';
 import type { SyncProvider, SessionChange
  } from '../types';
@@ -419,5 +420,14 @@ describe('SyncedSessionStore', () => {
       // create() always carries a fresh updatedAt so iOS sorts the new session.
       expect(typeof m.updatedAt).toBe('number');
     }
+  });
+});
+
+describe('buildClientMetadataFromRaw', () => {
+  it('publishes hasBeenNamed as a boolean when the row holds SQLite 0/1', () => {
+    // iOS decodes client metadata strictly; a numeric flag made the phone skip the session.
+    expect(buildClientMetadataFromRaw({}, { hasBeenNamed: 0 as unknown as boolean })).toEqual({ hasBeenNamed: false });
+    expect(buildClientMetadataFromRaw({}, { hasBeenNamed: 1 as unknown as boolean })).toEqual({ hasBeenNamed: true });
+    expect(buildClientMetadataFromRaw({}, {})).toBeUndefined();
   });
 });

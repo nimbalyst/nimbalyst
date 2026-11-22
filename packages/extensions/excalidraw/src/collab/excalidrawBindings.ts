@@ -121,6 +121,13 @@ export class ExcalidrawBinding {
   private remoteElementEchoTimers = new Set<ReturnType<typeof setTimeout>>();
   private apiChangeUnsubscribe: (() => void) | null = null;
   /**
+   * Whether the host shows this document read-only. Every write to the shared
+   * Y.Doc checks it at write time: a read-only user's write is refused by the
+   * room, and for a commenter the refusal ends the session. Covers the local
+   * push and the repairs that run from the remote observer.
+   */
+  private readonly isReadOnly: () => boolean;
+  /**
    * The debounced local-to-shared push. Held on the instance so `syncNow` can
    * flush a pending scene into the Y.Doc on demand -- the host drains this
    * before it reports a write complete, so an AI tool cannot return success on
@@ -141,7 +148,9 @@ export class ExcalidrawBinding {
     api: ExcalidrawImperativeAPI,
     awareness?: awarenessProtocol.Awareness,
     undoConfig?: UndoConfig,
+    options: { isReadOnly?: () => boolean } = {},
   ) {
+    this.isReadOnly = options.isReadOnly ?? (() => false);
     this.yElements = yElements;
     this.yAssets = yAssets;
     this.api = api;
@@ -159,6 +168,7 @@ export class ExcalidrawBinding {
       selectedElementIds: AppState['selectedElementIds'],
       files: BinaryFiles,
     ) => {
+      if (this.isReadOnly()) return;
       const baselineVersions = new Map(
         capturedBaseline.map((element) => [element.id, element.version]),
       );
@@ -301,6 +311,19 @@ export class ExcalidrawBinding {
           idCounts.set(el.id, next);
           if (next > 1) duplicateIds.add(el.id);
         }
+      }
+      if (duplicateIds.size > 0 && this.isReadOnly()) {
+        // Show the newest revision of each id without repairing the shared
+        // array; a writer's client repairs it.
+        const newest = new Map<string, (typeof remoteElements)[number]>();
+        for (const el of remoteElements) {
+          const kept = newest.get(el.id);
+          if (!kept || isNewerElementRevision(el as ElementRevision, kept as ElementRevision)) {
+            newest.set(el.id, el);
+          }
+        }
+        this.updateRemoteElements([...newest.values()]);
+        return;
       }
       if (duplicateIds.size > 0) {
         console.warn('[ExcalidrawBinding] Duplicate element IDs detected:', [...duplicateIds]);
@@ -776,6 +799,7 @@ export class ExcalidrawBinding {
    * defensive op when we detect duplicates or non-monotonic positions.
    */
   private ensureValidOrderingKeys(): void {
+    if (this.isReadOnly()) return;
     const sortedElements = [...this.lastKnownElements].sort(compareOrderedElements);
     const yDoc = this.yElements.doc!;
     const newKeys = generateNKeysBetween(null, null, Math.max(sortedElements.length, 1));

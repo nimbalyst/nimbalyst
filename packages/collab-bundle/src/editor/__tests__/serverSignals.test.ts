@@ -3,9 +3,62 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyDocumentClose,
   parseDocumentServerSignal,
+  serverAccessFromVerdict,
 } from '../serverSignals';
 
 describe('document room server signals', () => {
+  it('reads a commenter verdict and maps it to comment-only access', () => {
+    const verdict = parseDocumentServerSignal(JSON.stringify({
+      type: 'docSyncResponse',
+      updates: [],
+      canWrite: false,
+      canComment: true,
+    }));
+    expect(verdict).toEqual({ type: 'access-verdict', canWrite: false, canComment: true });
+    expect(serverAccessFromVerdict({ canWrite: false, canComment: true })).toBe('comment-only');
+    // Absent canComment keeps the old answer: a server that predates
+    // commenters means read-only.
+    expect(serverAccessFromVerdict({ canWrite: false })).toBe('read-only');
+    expect(serverAccessFromVerdict({ canWrite: false, canComment: false })).toBe('read-only');
+    expect(serverAccessFromVerdict({ canWrite: true, canComment: true })).toBe('writable');
+  });
+
+  it('treats a refused commenter update as terminal, and a refused compaction as nothing', () => {
+    expect(parseDocumentServerSignal(JSON.stringify({
+      type: 'error',
+      code: 'document_comment_update_refused',
+      message: 'Commenters may only change comments',
+      clientUpdateId: 'client-update-9',
+    }))).toEqual({
+      type: 'comment-update-refused',
+      message: 'Commenters may only change comments',
+      clientUpdateId: 'client-update-9',
+    });
+    expect(classifyDocumentClose(4009, '')).toEqual({
+      reason: 'comment-update-refused',
+      closeCode: 4009,
+      message: 'Comment update refused',
+    });
+    // A mid-session demotion to commenter keeps the socket and commenting.
+    expect(parseDocumentServerSignal(JSON.stringify({
+      type: 'error',
+      code: 'document_comment_only',
+      message: 'Commenting only',
+    }))).toEqual({ type: 'comment-only', message: 'Commenting only' });
+    // Write granted mid-session reads as a writable verdict.
+    expect(parseDocumentServerSignal(JSON.stringify({
+      type: 'error',
+      code: 'document_writable',
+      message: 'Editing allowed',
+    }))).toEqual({ type: 'access-verdict', canWrite: true });
+    // A refused docCompact leaves the socket open; it is not an access signal.
+    expect(parseDocumentServerSignal(JSON.stringify({
+      type: 'error',
+      code: 'document_comment_forbidden',
+      message: 'Commenters may not compact',
+    }))).toBeNull();
+  });
+
   it('preserves the originating clientUpdateId on a read-only rejection', () => {
     expect(parseDocumentServerSignal(JSON.stringify({
       type: 'error',

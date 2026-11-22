@@ -2,6 +2,7 @@ import React from 'react';
 import type { TrackerMutationRejection } from '@nimbalyst/collab-client/trackers';
 
 const REJECTION_EXPLANATIONS: Record<TrackerMutationRejection['code'], string> = {
+  recoveryConflict: 'An older queued edit needs review against the recovered item.',
   forbidden: 'Your permission no longer allows this change.',
   staleKeyEpoch: 'The tracker encryption state changed before the server could accept this change.',
   rotationLocked: 'The tracker is temporarily locked while its encryption state changes.',
@@ -17,7 +18,8 @@ const REJECTION_EXPLANATIONS: Record<TrackerMutationRejection['code'], string> =
 export function formatTrackerMutationRejection(rejection: TrackerMutationRejection): string {
   const explanation = REJECTION_EXPLANATIONS[rejection.code] ?? 'The server refused this change.';
   const detail = rejection.message?.trim();
-  return `Change rolled back. ${explanation}${detail ? ` ${detail}` : ''}`;
+  const outcome = rejection.code === 'recoveryConflict' ? 'Queued edit retained for review.' : 'Change rolled back.';
+  return `${outcome} ${explanation}${detail ? ` ${detail}` : ''}`;
 }
 
 export interface TrackerMutationRejectionNoticeProps {

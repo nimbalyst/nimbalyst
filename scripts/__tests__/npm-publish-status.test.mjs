@@ -19,7 +19,7 @@ test('a group publishes only when it changed, and never with mismatched or older
 // out the mind map extension, and the publish job rebuilds wiki-web on its own runner.
 test('every publish-cli job that builds wiki-web has the mind map checkout', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/publish-cli.yml', import.meta.url), 'utf8');
-  const jobs = workflow.split(/\n {2}(?=[a-z-]+:\n)/).slice(1);
+  const jobs = workflow.split(/\r?\n {2}(?=[a-z-]+:\r?\n)/).slice(1);
   const building = jobs.filter((job) => job.includes('@nimbalyst/wiki-web run build'));
   assert.equal(building.length, 2);
   for (const job of building) {

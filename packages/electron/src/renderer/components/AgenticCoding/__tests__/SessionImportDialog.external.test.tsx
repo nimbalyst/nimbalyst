@@ -63,13 +63,13 @@ it('preserves the explicit dialog all-workspace fallback and source cwd in selec
 it('keeps the mounted dialog open when a batch reports an individual import failure', async () => {
   window.electronAPI = { invoke: vi.fn().mockImplementation(async (channel: string) => channel === 'external-sessions:scan'
     ? { success: true, sessions: summaries }
-    : { success: true, results: [], successCount: 1, failureCount: 1 }) } as any;
+    : { success: true, results: [], successCount: 1, failureCount: 1, error: "Invalid external session cursor" }) } as any;
   registerDataDialogs();
   const Wrapper = registrations.find(config => config.id === DIALOG_IDS.SESSION_IMPORT).component;
   const onClose = vi.fn();
   render(<Wrapper isOpen onClose={onClose} data={{ workspacePath: '/workspace' }} />);
   fireEvent.click(await screen.findByRole('button', { name: 'Import 2 Sessions' }));
-  await screen.findByText('Failed to import sessions');
+  await screen.findByText('Invalid external session cursor');
   expect(onClose).not.toHaveBeenCalled();
 });
 

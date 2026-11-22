@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "@nimbalyst/tracker-schema": ["./../tracker-schema/src/index.ts"],
+      "@nimbalyst/tracker-core": ["./../tracker-core/src/index.ts"]
+    }
+  },
+  "include": ["src", "types"]
+}
