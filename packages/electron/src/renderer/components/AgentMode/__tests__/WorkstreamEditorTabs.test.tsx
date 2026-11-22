@@ -11,6 +11,8 @@ import {
   workstreamStateAtom,
   workstreamStatesLoadedAtom,
 } from "../../../store/atoms/workstreamState";
+import { setAgentFilePlacementAtom } from "../../../store/atoms/agentFilePlacement";
+import { setWorkstreamRightPanelModeAtom, workstreamRightPanelModeAtom } from "../../../store/atoms/workstreamState";
 import { revealEditorPosition } from "../../TabEditor/editorRevealCommand";
 
 const { actions, tabs, openDialog } = vi.hoisted(() => ({
@@ -114,4 +116,19 @@ it("does not mirror an empty hidden editor before hydration, forwards file locat
   expect(event.defaultPrevented).toBe(true);
   expect(actions.addTab).toHaveBeenCalledWith("tracker://tracker-1");
   expect(store.get(workstreamStateAtom(id)).layoutMode).toBe("split");
+});
+
+it("lets the user return from the empty right-side file viewer to edited files", () => {
+  initWorkstreamState("/project");
+  const store = createStore();
+  const id = "empty-viewer";
+  store.set(setAgentFilePlacementAtom, "right");
+  store.set(setWorkstreamRightPanelModeAtom, { workstreamId: id, mode: "file-viewer" });
+  render(
+    <Provider store={store}>
+      <WorkstreamEditorTabs workstreamId={id} workspacePath="/project" basePath="/project" />
+    </Provider>
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Show edited files" }));
+  expect(store.get(workstreamRightPanelModeAtom(id))).toBe("edited-files");
 });

@@ -42,12 +42,38 @@ export type FileChangeFidelity = 'structured' | 'tool-args' | 'none';
  * provider already reports the truth, so guessing on top of it can only add
  * disagreement.
  */
-export type WorkspaceFileAttributionMode = 'fuzzy' | 'disabled';
+export type WorkspaceFileAttributionMode = 'fuzzy' | 'disabled' | 'shell-window';
 
 export function attributionModeForFileChangeFidelity(
   fidelity: FileChangeFidelity,
 ): WorkspaceFileAttributionMode {
   return fidelity === 'structured' ? 'disabled' : 'fuzzy';
+}
+
+/**
+ * Providers whose shell commands are bracketed by in-process pre/post hooks.
+ * They use `'shell-window'`: path tools keep their exact rows, Bash edits are
+ * linked only from the hook window (`claudeShellTracking.ts`), and neither the
+ * fuzzy watcher matcher nor the command-text scraper writes rows for them.
+ * Overlapping windows abstain instead of guessing (decided 2026-11-20).
+ */
+const SHELL_WINDOW_PROVIDERS: ReadonlySet<string> = new Set(['claude-code']);
+
+/**
+ * Attribution mode for a provider, given its fidelity. `shellWindowAvailable`
+ * is false when the host has no shell tracker; the provider then keeps the
+ * fuzzy watcher rather than losing Bash attribution altogether.
+ */
+export function attributionModeForProvider(
+  providerType: string | null | undefined,
+  fidelity: FileChangeFidelity,
+  shellWindowAvailable: boolean,
+): WorkspaceFileAttributionMode {
+  const mode = attributionModeForFileChangeFidelity(fidelity);
+  if (mode === 'fuzzy' && shellWindowAvailable && providerType && SHELL_WINDOW_PROVIDERS.has(providerType)) {
+    return 'shell-window';
+  }
+  return mode;
 }
 
 /**

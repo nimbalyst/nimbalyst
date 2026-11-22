@@ -1,13 +1,9 @@
-import { execFile } from 'child_process';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import { basename, dirname } from 'path';
-import { promisify } from 'util';
-import { getRipgrepPath } from '../services/ripgrepPath';
-import { RIPGREP_EXCLUDE_ARGS_ARRAY } from '../utils/fileFilters';
+import { streamRipgrepLines } from '../services/ripgrepPath';
+import { QUICKOPEN_FILE_TYPE_ARGS, RIPGREP_EXCLUDE_ARGS_ARRAY } from '../utils/fileFilters';
 import { listIgnoredNestedRepositories } from '../utils/gitUtils';
-
-const execFileAsync = promisify(execFile);
 
 // Binary file extensions to exclude from QuickOpen results
 // Note: Images are NOT excluded - Nimbalyst can display them
@@ -33,8 +29,9 @@ const BINARY_EXTENSIONS = new Set([
 
 const NIMBALYST_LOCAL_DIRNAME = 'nimbalyst-local';
 
+const CONTENT_SEARCH_MAX_FILES = 50;
+
 async function runRipgrepFiles(rootPath: string, options?: { noIgnore?: boolean }): Promise<string[]> {
-    const rgPath = getRipgrepPath();
     const rgArgs = [
         '--files',
         '--hidden',  // Include dotfiles like .gitignore
@@ -43,25 +40,12 @@ async function runRipgrepFiles(rootPath: string, options?: { noIgnore?: boolean 
         rootPath
     ];
 
-    let stdout = '';
-    try {
-        const result = await execFileAsync(rgPath, rgArgs, { maxBuffer: 5 * 1024 * 1024 });
-        stdout = result.stdout;
-    } catch (execError: any) {
-        // ripgrep returns exit code 1 when no matches found
-        if (execError.code === 1) {
-            stdout = execError.stdout || '';
-        } else {
-            throw execError;
-        }
-    }
-
-    if (!stdout) return [];
-
-    return stdout
-        .split('\n')
-        .filter(line => line.trim())
-        .map(file => path.normalize(file));
+    const files: string[] = [];
+    await streamRipgrepLines(rgArgs, line => {
+        if (line.trim()) files.push(path.normalize(line));
+        return true;
+    });
+    return files;
 }
 
 /**
@@ -130,5 +114,55 @@ export async function findWorkspaceFiles(dir: string): Promise<string[]> {
 export async function listContentSearchRoots(roots: string[]): Promise<string[]> {
     const nested = await Promise.all(roots.map(root => listIgnoredNestedRepositories(root)));
     return Array.from(new Set([...roots, ...nested.flat()].map(dir => path.resolve(dir))));
+}
+
+export interface ContentSearchResult {
+    path: string;
+    isContentMatch: true;
+    matches: Array<{ line: number; text: string; start: number; end: number }>;
+}
+
+// ripgrep's --json output groups each file's matches together, so stopping at
+// the first match in file N+1 keeps every match from the first N files.
+export async function searchFileContent(
+    roots: string[],
+    query: string,
+    { typeArgs = QUICKOPEN_FILE_TYPE_ARGS, maxFiles = CONTENT_SEARCH_MAX_FILES }: { typeArgs?: string[]; maxFiles?: number } = {},
+): Promise<ContentSearchResult[]> {
+    const rgArgs = [
+        ...typeArgs,
+        '-i',
+        '--json',
+        ...RIPGREP_EXCLUDE_ARGS_ARRAY,
+        query,
+        // ripgrep takes N search roots directly, so a multi-root
+        // workspace is one invocation, not one per root.
+        ...roots,
+    ];
+
+    const resultsByFile = new Map<string, ContentSearchResult>();
+    await streamRipgrepLines(rgArgs, line => {
+        try {
+            const item = JSON.parse(line);
+            if (item.type !== 'match') return true;
+            const filePath = item.data.path.text;
+            let result = resultsByFile.get(filePath);
+            if (!result) {
+                if (resultsByFile.size >= maxFiles) return false;
+                result = { path: path.normalize(filePath), isContentMatch: true, matches: [] };
+                resultsByFile.set(filePath, result);
+            }
+            result.matches.push({
+                line: item.data.line_number,
+                text: item.data.lines.text.trim(),
+                start: item.data.submatches[0]?.start || 0,
+                end: item.data.submatches[0]?.end || item.data.lines.text.length,
+            });
+        } catch {
+            // Skip invalid JSON lines and non-UTF-8 paths (reported as path.bytes)
+        }
+        return true;
+    });
+    return Array.from(resultsByFile.values());
 }
 

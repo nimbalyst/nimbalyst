@@ -29,8 +29,13 @@ describe('resolveClaudeCodeModelVariant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:haiku-4-5', DEFAULT_MODEL)).toBe('claude-haiku-4-5-20251001');
     });
 
-    it('resolves fable to the pinned Fable 5.1 model id', () => {
-      expect(resolveClaudeCodeModelVariant('claude-code:fable', DEFAULT_MODEL)).toBe('claude-fable-5-1');
+    it('resolves fable to the pinned Fable 5.2 model id', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:fable', DEFAULT_MODEL)).toBe('claude-fable-5-2');
+      expect(resolveClaudeCodeModelVariant('claude-code:fable-5-2', DEFAULT_MODEL)).toBe('claude-fable-5-2');
+    });
+
+    it('keeps sessions saved on fable-5-1 on Fable 5.1', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:fable-5-1', DEFAULT_MODEL)).toBe('claude-fable-5-1');
     });
 
     it('resolves pinned fable-5 to the previous-generation model id', () => {
@@ -38,7 +43,7 @@ describe('resolveClaudeCodeModelVariant', () => {
     });
 
     it('fable-1m resolves to the pinned id with the [1m] suffix', () => {
-      expect(resolveClaudeCodeModelVariant('claude-code:fable-1m', DEFAULT_MODEL)).toBe('claude-fable-5-1[1m]');
+      expect(resolveClaudeCodeModelVariant('claude-code:fable-1m', DEFAULT_MODEL)).toBe('claude-fable-5-2[1m]');
     });
 
     it('uses default model when config model is undefined', () => {

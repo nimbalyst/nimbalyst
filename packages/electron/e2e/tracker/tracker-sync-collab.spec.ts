@@ -286,10 +286,10 @@ test.describe('Collaborative Tracker Sync', () => {
     });
 
     await expect(async () => {
-      const item = await pageB.evaluate(async (id) => {
-        const items = await (window as any).electronAPI.invoke('document-service:tracker-items-list');
+      const item = await pageB.evaluate(async ({ id, workspacePath }) => {
+        const items = await (window as any).electronAPI.invoke('document-service:tracker-items-list', workspacePath);
         return items.find((candidate: any) => candidate.id === id);
-      }, testItemId);
+      }, { id: testItemId, workspacePath: workspaceDirB });
       expect(item?.title).toBe('Shared comment persistence');
     }).toPass({ timeout: 15_000 });
 
@@ -307,10 +307,10 @@ test.describe('Collaborative Tracker Sync', () => {
     expect(updateResult?.success).toBe(true);
 
     await expect(async () => {
-      const item = await pageB.evaluate(async (id) => {
-        const items = await (window as any).electronAPI.invoke('document-service:tracker-items-list');
+      const item = await pageB.evaluate(async ({ id, workspacePath }) => {
+        const items = await (window as any).electronAPI.invoke('document-service:tracker-items-list', workspacePath);
         return items.find((candidate: any) => candidate.id === id);
-      }, testItemId);
+      }, { id: testItemId, workspacePath: workspaceDirB });
       expect(item?.customFields?.comments).toEqual(expect.arrayContaining([
         expect.objectContaining({ body: '**Persistent** shared comment' }),
       ]));

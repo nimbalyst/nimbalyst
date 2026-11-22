@@ -1,5 +1,6 @@
 import { execFile, execSync } from 'child_process';
 import { existsSync, statSync } from 'fs';
+import * as path from 'path';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { getUntrackedFilesInDirectories, isGitAvailable, logEbadfDiagnostic } from '../utils/gitUtils';
 
@@ -54,31 +55,47 @@ function hasGitDir(dir: string): boolean {
 }
 
 export function findGitRootForFile(filePath: string, boundary: string): string | null {
-  const boundaryAbs = resolve(boundary);
-  const fileAbs = isAbsolute(filePath) ? filePath : resolve(boundaryAbs, filePath);
+  return findGitRootForFileWith(path, hasGitDir, filePath, boundary);
+}
+
+/**
+ * `findGitRootForFile` with the path flavor and `.git` probe injected, so the
+ * Windows separator handling can be tested on any platform with `path.win32`.
+ */
+export function findGitRootForFileWith(
+  pathApi: typeof path.posix,
+  gitDirExists: (dir: string) => boolean,
+  filePath: string,
+  boundary: string,
+): string | null {
+  const boundaryAbs = pathApi.resolve(boundary);
+  // resolve, not the raw path, even when absolute: on Windows it turns the
+  // `C:/Users/...` form agents in Git Bash produce into the backslash form the
+  // prefix checks below compare against (#1831).
+  const fileAbs = pathApi.resolve(boundaryAbs, filePath);
 
   // The file must live inside the boundary. resolve normalizes separators
   // so we can compare prefix-wise. Add a separator on the right side to
   // avoid matching siblings like `/foo/bar2` against boundary `/foo/bar`.
   const boundaryWithSep = boundaryAbs.endsWith('/') || boundaryAbs.endsWith('\\')
     ? boundaryAbs
-    : boundaryAbs + (process.platform === 'win32' ? '\\' : '/');
+    : boundaryAbs + pathApi.sep;
   if (fileAbs !== boundaryAbs && !fileAbs.startsWith(boundaryWithSep)) {
     return null;
   }
 
-  let dir = dirname(fileAbs);
+  let dir = pathApi.dirname(fileAbs);
   // Walk up until we leave the boundary, hit fs root, or find `.git`.
   while (true) {
     try {
-      if (hasGitDir(dir)) {
+      if (gitDirExists(dir)) {
         return dir;
       }
     } catch {
       // ignore - keep walking
     }
     if (dir === boundaryAbs) break;
-    const parent = dirname(dir);
+    const parent = pathApi.dirname(dir);
     if (parent === dir) break; // hit filesystem root
     // If walking up would take us out of the boundary, stop after one
     // last check at boundary (handled by the `dir === boundaryAbs` break).
@@ -290,6 +307,7 @@ export class GitStatusService {
       // locking) `.git/index`, where it would contend with concurrent git
       // writers such as the commit path (NIM-2285).
       execFile('git', ['--no-optional-locks', 'status', '--porcelain'], {
+        windowsHide: true,
         cwd: workspacePath,
         encoding: 'utf8',
         timeout: 5000, // Preserve the existing 5 second timeout.
@@ -645,6 +663,7 @@ export class GitStatusService {
 
       // Also check via git command as a fallback
       const gitDir = execSync('git rev-parse --git-dir', {
+        windowsHide: true,
         cwd: workspacePath,
         encoding: 'utf8',
         timeout: 5000,
@@ -669,6 +688,7 @@ export class GitStatusService {
     try {
       // Get the common git directory (contains the actual repo)
       const commonDir = execSync('git rev-parse --git-common-dir', {
+        windowsHide: true,
         cwd: workspacePath,
         encoding: 'utf8',
         timeout: 5000,
@@ -677,6 +697,7 @@ export class GitStatusService {
 
       // List all worktrees
       const worktreeList = execSync('git worktree list --porcelain', {
+        windowsHide: true,
         cwd: workspacePath,
         encoding: 'utf8',
         timeout: 5000,
@@ -728,6 +749,7 @@ export class GitStatusService {
   private getCurrentBranch(workspacePath: string): string | null {
     try {
       const branch = execSync('git branch --show-current', {
+        windowsHide: true,
         cwd: workspacePath,
         encoding: 'utf8',
         timeout: 5000,
@@ -797,6 +819,7 @@ export class GitStatusService {
       // 1. Get files committed in worktree branch but not in main branch
       // Use three-dot diff to show changes in worktree branch since it diverged from main branch
       const diffOutput = execSync(`git diff --name-only ${mainBranch}...${worktreeBranch}`, {
+        windowsHide: true,
         cwd: workspacePath,
         encoding: 'utf8',
         timeout: 5000,
@@ -959,6 +982,7 @@ export class GitStatusService {
     try {
       // Get remote URL (typically origin)
       const remoteUrl = execSync('git remote get-url origin', {
+        windowsHide: true,
         cwd: workspacePath,
         encoding: 'utf8',
         timeout: 5000,
@@ -1046,6 +1070,7 @@ function runGitText(workspacePath: string, args: string[]): Promise<string | nul
       'git',
       args,
       {
+        windowsHide: true,
         cwd: workspacePath,
         encoding: 'utf8',
         timeout: 5000,

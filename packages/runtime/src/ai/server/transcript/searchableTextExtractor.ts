@@ -14,8 +14,22 @@
  * collapses them to a single searchable string and a single kind, prioritizing
  * user > assistant > tool > system > meta.
  *
+ * The kinds mean the same thing for every provider: `tool` is a tool call or
+ * its output, `system` is a provider lifecycle or error frame, and `meta` is
+ * only a row nothing renders. Retention and search select on this column, so
+ * a provider that files tool output under `meta` hides it from both.
+ *
  * See plan: `nimbalyst-local/plans/canonical-transcript-deprecation.md`.
  */
+
+import {
+  CODEX_APP_SERVER_STATUS_EVENT_TYPES,
+  CODEX_APP_SERVER_SUPERSEDED_DELTA_METHODS,
+} from '../../../storage/nonRenderingFrames';
+import {
+  isAppServerToolItem,
+  isNonRenderingAppServerItemStarted,
+} from './parsers/CodexAppServerRawParser';
 
 export type MessageKind = 'user' | 'assistant' | 'tool' | 'system' | 'meta';
 
@@ -140,6 +154,8 @@ function extractClaudeCodeOutput(parsed: unknown, content: string): ExtractedSea
   }
 
   if (p.type === 'assistant' && p.message) {
+    // An errored assistant frame is a synthetic echo the parser skips; the
+    // error itself renders from the separate `type: 'error'` frame.
     if (p.error) {
       return { searchableText: null, messageKind: 'meta' };
     }
@@ -180,6 +196,13 @@ function extractClaudeCodeOutput(parsed: unknown, content: string): ExtractedSea
     return { searchableText: nonEmpty(p.result), messageKind: 'assistant' };
   }
 
+  // A result frame without text (error_max_turns, error_during_execution) is
+  // the turn-end lifecycle frame, the claude-code analog of codex's
+  // `turn/completed`.
+  if (p.type === 'result') {
+    return { searchableText: null, messageKind: 'system' };
+  }
+
   if (p.type === 'nimbalyst_tool_use' || p.type === 'nimbalyst_tool_result') {
     return { searchableText: null, messageKind: 'tool' };
   }
@@ -195,6 +218,82 @@ function extractClaudeCodeOutput(parsed: unknown, content: string): ExtractedSea
   }
 
   if (p.type === 'system') {
+    return { searchableText: null, messageKind: 'system' };
+  }
+
+  return { searchableText: null, messageKind: 'meta' };
+}
+
+function todoListText(items: unknown[]): string | null {
+  const lines = items
+    .filter((t): t is Record<string, unknown> => !!t && typeof t === 'object')
+    .map((t) => {
+      const txt = typeof t.text === 'string' ? t.text : String(t.text ?? '');
+      return `- [${t.completed ? 'x' : ' '}] ${txt}`;
+    });
+  return nonEmpty(lines.join('\n'));
+}
+
+/** Lifecycle namespaces: the thread, the turn, the account and MCP server status. */
+const CODEX_APP_SERVER_LIFECYCLE_PREFIXES = ['turn/', 'thread/', 'account/', 'mcpServer/'];
+
+/**
+ * Classify one Codex app-server notification the way `CodexAppServerRawParser`
+ * renders it: tool cards are `tool`, provider lifecycle frames (turn, thread,
+ * account, MCP server status, errors) are `system`, and `meta` is left for
+ * frames nothing renders, such as superseded deltas and `item/started` for an
+ * item type whose card waits for `item/completed`.
+ */
+function extractCodexAppServerNotification(
+  method: string,
+  params: Record<string, unknown>,
+): ExtractedSearchable {
+  const item = params.item as
+    | { type?: unknown; text?: unknown; items?: unknown }
+    | undefined;
+
+  if (method === 'item/completed' || method === 'item/updated') {
+    if (item && typeof item === 'object') {
+      if (item.type === 'agentMessage' && typeof item.text === 'string' && item.text.trim().length > 0) {
+        return { searchableText: capLen(item.text), messageKind: 'assistant' };
+      }
+      // Reasoning renders as the turn's thinking. It is not indexed: the
+      // last-response readers assemble every assistant row's searchable_text,
+      // and the model's reasoning is not part of its reply.
+      if (item.type === 'reasoning' && typeof item.text === 'string' && item.text.trim().length > 0) {
+        return { searchableText: null, messageKind: 'assistant' };
+      }
+      // The parser renders a todo list as an assistant message. Not indexed,
+      // for the same reason as reasoning: it is a plan, not the reply.
+      if ((item.type === 'todoList' || item.type === 'todo_list') && Array.isArray(item.items)) {
+        return { searchableText: null, messageKind: todoListText(item.items) ? 'assistant' : 'meta' };
+      }
+      if (isAppServerToolItem(item)) {
+        return { searchableText: null, messageKind: 'tool' };
+      }
+    }
+    return { searchableText: null, messageKind: 'meta' };
+  }
+
+  if (method === 'item/started') {
+    if (isAppServerToolItem(item) && !isNonRenderingAppServerItemStarted(item?.type)) {
+      return { searchableText: null, messageKind: 'tool' };
+    }
+    return { searchableText: null, messageKind: 'meta' };
+  }
+
+  if (CODEX_APP_SERVER_SUPERSEDED_DELTA_METHODS.has(method)) {
+    return { searchableText: null, messageKind: 'meta' };
+  }
+
+  if (method === 'error' || method === 'turn/failed') {
+    const error = params.error as { message?: unknown } | undefined;
+    const message = typeof error?.message === 'string' ? error.message : params.message;
+    return { searchableText: typeof message === 'string' ? nonEmpty(message) : null, messageKind: 'system' };
+  }
+
+  if (CODEX_APP_SERVER_STATUS_EVENT_TYPES.has(method)
+    || CODEX_APP_SERVER_LIFECYCLE_PREFIXES.some((prefix) => method.startsWith(prefix))) {
     return { searchableText: null, messageKind: 'system' };
   }
 
@@ -227,28 +326,14 @@ function extractCodexOutput(parsed: unknown, content: string): ExtractedSearchab
   // reader (CodexAppServerRawParser.parseItemCompleted) and the meta-agent's
   // extractCodexText. Fixes #692.
   if (typeof p.method === 'string' && p.params && typeof p.params === 'object') {
-    if (p.method === 'item/completed' || p.method === 'item/updated') {
-      const item = p.params.item;
-      if (item && typeof item === 'object' && item.type === 'agentMessage'
-        && typeof item.text === 'string' && item.text.trim().length > 0) {
-        return { searchableText: capLen(item.text), messageKind: 'assistant' };
-      }
-    }
-    // turn/completed, item/started (tool calls), reasoning, turn/failed, error
-    // carry no assistant prose -- fall through to meta.
-    return { searchableText: null, messageKind: 'meta' };
+    return extractCodexAppServerNotification(p.method, p.params as Record<string, unknown>);
   }
 
   // todo_list item -> rendered as assistant_message text
   if (p.item && typeof p.item === 'object') {
     const it = p.item;
     if (it.type === 'todo_list' && Array.isArray(it.items)) {
-      const lines = (it.items as Array<Record<string, unknown>>).map((t) => {
-        const txt = typeof t.text === 'string' ? t.text : String(t.text ?? '');
-        return `- [${t.completed ? 'x' : ' '}] ${txt}`;
-      });
-      const joined = lines.join('\n');
-      return { searchableText: nonEmpty(joined), messageKind: 'assistant' };
+      return { searchableText: todoListText(it.items), messageKind: 'assistant' };
     }
     if (typeof it.text === 'string' && it.text.trim().length > 0) {
       return { searchableText: capLen(it.text), messageKind: 'assistant' };

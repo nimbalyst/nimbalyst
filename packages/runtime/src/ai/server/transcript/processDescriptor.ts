@@ -11,6 +11,7 @@ import type { TranscriptWriter } from './TranscriptWriter';
 import type { ITranscriptEventStore, TranscriptEvent } from './types';
 import type { CanonicalEventDescriptor } from './parsers/IRawMessageParser';
 import type { RawMessage } from './TranscriptTransformer';
+import { reconcileClaudeCommitProposal, reconcileCodexCommitProposal } from './reconcileCodexCommitProposal';
 
 const PROMPT_ACTORS = new Set(['human', 'agent', 'system']);
 
@@ -84,6 +85,7 @@ export async function processDescriptor(
         mode: desc.mode,
         createdAt: desc.createdAt,
         thinking: desc.thinking,
+        progressUpdate: desc.progressUpdate,
         thinkingSignature: desc.thinkingSignature,
         model: desc.model,
       });
@@ -110,6 +112,12 @@ export async function processDescriptor(
     }
 
     case 'tool_call_started': {
+      const reconciled = await reconcileCodexCommitProposal(store, sessionId, desc)
+        ?? await reconcileClaudeCommitProposal(store, sessionId, desc);
+      if (reconciled && desc.providerToolCallId) {
+        toolEventIds.set(desc.providerToolCallId, reconciled.id);
+        return reconciled;
+      }
       if (desc.providerToolCallId) {
         const isSynthetic = isSyntheticCodexLookupId(desc.providerToolCallId);
         // In-memory dedup: same provider id, same toolName, and still-active

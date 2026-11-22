@@ -149,3 +149,7 @@ Deleting a team-owned YAML file does not delete the team's tracker; explicit tea
 - Team schema ownership, baseline diffing, and the pending outbox: [`trackerTypeDefStore.ts`](../packages/electron/src/main/services/tracker/trackerTypeDefStore.ts)
 - YAML projection and watcher behavior: [`TrackerSchemaService.ts`](../packages/electron/src/main/services/TrackerSchemaService.ts)
 - Baseline column rationale: [`0030_tracker_type_defs_synced_model.sql`](../packages/electron/src/main/database/sqlite/schemas/0030_tracker_type_defs_synced_model.sql)
+
+## Legacy organization recovery
+
+[In-place organization recovery](LEGACY_ORG_RECOVERY.md) restores reviewed schemas, shared navigation, saved views, item payloads, and bodies under their existing project and item identities. It uses a separate admin import while normal writes are durably paused. It preserves reserved keys, including locally assigned shared keys that never uploaded, and advances the allocator above both existing identities and its stored floor. Private items and unpublished drafts are not promoted. Schema and content conflicts block readiness. Older queued item edits cannot overwrite the recovered baseline: they remain in the local transaction history for review. Normal first-publication allocation rules are unchanged.

@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { TeamRecoverySection } from './TeamRecoverySection';
 
 type KeyCustodyMode = 'server-managed' | 'unmigrated';
 
@@ -11,29 +12,32 @@ interface Props {
  * Organization encryption is server-managed product infrastructure and is the
  * only supported mode. This surface reports whether the organization carries
  * the server-managed marker; one that does not was never converted and the
- * server refuses its team data, so it has to be set up again.
+ * server refuses its team data. An unavailable probe is not a migration diagnosis.
  */
 export function SecurityEncryptionSection({ orgId }: Props) {
   const [mode, setMode] = useState<KeyCustodyMode | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const refresh = useCallback(async () => {
+  const [refreshKey, setRefreshKey] = useState(0);
+  const loadedOrgId = useRef<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
     setLoading(true);
-    try {
+    // Rechecking the same organization keeps its last mode, so an open recovery
+    // section is not unmounted, which would release its collected sources.
+    if (loadedOrgId.current !== orgId) { loadedOrgId.current = orgId; setMode(null); }
+    void (async () => { try {
       const statusResult = await window.electronAPI.team.getKeyCustodyStatus(orgId);
-      // Anything other than an explicit success + server-managed is treated as
-      // unusable. An unknown value must not read as "fine".
-      setMode(statusResult?.success && statusResult.mode === 'server-managed'
-        ? 'server-managed'
-        : 'unmigrated');
+      if (cancelled) return;
+      setMode(statusResult?.success && (statusResult.mode === 'server-managed' || statusResult.mode === 'unmigrated')
+        ? statusResult.mode : null);
     } catch {
-      setMode(null);
+      if (!cancelled) setMode(null);
     } finally {
-      setLoading(false);
-    }
-  }, [orgId]);
-
-  useEffect(() => { void refresh(); }, [refresh]);
+      if (!cancelled) setLoading(false);
+    } })();
+    return () => { cancelled = true; };
+  }, [orgId, refreshKey]);
 
   const unmigrated = mode === 'unmigrated';
 
@@ -66,8 +70,8 @@ export function SecurityEncryptionSection({ orgId }: Props) {
               </p>
               <p className="m-0 mt-1 select-text text-xs text-[var(--nim-text-muted)]">
                 It was never moved to Nimbalyst-managed encryption, which is now the only supported
-                mode. Team documents and trackers are unavailable for it. Create a new organization
-                and re-share this team&apos;s content.
+                mode. Team documents and trackers cannot sync. Keep the existing organization and
+                local data: re-sharing into a new organization can change referenced ticket numbers.
               </p>
             </div>
           ) : mode === null ? (
@@ -80,6 +84,8 @@ export function SecurityEncryptionSection({ orgId }: Props) {
               Encryption active
             </p>
           )}
+          {!loading && <button type="button" className="mt-3 text-xs text-[var(--nim-primary)]" onClick={() => setRefreshKey(k => k + 1)}>Check status again</button>}
+          {unmigrated && <TeamRecoverySection orgId={orgId} />}
         </div>
       </div>
     </section>

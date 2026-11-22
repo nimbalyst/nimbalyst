@@ -5,6 +5,7 @@
 import { BrowserWindow } from 'electron';
 import { AttachmentService } from '../services/AttachmentService';
 import { getWindowId, windowStates } from '../window/WindowManager';
+import { getWindowProjectPaths, resolveRequestWorkspacePath } from '../window/windowState';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { getAttachmentStagingConfig, setAttachmentStagingConfig } from '../utils/store';
 import { resolveWorkspaceAttachmentStagingDirectory } from '../services/attachments/attachmentStagingRoot';
@@ -33,6 +34,20 @@ function getAttachmentService(workspacePath: string): AttachmentService {
   return attachmentServices.get(key)!;
 }
 
+/**
+ * The project an attachment request acts on: the one the request names, if the
+ * calling window has it in its rail, else the project on screen. Never the
+ * window's first rail project by default, which staged attachments into a
+ * project the user was not looking at.
+ */
+function resolveCallerWorkspace(event: Electron.IpcMainInvokeEvent, requestedPath?: string): string | null {
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) return null;
+  const windowId = getWindowId(window);
+  if (windowId === null) return null;
+  return resolveRequestWorkspacePath(windowStates.get(windowId), requestedPath);
+}
+
 export function registerAttachmentHandlers() {
   safeHandle('attachment:workspace-staging-status', async (_event, workspacePath: string) => {
     if (!workspacePath) throw new Error('attachment:workspace-staging-status requires workspacePath');
@@ -53,8 +68,8 @@ export function registerAttachmentHandlers() {
     if (!payload?.workspacePath) throw new Error('attachment:retry-in-workspace requires workspacePath');
     const window = BrowserWindow.fromWebContents(event.sender);
     const windowId = window ? getWindowId(window) : null;
-    const callerWorkspace = windowId === null ? undefined : windowStates.get(windowId)?.workspacePath;
-    if (callerWorkspace !== payload.workspacePath) {
+    const callerState = windowId === null ? undefined : windowStates.get(windowId);
+    if (!callerState || !getWindowProjectPaths(callerState).includes(payload.workspacePath)) {
       throw new Error('attachment:retry-in-workspace workspace does not match the calling window');
     }
 
@@ -86,33 +101,23 @@ export function registerAttachmentHandlers() {
     fileBuffer,
     filename,
     mimeType,
-    sessionId
+    sessionId,
+    workspacePath: requestedWorkspacePath
   }: {
     fileBuffer: number[] | Buffer; // Accept array from renderer or Buffer
     filename: string;
     mimeType: string;
     sessionId: string;
+    /** The project the request belongs to; defaults to the one on screen. */
+    workspacePath?: string;
   }) => {
     try {
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (!window) {
-        console.error('[AttachmentHandlers] No window found');
-        return { success: false, error: 'No window found' };
-      }
-
-      const windowId = getWindowId(window);
-      if (windowId === null) {
-        console.error('[AttachmentHandlers] No window ID found');
-        return { success: false, error: 'No window ID found' };
-      }
-
-      const state = windowStates.get(windowId);
-      if (!state?.workspacePath) {
-        console.error('[AttachmentHandlers] No workspace path found');
+      const workspacePath = resolveCallerWorkspace(event, requestedWorkspacePath);
+      if (!workspacePath) {
         return { success: false, error: 'No workspace open' };
       }
 
-      const service = getAttachmentService(state.workspacePath);
+      const service = getAttachmentService(workspacePath);
       const result = await service.saveAttachment(
         Buffer.from(fileBuffer),
         filename,
@@ -140,28 +145,21 @@ export function registerAttachmentHandlers() {
    */
   safeHandle('attachment:delete', async (event, {
     attachmentId,
-    sessionId
+    sessionId,
+    workspacePath: requestedWorkspacePath
   }: {
     attachmentId: string;
     sessionId: string;
+    /** The project the request belongs to; defaults to the one on screen. */
+    workspacePath?: string;
   }) => {
     try {
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (!window) {
-        return { success: false, error: 'No window found' };
-      }
-
-      const windowId = getWindowId(window);
-      if (windowId === null) {
-        return { success: false, error: 'No window ID found' };
-      }
-
-      const state = windowStates.get(windowId);
-      if (!state?.workspacePath) {
+      const workspacePath = resolveCallerWorkspace(event, requestedWorkspacePath);
+      if (!workspacePath) {
         return { success: false, error: 'No workspace open' };
       }
 
-      const service = getAttachmentService(state.workspacePath);
+      const service = getAttachmentService(workspacePath);
       return await service.deleteAttachment(attachmentId, sessionId);
     } catch (error) {
       console.error('[AttachmentHandlers] Delete attachment failed', error);
@@ -176,27 +174,20 @@ export function registerAttachmentHandlers() {
    * Read attachment as base64 (for sending to AI providers)
    */
   safeHandle('attachment:readAsBase64', async (event, {
-    filepath
+    filepath,
+    workspacePath: requestedWorkspacePath
   }: {
     filepath: string;
+    /** The project the request belongs to; defaults to the one on screen. */
+    workspacePath?: string;
   }) => {
     try {
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (!window) {
-        return { success: false, error: 'No window found' };
-      }
-
-      const windowId = getWindowId(window);
-      if (windowId === null) {
-        return { success: false, error: 'No window ID found' };
-      }
-
-      const state = windowStates.get(windowId);
-      if (!state?.workspacePath) {
+      const workspacePath = resolveCallerWorkspace(event, requestedWorkspacePath);
+      if (!workspacePath) {
         return { success: false, error: 'No workspace open' };
       }
 
-      const service = getAttachmentService(state.workspacePath);
+      const service = getAttachmentService(workspacePath);
       return await service.readAttachmentAsBase64(filepath);
     } catch (error) {
       console.error('[AttachmentHandlers] Read attachment failed', error);
@@ -211,27 +202,20 @@ export function registerAttachmentHandlers() {
    * Read attachment as text (for converting back to prompt text)
    */
   safeHandle('attachment:readAsText', async (event, {
-    filepath
+    filepath,
+    workspacePath: requestedWorkspacePath
   }: {
     filepath: string;
+    /** The project the request belongs to; defaults to the one on screen. */
+    workspacePath?: string;
   }) => {
     try {
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (!window) {
-        return { success: false, error: 'No window found' };
-      }
-
-      const windowId = getWindowId(window);
-      if (windowId === null) {
-        return { success: false, error: 'No window ID found' };
-      }
-
-      const state = windowStates.get(windowId);
-      if (!state?.workspacePath) {
+      const workspacePath = resolveCallerWorkspace(event, requestedWorkspacePath);
+      if (!workspacePath) {
         return { success: false, error: 'No workspace open' };
       }
 
-      const service = getAttachmentService(state.workspacePath);
+      const service = getAttachmentService(workspacePath);
       return await service.readAttachmentAsText(filepath);
     } catch (error) {
       console.error('[AttachmentHandlers] Read attachment as text failed', error);
@@ -248,29 +232,22 @@ export function registerAttachmentHandlers() {
   safeHandle('attachment:validate', async (event, {
     fileSize,
     mimeType,
-    filename
+    filename,
+    workspacePath: requestedWorkspacePath
   }: {
     fileSize: number;
     mimeType: string;
     filename?: string;
+    /** The project the request belongs to; defaults to the one on screen. */
+    workspacePath?: string;
   }) => {
     try {
-      const window = BrowserWindow.fromWebContents(event.sender);
-      if (!window) {
-        return { valid: false, error: 'No window found' };
-      }
-
-      const windowId = getWindowId(window);
-      if (windowId === null) {
-        return { valid: false, error: 'No window ID found' };
-      }
-
-      const state = windowStates.get(windowId);
-      if (!state?.workspacePath) {
+      const workspacePath = resolveCallerWorkspace(event, requestedWorkspacePath);
+      if (!workspacePath) {
         return { valid: false, error: 'No workspace open' };
       }
 
-      const service = getAttachmentService(state.workspacePath);
+      const service = getAttachmentService(workspacePath);
       return service.validateFile(fileSize, mimeType, filename);
     } catch (error) {
       console.error('[AttachmentHandlers] Validate file failed', error);

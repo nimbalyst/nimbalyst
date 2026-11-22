@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node scripts/build-artifact.mjs",
     "test:artifact": "node --test scripts/build-artifact.test.mjs scripts/rpc-helper.test.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node ../../scripts/tsc-native.mjs --noEmit",
     "test": "vitest run src/__tests__"
   },
   "dependencies": {
@@ -17,6 +17,6 @@
     "@cloudflare/workers-types": "5.20260908.1",
     "capnweb": "0.8.0",
     "esbuild": "0.28.1",
-    "typescript": "~5.9.3"
+    "typescript": "~6.0.3"
   }
 }

@@ -46,6 +46,12 @@ export default defineConfig(({ mode }) => ({
     react(),
     dts({
       insertTypesEntry: true,
+      // tsconfig `paths` pull sibling packages' sources (collab-protocol,
+      // extension-sdk, electron) into the program. TypeScript 6 defaults
+      // rootDir to this package, rejects those files (TS6059) and the plugin
+      // emits an empty `export {}`; 5.9 inferred `packages/`, which is what
+      // `dist/index.d.ts -> ./runtime/src/index` expects.
+      compilerOptions: { rootDir: '..' },
       include: ['src'],
       exclude: ['src/ai/server/providers/mcp-stdio-server.ts'],
     }),
@@ -114,6 +120,7 @@ export default defineConfig(({ mode }) => ({
       '@lexical/list',
       '@lexical/link',
       '@lexical/code',
+      '@lexical/code-prism',
       '@lexical/table',
       '@lexical/selection',
       '@lexical/clipboard',

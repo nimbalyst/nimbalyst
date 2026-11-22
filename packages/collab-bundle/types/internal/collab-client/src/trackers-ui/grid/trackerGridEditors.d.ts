@@ -31,6 +31,23 @@ export interface TrackerEditorContext {
  */
 export declare function commitOnNavigationKeys(e: KeyboardEvent, getValue: () => unknown, save: (value: unknown, preventFocus?: boolean) => void, close: (focusNext?: boolean) => void): void;
 /**
+ * Decide how the caret should sit when a cell editor mounts.
+ *
+ * RevoGrid opens an edit two ways. Enter/F2 opens with `val` still equal to the
+ * stored cell value, and select-all is right there -- typing replaces the cell.
+ * Typing a printable character opens the edit with `val` seeded to *that
+ * character* while the model still holds the original, and select-all would
+ * highlight the character the user just typed, so the next keystroke replaces
+ * it instead of appending ("Alpha" arrives as "lpha", #1199).
+ *
+ * Comparing the incoming `val` against the model's stored value is what
+ * separates the two cases; RevoGrid does not otherwise say which one happened
+ * (it overwrites the typed key in `val` with the stored value on Enter/F2). A
+ * one-character cell typed over with that same character still reads as
+ * Enter/F2 and selects all.
+ */
+export declare function shouldSelectAllOnEdit(editCell: EditCell | undefined): boolean;
+/**
  * Build the RevoGrid editor for a resolved cell-editor descriptor.
  * Returns `undefined` for readonly cells so RevoGrid never enters edit mode.
  */

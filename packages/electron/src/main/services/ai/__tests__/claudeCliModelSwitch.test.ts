@@ -18,11 +18,11 @@ import {
  */
 describe('buildClaudeCliModelSwitchCommand', () => {
   it('maps the fable combined id to /model fable', () => {
-    expect(buildClaudeCliModelSwitchCommand('claude-code-cli:fable')).toBe('/model claude-fable-5-1');
+    expect(buildClaudeCliModelSwitchCommand('claude-code-cli:fable')).toBe('/model claude-fable-5-2');
   });
 
   it('maps fable-1m to the CLI 1M form', () => {
-    expect(buildClaudeCliModelSwitchCommand('claude-code-cli:fable-1m')).toBe('/model claude-fable-5-1[1m]');
+    expect(buildClaudeCliModelSwitchCommand('claude-code-cli:fable-1m')).toBe('/model claude-fable-5-2[1m]');
   });
 
   it('maps opus-1m to the CLI 1M alias', () => {
@@ -63,8 +63,8 @@ describe('switchClaudeCliModel', () => {
       { sessionId: 's1', model: 'claude-code-cli:fable' },
       deps,
     );
-    expect(result).toEqual({ switched: true, cliArg: 'claude-fable-5-1' });
-    expect(writes).toEqual(['/model claude-fable-5-1', '\r']);
+    expect(result).toEqual({ switched: true, cliArg: 'claude-fable-5-2' });
+    expect(writes).toEqual(['/model claude-fable-5-2', '\r']);
     expect(deps.delay).toHaveBeenCalledWith(MODEL_SWITCH_WRITE_GAP_MS);
   });
 
@@ -94,7 +94,7 @@ describe('switchClaudeCliModel', () => {
       { sessionId: 's1', model: 'claude-code-cli:fable' },
       { ...deps, readRecentOutput: () => 'ordinary output, no dialog' },
     );
-    expect(writes).toEqual(['/model claude-fable-5-1', '\r']);
+    expect(writes).toEqual(['/model claude-fable-5-2', '\r']);
   });
 
   it('does not touch the PTY for an unresolvable model', async () => {

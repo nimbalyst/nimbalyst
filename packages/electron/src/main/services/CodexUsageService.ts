@@ -23,6 +23,8 @@ import type {
 } from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/types';
 import { logger } from '../utils/logger';
 import { codexAuthService } from './CodexAuthService';
+import { usageHistoryStore } from './UsageHistoryStore';
+import { codexUsageWeekSamples, type UsageWeekRecord } from '../../shared/usageHistory';
 
 export interface CodexUsageWindow {
   slot: 'primary' | 'secondary';
@@ -67,6 +69,8 @@ export interface CodexUsageData {
   };
   limitsAvailable?: boolean;
   source?: 'account' | 'session';
+  /** Recorded weekly readings, attached by the main process; see shared/usageHistory.ts. */
+  weeklyHistory?: UsageWeekRecord[];
   lastUpdated: number; // Unix timestamp
   error?: string;
 }
@@ -159,9 +163,9 @@ class CodexUsageServiceImpl {
         const accountRateLimits = await codexAuthService.getRateLimits();
         if (hasAccountRateLimits(accountRateLimits)) {
           const usageData = convertAccountRateLimitsResponse(accountRateLimits);
-          this.cachedUsage = usageData;
+          this.cachedUsage = this.withWeeklyHistory(usageData);
           this.broadcastUpdate();
-          return usageData;
+          return this.cachedUsage;
         }
       } catch (error) {
         logger.main.debug(
@@ -181,9 +185,9 @@ class CodexUsageServiceImpl {
           lastUpdated: Date.now(),
           error: 'No Codex usage data found. Use Codex CLI with a ChatGPT subscription to see usage.',
         };
-        this.cachedUsage = noData;
+        this.cachedUsage = this.withWeeklyHistory(noData);
         this.broadcastUpdate();
-        return noData;
+        return this.cachedUsage;
       }
 
       if (!snapshot.rateLimits && snapshot.tokenUsage) {
@@ -194,9 +198,9 @@ class CodexUsageServiceImpl {
           source: 'session',
           lastUpdated: Date.now(),
         };
-        this.cachedUsage = usageData;
+        this.cachedUsage = this.withWeeklyHistory(usageData);
         this.broadcastUpdate();
-        return usageData;
+        return this.cachedUsage;
       }
 
       const usageData = this.convertRateLimits(snapshot.rateLimits as CodexRateLimits);
@@ -205,9 +209,9 @@ class CodexUsageServiceImpl {
       if (snapshot.tokenUsage) {
         usageData.tokenUsage = snapshot.tokenUsage;
       }
-      this.cachedUsage = usageData;
+      this.cachedUsage = this.withWeeklyHistory(usageData);
       this.broadcastUpdate();
-      return usageData;
+      return this.cachedUsage;
     } catch (error) {
       logger.main.error('[CodexUsageService] Error refreshing usage:', error);
       const errorData: CodexUsageData = {
@@ -215,9 +219,9 @@ class CodexUsageServiceImpl {
         lastUpdated: Date.now(),
         error: error instanceof Error ? error.message : 'Unknown error reading Codex session files',
       };
-      this.cachedUsage = errorData;
+      this.cachedUsage = this.withWeeklyHistory(errorData);
       this.broadcastUpdate();
-      return errorData;
+      return this.cachedUsage;
     }
   }
 
@@ -467,6 +471,15 @@ class CodexUsageServiceImpl {
       lastUpdated: Date.now(),
     };
     return data;
+  }
+
+  private withWeeklyHistory(data: CodexUsageData): CodexUsageData {
+    try {
+      return { ...data, weeklyHistory: usageHistoryStore.record('codex', codexUsageWeekSamples(data)) };
+    } catch (error) {
+      logger.main.error('[CodexUsageService] Failed to record weekly usage history:', error);
+      return data;
+    }
   }
 
   private broadcastUpdate(): void {

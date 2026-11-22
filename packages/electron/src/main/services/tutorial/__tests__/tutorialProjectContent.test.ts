@@ -101,4 +101,26 @@ describe("tutorial project content", () => {
       ).toBe(true);
     }
   });
+
+  // A truncated screenshot in the first tutorial session rendered as a broken
+  // image (GitHub #1889). Messages store their content as escaped JSON, so the
+  // payloads are matched in the raw file text.
+  it("embeds only complete, decodable images in the sample sessions", () => {
+    const sessionsDir = resolve(tutorialRoot, "sessions");
+    const payload = /\\"media_type\\":\\"(image\/[a-z]+)\\",\\"data\\":\\"([^"\\]*)\\"/g;
+    let images = 0;
+    for (const file of readdirSync(sessionsDir).filter((name) => name.endsWith(".json"))) {
+      const text = readFileSync(resolve(sessionsDir, file), "utf8");
+      for (const [, mediaType, data] of text.matchAll(payload)) {
+        images++;
+        const bytes = Buffer.from(data, "base64");
+        expect(bytes.toString("base64"), `${file}: ${mediaType} is not canonical base64`).toBe(data);
+        if (mediaType === "image/jpeg") {
+          expect(bytes.subarray(0, 3).toString("hex"), `${file}: JPEG start`).toBe("ffd8ff");
+          expect(bytes.subarray(-2).toString("hex"), `${file}: JPEG end`).toBe("ffd9");
+        }
+      }
+    }
+    expect(images).toBeGreaterThan(0);
+  });
 });

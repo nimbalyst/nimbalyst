@@ -46,7 +46,7 @@ function extractFileMentions(message: string): string[] {
  */
 function getLinkTypeForTool(toolName: string): FileLinkType | null {
   const editTools = [
-    'Write', 'Edit', 'NotebookEdit', 'writeFile', 'editFile', 'applyDiff', 'streamContent', 'Bash', 'file_change',
+    'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'writeFile', 'editFile', 'applyDiff', 'streamContent', 'Bash', 'file_change',
     // Codex ACP: kind:'edit'/'delete'/'move' tool calls map to 'ApplyPatch' in
     // CodexACPProtocol.deriveToolName; the path is forwarded from ACP locations[].
     'ApplyPatch',

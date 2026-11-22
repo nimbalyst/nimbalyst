@@ -22,12 +22,12 @@
   "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "node ../../scripts/tsc-native.mjs -p tsconfig.json --noEmit",
     "prepublishOnly": "pnpm run build"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.2.5",
-    "typescript": "^5.0.0"
+    "typescript": "^6.0.3"
   },
   "dependencies": {
     "@nimbalyst/tracker-core": "workspace:*",

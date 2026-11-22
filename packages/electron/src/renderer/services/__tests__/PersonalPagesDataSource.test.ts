@@ -181,6 +181,17 @@ describe('PersonalPagesDataSource', () => {
     expect(changes).toHaveLength(seen);
   });
 
+  it('names the page a file is, reading the wiki first when nothing has read it yet', async () => {
+    const source = new PersonalPagesDataSource(WORKSPACE);
+
+    // A transcript link can be clicked before Pages mode ever read the wiki.
+    await expect(source.pageIdForFile(`${ROOT}/Reading list.md`)).resolves.toBe('w1');
+    expect(invoke).toHaveBeenCalledWith('local-wiki:snapshot', WORKSPACE);
+    invoke.mockClear();
+    await expect(source.pageIdForFile('/ws/personal-pages/src/index.ts')).resolves.toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('shows an editor page with its extension, as the Team section does, and stores the bare stem', async () => {
     const drawing = { ...wikiPage, documentId: 'w3', title: 'Flow', documentType: 'excalidraw', fileExtension: '.excalidraw' };
     invoke.mockImplementation(async (channel: string) => {

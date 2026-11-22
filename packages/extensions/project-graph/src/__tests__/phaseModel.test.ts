@@ -73,6 +73,30 @@ describe('buildPhaseSegments', () => {
     expect(segs[0]!.phaseKey).toBe('done');
   });
 
+  it('ends an open bar at lastActivityAt, or a later status change, instead of now', () => {
+    const idle = buildPhaseSegments({
+      createdAt: NOW - 10 * DAY,
+      lastActivityAt: NOW - 6 * DAY,
+      status: 'planning',
+      now: NOW,
+    });
+    expect(idle).toHaveLength(1);
+    expect(idle[0]!.endMs).toBe(NOW - 6 * DAY);
+
+    const phaseChangedLater = buildPhaseSegments({
+      createdAt: NOW - 10 * DAY,
+      lastActivityAt: NOW - 6 * DAY,
+      status: 'validating',
+      now: NOW,
+      activity: [
+        { action: 'status_changed', oldValue: 'implementing', newValue: 'validating', timestamp: NOW - 3 * DAY },
+      ],
+    });
+    expect(phaseChangedLater.map(s => s.phaseKey)).toEqual(['dev', 'review']);
+    // The trailing phase has no measurable duration, so the bar ends at the change.
+    expect(phaseChangedLater[phaseChangedLater.length - 1]!.endMs).toBe(NOW - 3 * DAY);
+  });
+
   it('builds one segment per status interval from the activity log', () => {
     const segs = buildPhaseSegments({
       createdAt: NOW - 30 * DAY,

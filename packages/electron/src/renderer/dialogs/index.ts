@@ -36,6 +36,7 @@ export {
   registerOnboardingDialogs,
   type WindowsClaudeCodeWarningData,
   type RosettaWarningData,
+  type MigrationConsentData,
   type UnifiedOnboardingData,
   type ExtensionProjectIntroData,
   type OnboardingData,

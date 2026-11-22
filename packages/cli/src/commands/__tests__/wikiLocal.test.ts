@@ -57,6 +57,29 @@ function snapshotFiles(root: string): Record<string, string> {
 }
 
 describe('nim wiki over a local folder', () => {
+  it('exports at --base and reports where to serve the output', async () => {
+    const repo = scratch();
+    const location = path.join(repo, 'wiki');
+    await initWiki(location);
+    const assets = path.join(repo, 'assets');
+    mkdirSync(assets);
+    writeFileSync(path.join(assets, 'index.html'), '<html><head><title>Wiki</title></head><body><div id="root"></div></body></html>');
+    const out = path.join(repo, 'site');
+    const args = ['wiki', 'export', '--location', location, '--static', out, '--assets', assets, '--tracker-items', 'none'];
+    const result = await nim(...args, '--base', '/product/docs');
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('Serve the contents of the output folder at /product/docs/');
+    expect(readFileSync(path.join(out, 'index.html'), 'utf8')).toContain('"basePath":"/product/docs/"');
+    const before = snapshotFiles(out);
+    const invalid = await nim(...args, '--base', 'https://example.com/docs');
+    expect(invalid.code).toBe(2);
+    expect(invalid.err).toContain('--base');
+    expect(snapshotFiles(out)).toEqual(before);
+    const missing = await nim(...args, '--base');
+    expect(missing.code).toBe(2);
+    expect(missing.err).toContain('expects a value');
+  });
+
   it('inits, writes with a version check, lists, reads, moves and searches', async () => {
     const repo = scratch();
     execFileSync('git', ['init', '-q'], { cwd: repo });
@@ -123,6 +146,11 @@ describe('nim wiki over a local folder', () => {
     expect(route('list', '--org', 'o1', '--project', 'p1')).toBe(false);
     expect(route('list', '--team')).toBe(false);
     expect(route('items')).toBe(false);
+    // `comments` is the published wiki's threads unless it names team pages; publish verbs are local only.
+    expect(route('comments')).toBe(true);
+    expect(route('comments', '--page', 'collab://org:o1:doc:d1')).toBe(false);
+    expect(route('publish', '--init', '--org', 'o1', '--project', 'p1')).toBe(true);
+    expect(() => route('publish', '--team')).toThrow(/is for the local wiki/);
   });
 
   it('loads a wiki written by the library unchanged', async () => {

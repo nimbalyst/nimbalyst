@@ -141,6 +141,26 @@ describe('issue narrowing', () => {
     expect(visible(issues, [], { search: 'bug' })).toEqual([11]);
   });
 
+  it('searches by author with free text or author: tokens', () => {
+    const byAuthor = [
+      issue({ number: 20, authorLogin: 'Alice-Dev', updatedAt: 3 }),
+      issue({ number: 21, authorLogin: 'bob', title: 'alice asked for this', updatedAt: 2 }),
+      issue({ number: 22, authorLogin: null, updatedAt: 1 }),
+    ];
+    // Free text matches the login as well as the title.
+    expect(visible(byAuthor, [], { search: 'alice' })).toEqual([20, 21]);
+    expect(visible(byAuthor, [], { search: '@bob' })).toEqual([21]);
+    // author: matches only the login, case-insensitively, with or without @.
+    expect(visible(byAuthor, [], { search: 'author:alice' })).toEqual([20]);
+    expect(visible(byAuthor, [], { search: 'Author:@ALICE' })).toEqual([20]);
+    // Several author tokens are a union; remaining text still narrows.
+    expect(visible(byAuthor, [], { search: 'author:alice author:bob' })).toEqual([20, 21]);
+    expect(visible(byAuthor, [], { search: 'author:bob asked' })).toEqual([21]);
+    expect(visible(byAuthor, [], { search: 'author:alice asked' })).toEqual([]);
+    // A half-typed qualifier narrows nothing.
+    expect(visible(byAuthor, [], { search: 'author:' })).toEqual([20, 21, 22]);
+  });
+
   it('unions the needs-attention queues', () => {
     const attentionByIssue = new Map([
       [10, ['diverged' as const]],

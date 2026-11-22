@@ -17,9 +17,11 @@ export interface IndexReconcileInput<T extends SessionIndexData> {
   /** Server rows to republish index-only even when nothing else differs (startup's stale isExecuting clear). */
   forceIndexOnlySessionIds?: ReadonlySet<string>;
   /** Durable record of withheld transcripts still owed; see transcriptBackfill.ts. */
-  backfill: Pick<TranscriptBackfill, 'heldProjects' | 'pendingSessions' | 'recordReconcile' | 'settle'>;
+  backfill: Pick<TranscriptBackfill, 'heldProjects' | 'pendingSessions' | 'recordReconcile' | 'settle' | 'isWithheld'>;
   warn?: (message: string, error: unknown) => void;
   now?: number;
+  /** Mobile joins repair absent rows without replaying local metadata over existing server rows. */
+  onlyMissing?: boolean;
 }
 
 /**
@@ -80,6 +82,28 @@ export function buildMessageSyncRequests(
 export async function reconcileSessionIndex<T extends SessionIndexData>(input: IndexReconcileInput<T>) {
   const now = input.now ?? Date.now();
   const warn = input.warn ?? ((message: string, error: unknown) => console.warn(message, error));
+  if (input.onlyMissing) {
+    const present = new Set(input.serverIndex.sessions.map(row => row.sessionId));
+    const local = await input.loadLocalSessions(input.isProjectEnabled);
+    const missing = local.filter(row => !present.has(row.id));
+    const selected = selectSessionsForIndexSync(missing, input.serverIndex, now, input.isMidTurn);
+    const byId = new Map(missing.map(row => [row.id, row]));
+    // This partial pass repairs list entries. Full reconciliation retains
+    // ownership of held/owed transcripts and their durable settlement.
+    const messageIds = selected.sessionsNeedingMessageSync.filter(id => {
+      const row = byId.get(id)!;
+      return !input.backfill.isWithheld(row.workspaceId!, id);
+    });
+    if (selected.sessionsNeedingIndexUpdate.length) {
+      await input.syncSessionsToIndex(selected.sessionsNeedingIndexUpdate, {
+        syncMessages: messageIds.length > 0,
+        messageSyncRequests: buildMessageSyncRequests(selected.sessionsNeedingIndexUpdate, messageIds, input.serverIndex, new Set()),
+        getMessagesForSync: input.getMessagesForSync,
+      });
+    }
+    return { allLocalSessions: local, optedOutLocal: [] as T[],
+      ...selected, sessionsNeedingMessageSync: messageIds, indexOnlySessions: [] as T[] };
+  }
   const heldProjects = input.backfill.heldProjects();
   const owed = input.backfill.pendingSessions();
   const allLocalSessions = await input.loadLocalSessions(input.isProjectEnabled);

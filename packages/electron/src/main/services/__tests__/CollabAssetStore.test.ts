@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import * as fs from "fs/promises";
@@ -69,6 +70,7 @@ describe.each(["pglite", "sqlite"] as const)(
     const deleteKey = vi.fn(async () => undefined);
     const keyProvider: CollabAssetDeviceKeyProvider = {
       getKey: async () => new Uint8Array(32).fill(11),
+      getExistingKey: async () => new Uint8Array(32).fill(11),
       deleteKey,
     };
 
@@ -106,6 +108,14 @@ describe.each(["pglite", "sqlite"] as const)(
       await close();
       if (tempDir) await fs.rm(tempDir, { recursive: true, force: true });
       tempDir = null;
+    });
+
+    it("reads an attachment for recovery without touching its storage", async () => {
+      await store.cacheAsset({ identity: assetIdentity, bytes: new Uint8Array([8, 9]), mimeType: "image/png", fileName: "test.png" });
+      const query = vi.spyOn(db, "query");
+      expect([...(await store.loadAsset(assetIdentity, { readOnly: true }))!.bytes]).toEqual([8, 9]);
+      expect(query.mock.calls.every(([sql]) => /^\s*SELECT/.test(sql))).toBe(true);
+      query.mockRestore();
     });
 
     it("round-trips a cached blob encrypted under asset-bound AAD", async () => {

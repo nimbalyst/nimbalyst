@@ -694,4 +694,33 @@ describe('NotificationService agent notifications', () => {
       }),
     );
   });
+
+  // With the project rail off a window shows one project. A session link to
+  // another project asks main for that project's window, the same routing a
+  // notification click uses.
+  it('opens the session in its own project window when asked from another window', () => {
+    const existing = makeFakeWindow();
+    mocks.findWindowByWorkspace.mockReturnValue(existing);
+
+    notificationService.navigateToSession({ sessionId: 'session-b', workspacePath: '/workspace/b', sourceLabel: '' });
+
+    expect(mocks.findWindowByWorkspace).toHaveBeenCalledWith('/workspace/b');
+    expect(existing.focus).toHaveBeenCalled();
+    expect(existing.webContents.send).toHaveBeenCalledWith('notification-clicked', {
+      sessionId: 'session-b',
+      workspacePath: '/workspace/b',
+      sourceLabel: 'Session session-',
+    });
+  });
+
+  it('opens the project window and queues the session when the project is not open', () => {
+    notificationService.navigateToSession({ sessionId: 'session-c', workspacePath: '/workspace/c', sourceLabel: 'Linked session' });
+
+    expect(mocks.createWindow).toHaveBeenCalledWith(false, true, '/workspace/c');
+    expect((notificationService as any).consumePendingNavigation('/workspace/c')).toEqual({
+      sessionId: 'session-c',
+      workspacePath: '/workspace/c',
+      sourceLabel: 'Linked session',
+    });
+  });
 });

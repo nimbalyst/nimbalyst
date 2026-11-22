@@ -2,16 +2,27 @@
   "mcpServers": {
     "nimbalyst-session": {
       "type": "stdio",
-      "command": "node",
+      "command": "npx",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/scripts/session-inputs.mjs"
+        "--prefix",
+        "/",
+        "-y",
+        "@nimbalyst/cli@0.12.7",
+        "hook",
+        "session-inputs"
       ]
     },
     "nimbalyst-local": {
       "type": "stdio",
-      "command": "node",
+      "command": "npx",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/scripts/nim-local-mcp.mjs"
+        "--prefix",
+        "/",
+        "-y",
+        "@nimbalyst/cli@0.12.7",
+        "mcp",
+        "--plugin-root",
+        "${CLAUDE_PLUGIN_ROOT}"
       ]
     }
   }

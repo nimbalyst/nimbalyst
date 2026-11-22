@@ -91,6 +91,8 @@ export class PersonalPagesDataSource implements CollabDocsDataSource {
   private filePaths = new Map<string, string>();
   /** File suffix of each editor page (drawing, mind map...), by page id. */
   private editorPages = new Map<string, string>();
+  /** Whether `filePaths` holds a read yet; before one, no file is known to be a page. */
+  private hasRead = false;
 
   constructor(private readonly workspacePath: string) {}
 
@@ -146,6 +148,7 @@ export class PersonalPagesDataSource implements CollabDocsDataSource {
       brokenTypes,
     };
     store.set(statusAtom, status);
+    this.hasRead = true;
     // The file header reads a flat `type:` as a typed page only inside the wiki.
     setLocalWikiRoot(this.workspacePath, root);
     await this.mergeTrackerRecords(wiki, root);
@@ -198,6 +201,12 @@ export class PersonalPagesDataSource implements CollabDocsDataSource {
   documentIdForFile(filePath: string): string | null {
     for (const [id, path] of this.filePaths) if (path === filePath) return id;
     return null;
+  }
+
+  /** The page whose file this is, reading the wiki first when nothing has yet. */
+  async pageIdForFile(filePath: string): Promise<string | null> {
+    if (!this.hasRead) await this.refresh();
+    return this.documentIdForFile(filePath);
   }
 
   /** Last-read absolute file of every live page with one, by page id. */

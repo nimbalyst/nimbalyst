@@ -1,4 +1,5 @@
 import type { AgentRole, SessionData, SessionMode, SessionType, TranscriptViewMessage } from '../server/types';
+import type { SessionContextUsage } from '../sessionContextUsage';
 
 // Type aliases for compatibility
 export type ChatMessage = TranscriptViewMessage;
@@ -45,11 +46,19 @@ export interface SessionMeta {
    * session list refresh so a stale in-memory atom gets corrected.
    */
   hasPendingInteractivePrompt?: boolean;
+  /**
+   * `metadata.userWorkstream`: a `workstream` wrapper the user made on purpose.
+   * Unmarked wrappers (auto-created before the session tree) are merged into
+   * their only child in the sidebar; marked ones always show.
+   */
+  userWorkstream?: boolean;
   // Kanban board phase and tags (from metadata JSONB)
   phase?: string;
   tags?: string[];
   // Linked tracker item IDs (from metadata JSONB)
   linkedTrackerItemIds?: string[];
+  /** Last persisted context-window fill (metadata.tokenUsage.currentContext). */
+  contextUsage?: SessionContextUsage;
   // Branch tracking - SEPARATE from hierarchical parentSessionId
   branchedFromSessionId?: string;
   branchPointMessageId?: number;

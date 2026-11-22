@@ -120,6 +120,13 @@ export const KeyboardShortcuts = {
     goToInbox: 'Cmd+I'
   },
 
+  // Dictation (renderer-only, not a menu accelerator). Hold to talk, tap to
+  // toggle. Ctrl+Option rather than Cmd+Shift because Cmd+Shift+Space is
+  // Monaco's parameter hints. See renderer/dictation/dictationShortcut.ts.
+  dictation: {
+    holdToTalk: 'Ctrl+Option+Space'
+  },
+
   // Developer Menu
   developer: {
     refreshFileTree: 'Cmd+Shift+F5'

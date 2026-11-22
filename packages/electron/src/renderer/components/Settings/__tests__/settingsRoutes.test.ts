@@ -82,6 +82,20 @@ describe('settings route registry', () => {
     });
   });
 
+  // Settings > Database is where an install still on PGLite migrates. It was
+  // developer-only, which left every non-developer above the automatic SQLite
+  // ceiling with no way to migrate at all.
+  it('shows the Database route to installs still on PGLite, and otherwise only to developers', () => {
+    const ids = (context: Parameters<typeof getSettingsRoutesForScope>[1]) =>
+      getSettingsRoutesForScope('application', context).map((route) => route.id);
+    const base = { developerMode: false, showDirectChatProviders: false, teamsConfigured: false };
+
+    expect(ids({ ...base, pgliteActive: true })).toContain('database');
+    expect(ids({ ...base, pgliteActive: false })).not.toContain('database');
+    expect(ids(base)).not.toContain('database');
+    expect(ids({ ...base, developerMode: true })).toContain('database');
+  });
+
   it('hides the project Sharing route until the account has a team (invite-only beta)', () => {
     const withoutTeams = getSettingsRoutesForScope('project', {
       developerMode: true,

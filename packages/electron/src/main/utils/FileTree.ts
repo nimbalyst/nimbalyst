@@ -35,7 +35,8 @@ const naturalCollator = new Intl.Collator(undefined, {
 // MAX_DEPTH: deepest we'll recurse from workspace root. Prevents infinite loops
 //   in circular symlinks and limits scan cost on deeply nested trees.
 // MAX_ITEMS_PER_DIR: max immediate children shown in a single directory.
-//   If a directory has more than this many entries, only the first N are shown.
+//   If a directory has more than this many entries, only the first N after
+//   sorting are shown, so the cut never depends on raw readdir order.
 //   This handles flat-huge directories (e.g., a folder with 50,000 images).
 const MAX_DEPTH = 8;
 const MAX_ITEMS_PER_DIR = 200;
@@ -47,21 +48,23 @@ function isSpecialDirectory(name: string): boolean {
     return SPECIAL_DIRECTORIES.includes(name);
 }
 
-function sortItems(items: FileTreeItem[]): void {
-    items.sort((a, b) => {
-        const aIsSpecial = a.type === 'directory' && isSpecialDirectory(a.name);
-        const bIsSpecial = b.type === 'directory' && isSpecialDirectory(b.name);
+function compareItems(a: FileTreeItem, b: FileTreeItem): number {
+    const aIsSpecial = a.type === 'directory' && isSpecialDirectory(a.name);
+    const bIsSpecial = b.type === 'directory' && isSpecialDirectory(b.name);
 
-        if (aIsSpecial && !bIsSpecial) return -1;
-        if (!aIsSpecial && bIsSpecial) return 1;
-        if (aIsSpecial && bIsSpecial) {
-            return SPECIAL_DIRECTORIES.indexOf(a.name) - SPECIAL_DIRECTORIES.indexOf(b.name);
-        }
-        if (a.type !== b.type) {
-            return a.type === 'directory' ? -1 : 1;
-        }
-        return naturalCollator.compare(a.name, b.name);
-    });
+    if (aIsSpecial && !bIsSpecial) return -1;
+    if (!aIsSpecial && bIsSpecial) return 1;
+    if (aIsSpecial && bIsSpecial) {
+        return SPECIAL_DIRECTORIES.indexOf(a.name) - SPECIAL_DIRECTORIES.indexOf(b.name);
+    }
+    if (a.type !== b.type) {
+        return a.type === 'directory' ? -1 : 1;
+    }
+    return naturalCollator.compare(a.name, b.name);
+}
+
+function sortItems(items: FileTreeItem[]): void {
+    items.sort(compareItems);
 }
 
 /**
@@ -126,46 +129,80 @@ export async function listFolderFilesRecursive(
 }
 
 export async function getFolderContents(dirPath: string, depth: number = 0, signal?: AbortSignal): Promise<FileTreeItem[]> {
+    return (await readFolder(dirPath, depth, signal)).items;
+}
+
+/**
+ * One folder's tree plus how many of its visible entries MAX_ITEMS_PER_DIR
+ * hid. A child folder carries its own count as `omittedChildCount`; the
+ * caller's top-level array has no node to carry it, so it is returned here.
+ */
+async function readFolder(
+    dirPath: string,
+    depth: number,
+    signal?: AbortSignal
+): Promise<{ items: FileTreeItem[]; omitted: number; omittedIsMinimum: boolean }> {
     const result: FileTreeItem[] = [];
-    const directoriesToPopulate: FileTreeItem[] = [];
+    // Resolved entries that would have been visible without the cap. A symlink
+    // the cap skipped is never stat'd, so it cannot be counted; it only marks
+    // the count as a minimum (it may be broken or an excluded folder).
+    let visibleTotal = 0;
+    let omittedIsMinimum = false;
+    const aborted = { items: [], omitted: 0, omittedIsMinimum: false };
 
     if (signal?.aborted || depth > MAX_DEPTH) {
-        return result;
+        return aborted;
     }
 
     try {
         const entries = await readdir(dirPath, { withFileTypes: true });
-        let visibleCount = 0;
+        const symlinks: Dirent[] = [];
 
+        const isDisplayable = (name: string, fullPath: string, isDir: boolean, isFile: boolean) =>
+            isDir ? !(shouldExcludeDir(name) || shouldExcludePath(fullPath)) : isFile;
+        const addItem = (name: string, fullPath: string, isDir: boolean, isFile: boolean) => {
+            if (!isDisplayable(name, fullPath, isDir, isFile)) return;
+            result.push(isDir
+                ? { name, type: 'directory', path: fullPath, children: [] }
+                : { name, type: 'file', path: fullPath });
+            visibleTotal++;
+        };
+
+        // Plain files and directories are typed by readdir itself, so the whole
+        // folder can be sorted before the cap without any per-entry I/O.
         for (const entry of entries) {
-            if (signal?.aborted) return [];
+            if (signal?.aborted) return aborted;
             if (entry.name === '.DS_Store') continue;
-            if (visibleCount >= MAX_ITEMS_PER_DIR) break;
-
-            const fullPath = join(dirPath, entry.name);
-
-            const resolved = await resolveEntryType(entry, fullPath);
-            if (!resolved) continue; // Broken symlink
-            const { isDir, isFile } = resolved;
-
-            if (isDir) {
-                if (shouldExcludeDir(entry.name) || shouldExcludePath(fullPath)) continue;
-                const dirItem: FileTreeItem = {
-                    name: entry.name,
-                    type: 'directory',
-                    path: fullPath,
-                    children: []
-                };
-                directoriesToPopulate.push(dirItem);
-                result.push(dirItem);
-                visibleCount++;
-            } else if (isFile) {
-                result.push({ name: entry.name, type: 'file', path: fullPath });
-                visibleCount++;
+            if (entry.isSymbolicLink()) {
+                symlinks.push(entry);
+                continue;
             }
+            addItem(entry.name, join(dirPath, entry.name), entry.isDirectory(), entry.isFile());
         }
 
+        // Sort before capping so the cut keeps the first N in display order.
         sortItems(result);
+        if (result.length > MAX_ITEMS_PER_DIR) result.length = MAX_ITEMS_PER_DIR;
+
+        // A symlink sorts by its target's type, which costs a stat. Skip the stat
+        // when the link would land past the cap even as a directory (the earliest
+        // it can sort), so a huge folder of links is not stat'd entry by entry.
+        for (const entry of symlinks) {
+            if (signal?.aborted) return aborted;
+            if (result.length >= MAX_ITEMS_PER_DIR
+                && compareItems({ name: entry.name, type: 'directory', path: '' }, result[result.length - 1]) >= 0) {
+                omittedIsMinimum = true;
+                continue;
+            }
+            const fullPath = join(dirPath, entry.name);
+            const resolved = await resolveEntryType(entry, fullPath);
+            if (!resolved) continue; // Broken symlink
+            addItem(entry.name, fullPath, resolved.isDir, resolved.isFile);
+            sortItems(result);
+            if (result.length > MAX_ITEMS_PER_DIR) result.length = MAX_ITEMS_PER_DIR;
+        }
+
+        const directoriesToPopulate = result.filter(item => item.type === 'directory');
 
         // Recurse into each child directory.
         // MAX_DEPTH + MAX_ITEMS_PER_DIR bound the total work per branch:
@@ -174,14 +211,17 @@ export async function getFolderContents(dirPath: string, depth: number = 0, sign
         // Recurse sequentially to avoid unbounded file-descriptor fan-out.
         // Each call is still async (non-blocking), so the main thread stays responsive.
         for (const directory of directoriesToPopulate) {
-            if (signal?.aborted) return [];
+            if (signal?.aborted) return aborted;
             // Past the limit the folder is unread, not empty. Say so, or a
             // rebuild replaces children the renderer loaded on expand with [].
             if (depth + 1 > MAX_DEPTH) {
                 directory.childrenTruncated = true;
                 continue;
             }
-            directory.children = await getFolderContents(directory.path, depth + 1, signal);
+            const child = await readFolder(directory.path, depth + 1, signal);
+            directory.children = child.items;
+            if (child.omitted > 0) directory.omittedChildCount = child.omitted;
+            if (child.omittedIsMinimum) directory.omittedChildCountIsMinimum = true;
         }
     } catch (error: any) {
         if (error.code !== 'ENOENT') {
@@ -189,5 +229,5 @@ export async function getFolderContents(dirPath: string, depth: number = 0, sign
         }
     }
 
-    return result;
+    return { items: result, omitted: visibleTotal - result.length, omittedIsMinimum };
 }

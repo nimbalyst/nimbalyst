@@ -13,8 +13,11 @@
  *   - not in the org roster                  -> deny
  *   - org owner/admin                        -> allow everything (implicit project-admin)
  *   - org viewer/unknown role                 -> read-only ceiling
- *   - member/guest + no project context       -> allow view/edit on org-level content, deny admin
+ *   - member + no project context             -> allow view/comment/edit on org-level content, deny admin
+ *   - guest + no project context              -> deny (a guest reads only projects it is granted)
  *   - member/guest + a project                -> their project_access grant (deny if none)
+ *   - guest + a project                       -> never edits: comments under a
+ *                                                project-commenter grant, reads under any other
  *
  * Backend parity (DATABASE.md): every query here is a plain column SELECT with
  * `$n` placeholders — no `data->'k'` JSON sub-extraction — so PGLite and
@@ -28,10 +31,13 @@ import type {
 } from '@nimbalyst/runtime/auth/jwtScopes';
 
 export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer' | 'guest' | 'unknown';
-export type ProjectRole = 'project-admin' | 'project-editor' | 'project-viewer';
+export type ProjectRole = 'project-admin' | 'project-editor' | 'project-commenter' | 'project-viewer';
 
-/** What the viewer wants to do with the content. */
-export type AccessAction = 'view' | 'edit' | 'admin';
+/**
+ * What the viewer wants to do with the content. `comment` is the comment-thread
+ * tier: a `project-commenter` holds it without `edit` (body write).
+ */
+export type AccessAction = 'view' | 'comment' | 'edit' | 'admin';
 
 export interface CanAccessInput {
   /** Org being accessed. Optional if `projectId` is given (org is derived from it). */
@@ -72,11 +78,16 @@ function accessMemberId(viewer: AccessViewerIdentity): TeamMemberId | PersonalMe
   return viewer.teamMemberId ?? viewer.personalMemberId;
 }
 
-/** Rank a project role for action comparison. Higher = more capable. */
+/**
+ * Rank a project role for action comparison. Higher = more capable. The ranks
+ * live only in memory (`project_access.project_role` persists the role string),
+ * and match the server's TeamRoom `projectRoleRank`.
+ */
 function projectRoleRank(role: ProjectRole | null): number {
   switch (role) {
-    case 'project-admin': return 3;
-    case 'project-editor': return 2;
+    case 'project-admin': return 4;
+    case 'project-editor': return 3;
+    case 'project-commenter': return 2;
     case 'project-viewer': return 1;
     default: return 0;
   }
@@ -85,8 +96,9 @@ function projectRoleRank(role: ProjectRole | null): number {
 /** Minimum project-role rank an action requires. */
 function actionRank(action: AccessAction): number {
   switch (action) {
-    case 'admin': return 3;
-    case 'edit': return 2;
+    case 'admin': return 4;
+    case 'edit': return 3;
+    case 'comment': return 2;
     case 'view': return 1;
   }
 }
@@ -106,13 +118,26 @@ function normalizeOrgRole(role: string): OrgRole {
 
 /** Maximum project grant rank an organization role may exercise. */
 function orgRoleProjectCeilingRank(role: OrgRole): number {
-  return role === 'viewer' || role === 'unknown' ? 1 : 3;
+  return role === 'viewer' || role === 'unknown' ? 1 : 4;
+}
+
+/**
+ * The rank a grant actually carries for this org role. Mirrors the server's
+ * `sourceCapabilityForContent`: a guest comments only under a commenter grant
+ * and reads under any other, whatever the grant says.
+ */
+function effectiveProjectRank(orgRole: OrgRole, grantRank: number): number {
+  if (orgRole === 'guest') {
+    return grantRank === projectRoleRank('project-commenter') ? grantRank : Math.min(grantRank, 1);
+  }
+  return Math.min(grantRank, orgRoleProjectCeilingRank(orgRole));
 }
 
 function projectRoleForRank(rank: number): ProjectRole | null {
   switch (rank) {
-    case 3: return 'project-admin';
-    case 2: return 'project-editor';
+    case 4: return 'project-admin';
+    case 3: return 'project-editor';
+    case 2: return 'project-commenter';
     case 1: return 'project-viewer';
     default: return null;
   }
@@ -166,8 +191,9 @@ export async function canAccess(
   // Non-admin without a project context: viewer/unknown roles are read-only;
   // member/guest roles may view/edit. Admin requires an org admin/owner.
   if (!projectId) {
+    if (orgRole === 'guest') return deny(orgRole, 'org-level-guest');
     if (input.action === 'admin') return deny(orgRole, 'org-level-admin-requires-admin');
-    if (input.action === 'edit' && orgRoleProjectCeilingRank(orgRole) < 2) {
+    if (actionRank(input.action) > orgRoleProjectCeilingRank(orgRole)) {
       return deny(orgRole, 'org-level-read-only-role');
     }
     return { allowed: true, orgRole, projectRole: null, reason: 'org-member' };
@@ -182,7 +208,7 @@ export async function canAccess(
   if (!rawGrant) return deny(orgRole, 'no-project-grant');
 
   const grantRank = projectRoleRank(rawGrant as ProjectRole);
-  const effectiveRank = Math.min(grantRank, orgRoleProjectCeilingRank(orgRole));
+  const effectiveRank = effectiveProjectRank(orgRole, grantRank);
   const projectRole = projectRoleForRank(effectiveRank);
   const allowed = effectiveRank >= actionRank(input.action);
   return {

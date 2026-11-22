@@ -46,12 +46,14 @@ interface FakeServer {
   rateLimits: number;
   /** Map these localIds but refuse them as another document type, as the server does. */
   typeMismatch: Set<string>;
+  typePlacements: Map<string, any>;
 }
 
 function fakeServer(): FakeServer {
   const server: FakeServer = {
     calls: [],
     pages: new Map(),
+    typePlacements: new Map(),
     failOnce: new Set(),
     rateLimits: 0,
     typeMismatch: new Set(),
@@ -70,6 +72,7 @@ function fakeServer(): FakeServer {
       const errors: unknown[] = [];
       let created = 0;
       let updated = 0;
+      for (const placement of (args as any).typePlacements ?? []) server.typePlacements.set(placement.typeId, placement);
       for (const page of (args as any).pages) {
         if (server.failOnce.delete(page.localId)) {
           errors.push({ localId: page.localId, code: 'internal', message: 'boom' });
@@ -81,11 +84,13 @@ function fakeServer(): FakeServer {
         } else if (server.pages.has(page.localId)) updated++;
         else created++;
         server.pages.set(page.localId, page);
+        // The server writes the page `homeLocalId` names into the project's Home.
+        const id = page.localId === (args as any).homeLocalId ? 'home:proj_1' : `t-${page.localId}`;
         idMap[page.localId] = {
-          nodeId: `${typed ? 'item' : 'document'}:t-${page.localId}`,
-          id: `t-${page.localId}`,
-          link: `https://console.nimbalyst.com/org/org_1/project/proj_1/document/t-${page.localId}`,
-          uri: `collab://org:org_1:doc:t-${page.localId}`,
+          nodeId: `${typed ? 'item' : 'document'}:${id}`,
+          id,
+          link: `https://console.nimbalyst.com/org/org_1/project/proj_1/document/${id}`,
+          uri: `collab://org:org_1:doc:${id}`,
         };
       }
       return { idMap, created, updated, errors };
@@ -119,7 +124,7 @@ describe('moveLocalWikiToTeam', () => {
     expect(first.indexOf(acme)).toBeLessThan(first.indexOf(pricing));
     expect(imports[0].args.pages.find((p: any) => p.localId === pricing).parentLocalId).toBe(acme);
     expect(imports[0].args.source.wikiId).toMatch(/^[0-9A-Z]{26}$/);
-    expect(report).toMatchObject({ verified: true, linksRewritten: 2, counts: { pages: 4 }, homeLink: expect.stringMatching(/\/document\/t-/) });
+    expect(report).toMatchObject({ verified: true, linksRewritten: 2, counts: { pages: 4 }, homeLink: expect.stringMatching(/\/document\/home:proj_1$/) });
     // No page body in what goes back to the agent.
     expect(JSON.stringify(report)).not.toContain('Plain body');
   });
@@ -161,7 +166,6 @@ describe('moveLocalWikiToTeam', () => {
     const opened = await makeWiki();
     const server = fakeServer();
     const homeId = (await opened.wiki.snapshot()).pages.find((p) => p.title === 'Home')!.id;
-    const link = (id: string) => `https://console.nimbalyst.com/org/org_1/project/proj_1/document/t-${id}`;
     const settingBefore = JSON.parse(readFileSync(path.join(opened.projectRoot, '.nimbalyst', 'local-wiki.json'), 'utf8'));
 
     // Home does not read back: imported, but not verified.
@@ -179,7 +183,7 @@ describe('moveLocalWikiToTeam', () => {
     expect(readMigratedTo(opened.projectRoot)).toEqual({ ...PROJECT, at: '2026-10-13T00:00:00.000Z' });
     const setting = JSON.parse(readFileSync(path.join(opened.projectRoot, '.nimbalyst', 'local-wiki.json'), 'utf8'));
     expect(setting.location).toBe(settingBefore.location);
-    expect((await opened.wiki.readBody(homeId)).markdown.split('\n')[0]).toBe(`This wiki moved to the team project: ${link(homeId)}`);
+    expect((await opened.wiki.readBody(homeId)).markdown.split('\n')[0]).toBe(`This wiki moved to the team project: ${HOME_LINK.replace(/home$/, 'home:proj_1')}`);
 
     // A re-run sends Home without the banner and does not stack a second one.
     await moveLocalWikiToTeam(opened, {}, { call: server.call, ...noWait });
@@ -226,7 +230,17 @@ describe('moveLocalWikiToTeam', () => {
     const first = server.calls.find((c) => c.name === 'pages_import')!.args;
     expect(first.types.map((t: any) => [t.id, t.name, t.definition.storage])).toEqual([['competitor', 'Competitor', 'pages'], ['partner', 'Partner', 'table']]);
     expect(server.pages.get(acme)).toMatchObject({ kind: 'typedPage', typeId: 'competitor', parentLocalId: ops, fields: { tier: 'gold' }, body: 'Decided: ship it.\n' });
-    expect(server.pages.get(row)).toMatchObject({ kind: 'typedPage', typeId: 'partner', parentLocalId: ops, title: 'Globex', body: '' });
+    // A table row sits under its type, which is placed where the table is.
+    expect(server.pages.get(row)).toMatchObject({ kind: 'typedPage', typeId: 'partner', parentLocalId: ops, underType: true, title: 'Globex', body: '' });
+    expect(server.pages.get(acme).underType).toBeUndefined();
+    expect([...server.typePlacements.values()]).toEqual([
+      { typeId: 'competitor', parentLocalId: null },
+      { typeId: 'partner', parentLocalId: ops, order: 500 },
+    ]);
+    // Placed only once every page has been sent, so each parent exists.
+    const placing = server.calls.findIndex((c) => c.name === 'pages_import' && c.args.typePlacements);
+    const lastFirstPass = server.calls.findLastIndex((c) => c.name === 'pages_import' && c.args.pages.some((p: any) => p.localId === row));
+    expect(placing).toBeGreaterThan(lastFirstPass);
     expect(server.pages.has(flow)).toBe(false);
     // The editor page's child moves up to the nearest imported page.
     expect([...server.pages.values()].find((p) => p.title === 'Under flow')).toMatchObject({ parentLocalId: ops });
@@ -301,6 +315,45 @@ describe('moveLocalWikiToTeam', () => {
       filesUploaded: 1,
       warnings: [expect.objectContaining({ localId: notes, code: 'linked_file_missing', title: 'Notes' })],
     });
+  });
+
+  it('keeps embeds as team embeds and points links inside HTML pages at their team pages', async () => {
+    const opened = await makeWiki();
+    const flow = (await opened.wiki.command({ type: 'register-document', title: 'Flow', parentFolderId: null, documentType: 'excalidraw', body: '{"elements":[]}' })).id!;
+    const notes = (await opened.wiki.command({ type: 'register-document', title: 'Notes', parentFolderId: null, body: 'n\n' })).id!;
+    const map = (await opened.wiki.command({
+      type: 'register-document',
+      title: 'Map',
+      parentFolderId: null,
+      documentType: 'html',
+      body: '<a href="Notes.md#top">Notes</a> <a class="box" href=\'./Flow.excalidraw\'>Flow</a> <a href="https://example.com">web</a> <a href="#local">here</a> <a href="Gone.md">gone</a>',
+    })).id!;
+    const overview = (await opened.wiki.command({
+      type: 'register-document',
+      title: 'Overview',
+      parentFolderId: null,
+      body: `[Flow](Flow.excalidraw "width=800 height=400")\n\n  [Map](Map.html "id=${map}")\n\nInline [flow](Flow.excalidraw) stays a link.\n\n[Not embedded](Flow.excalidraw "embed=false")\n`,
+    })).id!;
+    const server = fakeServer();
+    const written = new Map<string, string>();
+    const content = {
+      writeEditorPage: async (page: { documentId: string; text: string }) => (written.set(page.documentId, page.text), { ok: true as const, outcome: 'seeded' as const }),
+      uploadFile: async () => ({ ok: false as const, code: 'unused', message: 'unused' }),
+    };
+    const loadEditorModels = async () => ({ editorCodecs: { documentTypes: ['excalidraw', 'html'] } }) as never;
+
+    const report = await moveLocalWikiToTeam(opened, {}, { call: server.call, ...noWait, loadEditorModels, content });
+
+    const link = (id: string) => `https://console.nimbalyst.com/org/org_1/project/proj_1/document/t-${id}`;
+    const doc = (id: string) => `nimbalyst://doc/t-${id}?orgId=org_1`;
+    expect(server.pages.get(overview).body).toBe(
+      `[Flow](${doc(flow)} "width=800 height=400 embedType=.excalidraw")\n\n  [Map](${doc(map)} "embedType=.html")\n\n` +
+        `Inline [flow](${link(flow)}) stays a link.\n\n[Not embedded](${link(flow)} "embed=false")\n`,
+    );
+    expect(written.get(`t-${map}`)).toBe(
+      `<a href="${link(notes)}#top">Notes</a> <a class="box" href='${link(flow)}'>Flow</a> <a href="https://example.com">web</a> <a href="#local">here</a> <a href="Gone.md">gone</a>`,
+    );
+    expect(report).toMatchObject({ verified: true, editorPagesWritten: 2 });
   });
 
   it("uploads a typed page's images into its body document, and writes nothing into a page the server refused as another type", async () => {
@@ -477,12 +530,16 @@ describe('moveLocalWikiToTeam', () => {
     expect(report.verified).toBe(false);
   });
 
-  it("returns and banners the imported Home's link, not the project's seeded Home", async () => {
+  it("moves the local Home into the project's Home page, named in every batch, and banners its link", async () => {
     const opened = await makeWiki();
     const homeId = (await opened.wiki.snapshot()).pages.find((p) => p.title === 'Home')!.id;
+    await opened.wiki.command({ type: 'register-document', title: 'Overview', parentFolderId: null, body: 'o\n' });
     const server = fakeServer();
     const report = await moveLocalWikiToTeam(opened, {}, { call: server.call, ...noWait });
-    const imported = `https://console.nimbalyst.com/org/org_1/project/proj_1/document/t-${homeId}`;
+    const imports = server.calls.filter((c) => c.name === 'pages_import');
+    expect(imports.length).toBeGreaterThan(0);
+    for (const c of imports) expect(c.args.homeLocalId).toBe(homeId);
+    const imported = 'https://console.nimbalyst.com/org/org_1/project/proj_1/document/home:proj_1';
     expect(report.homeLink).toBe(imported);
     expect((await opened.wiki.readBody(homeId)).markdown.split('\n')[0]).toBe(`This wiki moved to the team project: ${imported}`);
   });

@@ -4,9 +4,11 @@ import {
   buildSessionTree,
   MAX_TREE_DEPTH,
   mergedTreeHeader,
+  rendersAsSessionTree,
   sessionMoveError,
   sessionTreeRootId,
   treeIndent,
+  treeParentIds,
   visibleSessionTreeIds,
   type TreeSession,
 } from '../sessionTreeModel';
@@ -35,6 +37,12 @@ describe('session tree projection', () => {
       row('child', 'wrapper'),
     ]);
     expect(mergedTreeHeader(wrapper).session.id).toBe('child');
+    // A workstream the user made keeps its row with one session or none.
+    for (const children of [[row('only', 'made')], []]) {
+      const [made] = buildSessionTree([row('made', null, { sessionType: 'workstream', userWorkstream: true }), ...children]);
+      expect(mergedTreeHeader(made)).toBe(made);
+      expect(visibleSessionTreeIds([made.session, ...children], () => true)).toEqual(['made', ...children.map((c) => c.id)]);
+    }
     const [ordinary] = buildSessionTree([row('root'), row('child', 'root')]);
     expect(mergedTreeHeader(ordinary)).toBe(ordinary);
     const roots = buildSessionTree([
@@ -45,6 +53,11 @@ describe('session tree projection', () => {
     ]);
     expect(roots.flatMap((n) => n.ids).sort()).toEqual(['a', 'b', 'foreign', 'orphan']);
     expect(treeIndent(8)).toEqual({ level: 3, rail: true });
+  });
+  it('renders an empty workstream container through the tree path, not as a plain session', () => {
+    expect(rendersAsSessionTree({ sessionType: 'workstream', childCount: 0 })).toBe(true);
+    expect(rendersAsSessionTree({ sessionType: 'session', childCount: 2 })).toBe(true);
+    expect(rendersAsSessionTree({ sessionType: 'session', childCount: 0 })).toBe(false);
   });
   it('range selection follows rendered sibling order and excludes collapsed descendants and merged wrappers', () => {
     const rows = [
@@ -74,5 +87,17 @@ describe('session tree projection', () => {
     rows.set('foreign', row('foreign', null, { worktreeId: 'other' }));
     expect(sessionMoveError(rows, 'branch', 'foreign')).toMatch(/same worktree/);
     expect(sessionMoveError(rows, String(D), null)).toBeNull();
+  });
+});
+
+describe('treeParentIds', () => {
+  it('lists every node that has children, at any depth, and skips leaves', () => {
+    const rows = [row('root'), row('middle', 'root'), row('leaf', 'middle'), row('sibling', 'root'), row('solo')];
+    expect(treeParentIds(rows).sort()).toEqual(['middle', 'root']);
+  });
+
+  it('does not depend on what is expanded', () => {
+    expect(treeParentIds([row('a'), row('b', 'a')])).toEqual(['a']);
+    expect(treeParentIds([row('a')])).toEqual([]);
   });
 });

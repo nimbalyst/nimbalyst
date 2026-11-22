@@ -100,3 +100,13 @@ describe('HiddenTabManager on a shared page', () => {
     expect(registered.has(URI)).toBe(false);
   });
 });
+
+describe('HiddenTabManager on a path no editor can own', () => {
+  // Browser tools with an explicit sessionId get the workspace folder as their
+  // required filePath (#1885). Nothing can mount it; the tool must still run.
+  it('resolves without mounting for an extensionless path such as a workspace folder', async () => {
+    await expect(hiddenTabManager.ensureEditor('/home/user/Projects/ws', '/home/user/Projects/ws')).resolves.toBeUndefined();
+    expect(order).toEqual([]);
+    expect(registered.size).toBe(0);
+  });
+});

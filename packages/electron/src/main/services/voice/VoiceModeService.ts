@@ -1,5 +1,6 @@
 import { claimDesktopVoiceEvent, type DesktopVoiceClaim } from './mobileVoiceEvents';
 import { voicePresentationAuthority, registerDesktopVoicePresence } from './voicePresentationAuthority';
+import { refuseVoiceWorktreeCommit } from './voiceWorktreeCommit';
 import { getLocalHostDeviceId } from '../ai/sessionHostAttribution';
 import { VoiceStartupTiming } from '../../../shared/voiceStartupTiming';
 import { getProviderCredentials } from '../credentials/providerCredentials';
@@ -1065,15 +1066,14 @@ export function initVoiceModeService() {
               answer: params.answer,
             });
 
+            const worktreeRefusal = await refuseVoiceWorktreeCommit(currentSessionId(), params);
+            if (worktreeRefusal) return { success: false, error: worktreeRefusal };
             let response: any;
             if (params.promptType === 'ask_user_question_request') {
               // AskUserQuestion expects { answers: { questionText: answerText } }.
               // The renderer rebuilds the real question key.
               response = { answers: { _voice: params.answer } };
-            } else if (
-              params.promptType === 'exit_plan_mode_request' ||
-              params.promptType === 'git_commit_proposal_request'
-            ) {
+            } else if (params.promptType === 'exit_plan_mode_request' || params.promptType === 'git_commit_proposal_request') {
               response = { approved: params.answer.toLowerCase() === 'approve' };
             } else {
               response = { answer: params.answer };

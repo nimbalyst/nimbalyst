@@ -49,6 +49,7 @@ export declare class EmbeddedFileNode extends DecoratorNode<JSX.Element | null> 
     static clone(node: EmbeddedFileNode): EmbeddedFileNode;
     static importJSON(serializedNode: SerializedEmbeddedFileNode): EmbeddedFileNode;
     exportJSON(): SerializedEmbeddedFileNode;
+    isInline(): false;
     createDOM(_config: EditorConfig, _editor: LexicalEditor): HTMLElement;
     updateDOM(prev: EmbeddedFileNode): boolean;
     exportDOM(): DOMExportOutput;

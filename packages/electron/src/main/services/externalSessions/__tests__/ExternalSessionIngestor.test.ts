@@ -25,6 +25,7 @@ import {
   readLegacyExternalMessages,
 } from "../ExternalSessionIngestor";
 import type { ExternalSessionRef } from "../types";
+import { ExternalIngestQueueFullError } from "../types";
 import type { SessionStore } from "@nimbalyst/runtime/ai/adapters/sessionStore";
 
 const ref: ExternalSessionRef = {
@@ -101,6 +102,56 @@ function harness(maxPending = 256) {
   };
 }
 describe("ExternalSessionIngestor", () => {
+  it("does not re-create a session the user deleted, but an explicit import still can (GitHub #1825)", async () => {
+    const h = harness();
+    h.persistence.resolveSessionId.mockResolvedValue(null as any);
+    const isDeleted = vi.fn(() => true);
+    const ingestor = new ExternalSessionIngestor({
+      sessions: h.sessions,
+      persistence: h.persistence,
+      processNewMessages: h.processNewMessages,
+      refresh: h.refresh,
+      getSessionState: h.state,
+      isDeleted,
+    } as any);
+    const route = { workspacePath: "/workspace" };
+    const followed = await ingestor.ingest(h.source, ref, route);
+    expect(followed).toMatchObject({ skipped: true, settled: true });
+    expect(isDeleted).toHaveBeenCalledWith(ref.providerId, ref.externalId);
+    expect(h.sessions.create).not.toHaveBeenCalled();
+    expect(h.source.readSince).not.toHaveBeenCalled();
+    await ingestor.ingest(h.source, ref, route, { manual: true });
+    expect(h.sessions.create).toHaveBeenCalledTimes(1);
+  });
+  it("does not create a session when the delete lands while the log read is in flight (GitHub #1825)", async () => {
+    const h = harness();
+    h.persistence.resolveSessionId.mockResolvedValue(null as any);
+    let deleted = false;
+    const batch = await h.source.readSince();
+    let release!: () => void;
+    const reading = new Promise<void>((resolve) => (release = resolve));
+    let readStarted!: () => void;
+    const started = new Promise<void>((resolve) => (readStarted = resolve));
+    h.source.readSince.mockImplementation(async () => {
+      readStarted();
+      await reading;
+      return batch;
+    });
+    const ingestor = new ExternalSessionIngestor({
+      sessions: h.sessions,
+      persistence: h.persistence,
+      processNewMessages: h.processNewMessages,
+      refresh: h.refresh,
+      getSessionState: h.state,
+      isDeleted: () => deleted,
+    } as any);
+    const pending = ingestor.ingest(h.source, ref, { workspacePath: "/workspace" });
+    await started;
+    deleted = true;
+    release();
+    expect(await pending).toMatchObject({ skipped: true, settled: true });
+    expect(h.sessions.create).not.toHaveBeenCalled();
+  });
   it("recovers canonical delivery on unchanged polls without redundant persistence or refresh", async () => {
     const h = harness();
     const batch = { ...(await h.source.readSince()), messages: [] };
@@ -276,6 +327,28 @@ describe("ExternalSessionIngestor", () => {
         }),
       })
     );
+  });
+  // The watcher skips its retry back-off only for this error class (GitHub #1812).
+  it("rejects with ExternalIngestQueueFullError while the queue is full", async () => {
+    const h = harness(1);
+    let release!: () => void;
+    const batch = await h.source.readSince();
+    h.source.readSince.mockImplementationOnce(
+      () => new Promise((resolve) => (release = () => resolve(batch)))
+    );
+    const first = h.ingestor.ingest(h.source, ref, {
+      workspacePath: "/workspace",
+    });
+    await expect(
+      h.ingestor.ingest(
+        h.source,
+        { ...ref, externalId: "other", filePath: "/other" },
+        { workspacePath: "/workspace" }
+      )
+    ).rejects.toBeInstanceOf(ExternalIngestQueueFullError);
+    await vi.waitFor(() => expect(release).toBeDefined());
+    release();
+    await first;
   });
   it("bounds provisional files, clears them on stop, and discards metadata after source reset", async () => {
     const h = harness(2);

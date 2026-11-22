@@ -19,6 +19,7 @@ import {
   trashedSharedDocumentsAtom as packageTrashedSharedDocumentsAtom,
 } from '@nimbalyst/collab-client/docs';
 import { getSharedDocumentVisibility } from '../../../services/mcpCollabReadHandlers';
+import { activeWorkspacePathAtom } from '../openProjects';
 
 const WORKSPACE = '/workspace/collab-trash';
 const SCOPE: CollabScope = {
@@ -43,6 +44,7 @@ function doc(documentId: string, trashedAt: number | null = null): SharedDocumen
 afterEach(() => {
   store.set(allSharedDocumentsAtom, []);
   store.set(activeCollabScopeAtom, null);
+  store.set(activeWorkspacePathAtom, null);
 });
 
 describe('shared document Trash projections', () => {
@@ -72,6 +74,25 @@ describe('shared document Trash projections', () => {
       orgId: null,
       reason: 'notShared',
     });
+  });
+
+  // A local project with no team: main always names the project now.
+  it('still reports noTeam for the active project when it has no team scope', () => {
+    store.set(activeWorkspacePathAtom, WORKSPACE);
+    store.set(activeCollabScopeAtom, null);
+
+    expect(getSharedDocumentVisibility('local-doc', WORKSPACE).reason).toBe('noTeam');
+  });
+
+  // MCP routes the request to the window whose rail holds the project, which
+  // may be showing another project with its own team index.
+  it('does not answer for another rail project from the active project\'s index', () => {
+    store.set(activeWorkspacePathAtom, WORKSPACE);
+    store.set(activeCollabScopeAtom, SCOPE);
+    store.set(allSharedDocumentsAtom, [doc('shared-doc')]);
+
+    expect(() => getSharedDocumentVisibility('shared-doc', '/workspace/other-project')).toThrow(/not loaded/);
+    expect(getSharedDocumentVisibility('shared-doc', WORKSPACE).teamVisible).toBe(true);
   });
 
   it('moves, restores, and permanently removes rows without a connected provider', () => {

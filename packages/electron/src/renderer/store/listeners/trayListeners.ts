@@ -1,4 +1,3 @@
-import { selectSessionActionAtom } from '../actions/sessionHistoryActions';
 /**
  * Centralized IPC listeners for tray navigation events
  *
@@ -17,6 +16,7 @@ import {
 import { clearSessionUnreadAtom } from '../atoms/sessionActivity';
 import { setWindowModeAtom } from '../atoms/windowMode';
 import { syncConfigAtom, type SyncConfig } from '../atoms/appSettings';
+import { navigateToNotificationSession } from '../actions/sessionNotificationNavigation';
 
 /**
  * Atom that signals a new session should be created.
@@ -32,17 +32,18 @@ export function initTrayListeners(): () => void {
   const cleanups: Array<() => void> = [];
 
   // Handle tray:navigate-to-session from main process
-  // When user clicks a session in the tray menu, navigate to it.
-  // Replicates the logic from AgentMode.handleSessionSelect.
+  // When user clicks a session in the tray menu, navigate to it. Main sends
+  // this to the window whose rail holds the session's project, which may not
+  // be the active rail project, so it goes through the same path as a
+  // notification click: switch to that project first, then select.
   const handleNavigateToSession = (data: { sessionId: string; workspacePath: string }) => {
     const { sessionId, workspacePath } = data;
     if (!sessionId || !workspacePath) return;
 
-    // Switch to agent mode (kanban exit is handled globally by
-    // onWorkstreamSelectedCallbackAtom when setSelectedWorkstreamAtom fires)
-    store.set(setWindowModeAtom, 'agent');
-
-    void store.set(selectSessionActionAtom, sessionId);
+    return navigateToNotificationSession({ sessionId, workspacePath, sourceLabel: '' })
+      .catch((error) => {
+        console.error('[trayListeners] Session navigation failed:', error);
+      });
   };
 
   cleanups.push(

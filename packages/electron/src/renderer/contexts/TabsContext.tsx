@@ -23,7 +23,7 @@ import {
   isFeedbackRequestTab,
 } from '../components/FeedbackRequest/feedbackRequestTab';
 import { store as jotaiStore, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
-import { pushTabHistory, stepTabHistory, type TabHistory, type TabHistoryEntry } from './tabHistory';
+import { pushTabHistory, stepTabHistory, type PageScroll, type TabHistory, type TabHistoryEntry } from './tabHistory';
 
 export interface TabData {
   id: string;
@@ -33,7 +33,8 @@ export interface TabData {
   isDirty: boolean;
   isPinned: boolean;
   editorState?: any;
-  scrollPosition?: number;
+  /** Where to scroll the page Back or Forward just returned to, once it mounts. */
+  restoreScroll?: PageScroll;
   cursorPosition?: {
     line: number;
     column: number;
@@ -155,6 +156,7 @@ interface TabsContextValue {
   // Subscribe to store changes (for useSyncExternalStore)
   subscribe: (callback: () => void) => () => void;
   getSnapshot: () => TabsStore;
+  getIsHydrated: () => boolean;
 
   // Actions (don't trigger re-renders in caller)
   addTab: (
@@ -173,6 +175,8 @@ interface TabsContextValue {
    * dropping) entries `isAvailable` refuses; false when nothing that way is left.
    */
   stepTab: (tabId: string, direction: -1 | 1, isAvailable?: (entry: TabHistoryEntry) => boolean) => boolean;
+  /** The tab host reports how far a tab's page is scrolled, so history can return to it. */
+  setPageScrollReader: (reader: ((tabId: string) => PageScroll | undefined) | null) => void;
   updateTab: (tabId: string, updates: Partial<TabData>) => void;
   togglePin: (tabId: string) => void;
   reorderTabs: (fromIndex: number, toIndex: number) => void;
@@ -181,7 +185,13 @@ interface TabsContextValue {
   getTabState: (tabId: string) => TabData | undefined;
   closeAllTabs: () => void;
   closeSavedTabs: () => void;
-  reopenLastClosedTab: (fileSelectFn: (filePath: string) => Promise<void>) => Promise<void>;
+  /**
+   * Reopen the most recently closed tab. Files mode passes `fileSelectFn` so a
+   * file reopens through its normal open path; without it (Pages mode, whose
+   * tabs are collab, tracker, type, personal and Local wiki file tabs) every
+   * closed tab is re-added directly with its last-known title.
+   */
+  reopenLastClosedTab: (fileSelectFn?: (filePath: string) => Promise<void>) => Promise<void>;
 }
 
 const TabsContext = createContext<TabsContextValue | null>(null);
@@ -211,6 +221,7 @@ interface TabsStateSlot {
   snapshot: TabsStore;
   listeners: Set<() => void>;
   tabIdCounter: number;
+  restoreSettled: boolean;
   hasRestored: boolean;
   lastSavedState: string;
   reopening: boolean;
@@ -228,6 +239,7 @@ function createEmptySlot(): TabsStateSlot {
     snapshot: empty,
     listeners: new Set(),
     tabIdCounter: 0,
+    restoreSettled: false,
     hasRestored: false,
     lastSavedState: '',
     reopening: false,
@@ -338,6 +350,7 @@ export function TabsProvider({
   // Identity changes with `slot` so useSyncExternalStore detects the
   // workspace switch and re-renders consumers against the new slot.
   const getSnapshot = useCallback(() => slot.snapshot, [slot]);
+  const getIsHydrated = useCallback(() => disablePersistence || !workspacePath || slot.restoreSettled, [slot, disablePersistence, workspacePath]);
 
   // Generate unique tab ID
   const generateTabId = useCallback((): string => {
@@ -457,7 +470,7 @@ export function TabsProvider({
 
   // Show another page in an existing tab. TabContent sees the path change and
   // remounts the tab's editor for it.
-  const showInTab = useCallback((tab: TabData, filePath: string, displayName: string | undefined, history: TabHistory): void => {
+  const showInTab = useCallback((tab: TabData, filePath: string, displayName: string | undefined, history: TabHistory, restoreScroll?: PageScroll): void => {
     const store = slotRef.current.store;
     if (window.electronAPI && !isNonFilesystemTab(tab.filePath)) {
       window.electronAPI.invoke('stop-watching-file', tab.filePath).catch(() => {});
@@ -473,23 +486,35 @@ export function TabsProvider({
       contentHash: undefined,
       contentLoadedAt: undefined,
       history,
+      restoreScroll,
     });
     store.activeTabId = tab.id;
     notify();
   }, [notify]);
 
+  const pageScrollReaderRef = useRef<((tabId: string) => PageScroll | undefined) | null>(null);
+  const setPageScrollReader = useCallback((reader: ((tabId: string) => PageScroll | undefined) | null) => {
+    pageScrollReaderRef.current = reader;
+  }, []);
+  // The page a tab is leaving, with how far it was scrolled.
+  const leavingEntry = useCallback((tab: TabData): TabHistoryEntry => ({
+    filePath: tab.filePath,
+    fileName: tab.fileName,
+    scroll: pageScrollReaderRef.current?.(tab.id),
+  }), []);
+
   const navigateTab = useCallback((tabId: string, filePath: string, displayName?: string): void => {
     const tab = slotRef.current.store.tabs.get(tabId);
     if (!tab || tab.filePath === filePath) return;
-    showInTab(tab, filePath, displayName, pushTabHistory(tab.history, { filePath: tab.filePath, fileName: tab.fileName }));
-  }, [showInTab]);
+    showInTab(tab, filePath, displayName, pushTabHistory(tab.history, leavingEntry(tab)));
+  }, [leavingEntry, showInTab]);
 
   // The tab steps in place even when another tab shows the same page.
   const stepTab = useCallback((tabId: string, direction: -1 | 1, isAvailable?: (entry: TabHistoryEntry) => boolean): boolean => {
     const store = slotRef.current.store;
     const tab = store.tabs.get(tabId);
     if (!tab) return false;
-    const step = stepTabHistory(tab.history, { filePath: tab.filePath, fileName: tab.fileName }, direction, isAvailable);
+    const step = stepTabHistory(tab.history, leavingEntry(tab), direction, isAvailable);
     if (!step) return false;
     if (!step.target) {
       // Only gone pages were that way: drop them so the button disables.
@@ -497,9 +522,9 @@ export function TabsProvider({
       notify();
       return false;
     }
-    showInTab(tab, step.target.filePath, step.target.fileName, step.history);
+    showInTab(tab, step.target.filePath, step.target.fileName, step.history, step.target.scroll);
     return true;
-  }, [notify, showInTab]);
+  }, [leavingEntry, notify, showInTab]);
 
   // Update a tab
   // Only notifies subscribers if structural changes occurred (filePath, fileName changed)
@@ -614,7 +639,7 @@ export function TabsProvider({
   }, [removeTab]);
 
   // Reopen last closed tab
-  const reopenLastClosedTab = useCallback(async (fileSelectFn: (filePath: string) => Promise<void>): Promise<void> => {
+  const reopenLastClosedTab = useCallback(async (fileSelectFn?: (filePath: string) => Promise<void>): Promise<void> => {
     const slotState = slotRef.current;
     if (slotState.reopening) return;
 
@@ -633,7 +658,7 @@ export function TabsProvider({
 
         if (!existingTab) {
           try {
-            if (isCollabUri(candidateTab.filePath)) {
+            if (!fileSelectFn || isCollabUri(candidateTab.filePath)) {
               const reopenedTabId = addTab(
                 candidateTab.filePath,
                 '',
@@ -680,19 +705,34 @@ export function TabsProvider({
     // a workspace whose TabsProvider was previously unmounted.
     if (slotState.hasRestored) return;
 
+    let cancelled = false;
     const timer = setTimeout(async () => {
       try {
         const workspaceState = await window.electronAPI!.invoke('workspace:get-state', workspacePath);
+        if (cancelled) return;
         const savedState = workspaceState?.tabs;
 
         if (savedState?.tabs?.length > 0) {
-          slotState.hasRestored = true;
-
           const store = slotState.store;
           const restoredTabs = new Map<string, TabData>();
           const restoredOrder: string[] = [];
+          const liveByPath = new Map<string, TabData>();
+          for (const id of store.tabOrder) {
+            const tab = store.tabs.get(id);
+            if (tab) liveByPath.set(tab.filePath, tab);
+          }
+          const placedLive = new Set<string>();
 
           for (const tabData of savedState.tabs) {
+            // Explicit opens during hydration own their current content and
+            // selection, but take the saved tab's slot and pin.
+            const live = liveByPath.get(tabData.filePath);
+            if (live) {
+              restoredTabs.set(live.id, tabData.isPinned && !live.isPinned ? { ...live, isPinned: true } : live);
+              restoredOrder.push(live.id);
+              placedLive.add(live.id);
+              continue;
+            }
             restoredTabs.set(tabData.id, {
               ...tabData,
               content: '',
@@ -703,10 +743,15 @@ export function TabsProvider({
             restoredOrder.push(tabData.id);
           }
 
+          for (const tab of liveByPath.values()) {
+            if (placedLive.has(tab.id)) continue;
+            restoredTabs.set(tab.id, tab);
+            restoredOrder.push(tab.id);
+          }
           store.tabs = restoredTabs;
           store.tabOrder = restoredOrder;
 
-          if (savedState.closedTabs?.length > 0) {
+          if (savedState.closedTabs?.length > 0 && store.closedTabs.length === 0) {
             store.closedTabs = savedState.closedTabs.map((tabData: any) => ({
               ...tabData,
               content: '',
@@ -719,24 +764,33 @@ export function TabsProvider({
           // Start watching restored filesystem-backed tabs only.
           if (window.electronAPI) {
             for (const tab of restoredTabs.values()) {
-              if (!isNonFilesystemTab(tab.filePath)) {
+              if (!liveByPath.has(tab.filePath) && !isNonFilesystemTab(tab.filePath)) {
                 window.electronAPI.invoke('start-watching-file', tab.filePath).catch(() => {});
               }
             }
           }
 
-          if (savedState.activeTabId && restoredTabs.has(savedState.activeTabId)) {
+          if (!store.activeTabId && savedState.activeTabId && restoredTabs.has(savedState.activeTabId)) {
             store.activeTabId = savedState.activeTabId;
           }
-
-          notify();
         }
+        // Empty workspaces are hydrated too. Pending OS opens must not rely on
+        // there being saved tabs, nor run before restoration has settled.
+        slotState.hasRestored = true;
+        slotState.restoreSettled = true;
+        notify();
       } catch (error) {
+        if (cancelled) return;
         console.error('[TABS] Failed to restore tab state:', error);
+        // Explicit file opens can proceed after a failed read, but keep
+        // hasRestored false so we cannot overwrite unknown persisted tabs.
+        // A later provider remount retries restoration and merges live tabs.
+        slotState.restoreSettled = true;
+        notify();
       }
     }, 500);
 
-    return () => clearTimeout(timer);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [disablePersistence, workspacePath, notify]);
 
   // Save tabs to storage when they change
@@ -747,7 +801,7 @@ export function TabsProvider({
       const slotState = slotRef.current;
       const store = slotState.store;
 
-      if (!slotState.hasRestored && store.tabs.size === 0) return;
+      if (!slotState.hasRestored) return;
 
       const tabsArray = store.tabOrder
         .map(id => store.tabs.get(id))
@@ -815,11 +869,13 @@ export function TabsProvider({
   const contextValue: TabsContextValue = {
     subscribe,
     getSnapshot,
+    getIsHydrated,
     addTab,
     removeTab,
     switchTab,
     navigateTab,
     stepTab,
+    setPageScrollReader,
     updateTab,
     togglePin,
     reorderTabs,
@@ -836,6 +892,12 @@ export function TabsProvider({
       {children}
     </TabsContext.Provider>
   );
+}
+
+export function useTabsHydrated(): boolean {
+  const context = useContext(TabsContext);
+  if (!context) throw new Error('useTabsHydrated must be used within a TabsProvider');
+  return useSyncExternalStore(context.subscribe, context.getIsHydrated);
 }
 
 // Hook to get tabs data (subscribes to changes)
@@ -895,6 +957,7 @@ export function useTabsActions() {
     switchTab: context.switchTab,
     navigateTab: context.navigateTab,
     stepTab: context.stepTab,
+    setPageScrollReader: context.setPageScrollReader,
     updateTab: context.updateTab,
     togglePin: context.togglePin,
     reorderTabs: context.reorderTabs,
@@ -960,6 +1023,25 @@ export function useHasActiveTab(): boolean {
   );
 
   return store.activeTabId !== null;
+}
+
+/**
+ * Subscribe to the active tab's file path and display name only. Selects
+ * primitives so the caller re-renders when the active file changes, not on
+ * every tab-store notification (content, dirty, reorder).
+ */
+export function useActiveTabFileInfo(): { filePath: string | null; fileName: string | null } {
+  const context = useContext(TabsContext);
+  if (!context) {
+    throw new Error('useActiveTabFileInfo must be used within a TabsProvider');
+  }
+  const activeTab = () => {
+    const store = context.getSnapshot();
+    return store.activeTabId ? store.tabs.get(store.activeTabId) : undefined;
+  };
+  const filePath = useSyncExternalStore(context.subscribe, () => activeTab()?.filePath || null);
+  const fileName = useSyncExternalStore(context.subscribe, () => activeTab()?.fileName || null);
+  return { filePath, fileName };
 }
 
 // Dirty state subscription system - allows individual tabs to subscribe to their dirty state

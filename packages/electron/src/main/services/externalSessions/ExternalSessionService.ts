@@ -11,9 +11,11 @@ import { logger } from "../../utils/logger";
 import { ClaudeCodeSource } from "./ClaudeCodeSource";
 import { CodexSource } from "./CodexSource";
 import { ExternalSessionPersistence } from "./ExternalSessionPersistence";
+import { isDeletedExternalSession } from "./deletedExternalSessions";
 import {
   ExternalSessionIngestor,
   hasPendingExternalOwnership,
+  isImportedSessionConfig,
   readLegacyExternalMessages,
   type ExternalWorkspaceRoute,
 } from "./ExternalSessionIngestor";
@@ -126,6 +128,7 @@ export class ExternalSessionService {
         const refs = await this.discoverManual(sources, workspacePath);
         const routes = await this.deps.getRoutes();
         const summaries: ExternalSessionSummary[] = [];
+        const retryCandidates = new Map<ExternalSessionSummary, string>();
         for (const ref of refs.filter((ref) => !ref.parentToolUseId)) {
           if (this.stopped) throw new Error("External session service stopped");
           let route: ExternalWorkspaceRoute;
@@ -140,7 +143,7 @@ export class ExternalSessionService {
             workspaceId: route.workspacePath,
           });
           const local = localId ? await this.deps.sessions.get(localId) : null;
-          summaries.push({
+          const summary: ExternalSessionSummary = {
             providerId: ref.providerId,
             sessionId: ref.externalId,
             workspacePath: ref.workspacePath,
@@ -154,7 +157,19 @@ export class ExternalSessionService {
               : ref.updatedAt > local.updatedAt + 1000
               ? "needs-update"
               : "up-to-date",
-          });
+          };
+          summaries.push(summary);
+          if (local && summary.syncStatus === "up-to-date" &&
+              isImportedSessionConfig(local.providerConfig) &&
+              local.metadata?.externalIngestionOwner !== "nimbalyst") {
+            retryCandidates.set(summary, local.id);
+          }
+        }
+        if (retryCandidates.size) {
+          const empty = await this.deps.persistence.emptyImportIds([...retryCandidates.values()]);
+          for (const [summary, id] of retryCandidates) {
+            if (empty.has(id)) summary.syncStatus = "needs-update";
+          }
         }
         return summaries;
       } finally {
@@ -305,6 +320,7 @@ export function getExternalSessionService(): ExternalSessionService {
       sessions,
       persistence,
       getSessionState: (id) => getSessionStateManager().getSessionState(id),
+      isDeleted: isDeletedExternalSession,
       hasPendingOwnership: (ref, route) =>
         hasPendingExternalOwnership(
           sessions,

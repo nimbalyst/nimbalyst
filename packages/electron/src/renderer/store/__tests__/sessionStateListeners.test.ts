@@ -20,18 +20,24 @@ import {
   setSessionWorkspaceOpenAtom,
   sessionHasPendingInteractivePromptAtom,
   sessionProcessingAtom,
+  sessionProcessingStateAtom,
   sessionPendingPromptsAtom,
   sessionRegistryAtom,
   sessionChildrenAtom,
+  cleanupSessionAtom,
   sessionLastActivityAtom,
   sessionListWorkspaceAtom,
   selectedWorkstreamAtom,
+  sessionUnreadAtom,
   type SessionMeta,
 } from '../atoms/sessions';
 import {
+  globalSessionActivityAtom,
   globalSessionTurnActivityAtom,
+  markSessionUnreadAtom,
 } from '../atoms/sessionActivity';
-import { activeWorkspacePathAtom, openProjectsAtom } from '../atoms/openProjects';
+import { windowFocusedAtom } from '../atoms/windowFocus';
+import { activeWorkspacePathAtom, multiProjectModeAtom, openProjectsAtom } from '../atoms/openProjects';
 import { activeExtensionPanelAtom, activeExtensionBottomPanelAtom } from '../atoms/extensionPanels';
 import { resetWindowMode, windowModeAtom } from '../atoms/windowMode';
 import {
@@ -43,6 +49,7 @@ import {
 import { TranscriptStreamAccumulator } from '../transcriptStreamAccumulator';
 import { sessionViewRetention } from '../sessionViewRetention';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
+import { selectSessionActionAtom } from '../actions/sessionHistoryActions';
 
 function seedRegistry(entries: Array<Partial<SessionMeta> & { id: string }>): void {
   const map = new Map(store.get(sessionRegistryAtom));
@@ -102,6 +109,151 @@ function makeApi() {
   };
 }
 
+describe('processing snapshots preserve newer turn state', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it.each(['openai-codex', 'claude-code'])('keeps a newer %s start cancellable after an old idle snapshot', async provider => {
+    const sid = uniqueSessionId('new-start');
+    seedRegistry([{ id: sid, provider }]);
+    const respond = await beginDelayedProcessingSnapshot();
+    handlers.get('ai-session-state:event')!({ type: 'session:started', sessionId: sid, workspacePath: WS });
+    await respond([]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(true);
+  });
+
+  it.each(['openai-codex', 'claude-code'])('keeps a newer %s completion idle after an old running snapshot', async provider => {
+    const sid = uniqueSessionId('new-completion');
+    seedRegistry([{ id: sid, provider }]);
+    store.set(sessionProcessingAtom(sid), true);
+    const respond = await beginDelayedProcessingSnapshot();
+    handlers.get('ai-session-state:event')!({ type: 'session:completed', sessionId: sid, workspacePath: WS });
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('protects optimistic writes even when the boolean returns to its original value', async () => {
+    const sid = uniqueSessionId('optimistic-aba');
+    seedRegistry([{ id: sid }]);
+    const respond = await beginDelayedProcessingSnapshot();
+    store.set(sessionProcessingAtom(sid), true);
+    store.set(sessionProcessingAtom(sid), false);
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('protects a same-value lifecycle write without starving an unrelated stray', async () => {
+    const active = uniqueSessionId('same-value-start');
+    const stray = uniqueSessionId('unrelated-stray');
+    seedRegistry([{ id: active }, { id: stray }]);
+    store.set(sessionProcessingAtom(active), true);
+    store.set(sessionProcessingAtom(stray), true);
+    const respond = await beginDelayedProcessingSnapshot();
+    handlers.get('ai-session-state:event')!({ type: 'session:started', sessionId: active, workspacePath: WS });
+    await respond([]);
+    expect(store.get(sessionProcessingAtom(active))).toBe(true);
+    expect(store.get(sessionProcessingAtom(stray))).toBe(false);
+  });
+
+  it('ignores an older snapshot that resolves after a newer snapshot', async () => {
+    const sid = uniqueSessionId('snapshot-order');
+    seedRegistry([{ id: sid }]);
+    const older = await beginDelayedProcessingSnapshot();
+    const newer = await beginDelayedProcessingSnapshot();
+    await newer([sid]);
+    await older([]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(true);
+  });
+
+  it('does not resurrect processing after the listener is disposed', async () => {
+    const sid = uniqueSessionId('disposed-snapshot');
+    seedRegistry([{ id: sid }]);
+    const respond = await beginDelayedProcessingSnapshot();
+    cleanup?.(); cleanup = null;
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('does not overwrite a recreated processing atom after session cleanup', async () => {
+    const sid = uniqueSessionId('removed-snapshot');
+    seedRegistry([{ id: sid }]);
+    const respond = await beginDelayedProcessingSnapshot();
+    store.set(cleanupSessionAtom, sid);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('still restores a snapshot-only running session and preserves prompt flags', async () => {
+    const sid = uniqueSessionId('snapshot-only');
+    const waiting = uniqueSessionId('waiting');
+    seedRegistry([{ id: waiting }]);
+    store.set(sessionHasPendingInteractivePromptAtom(waiting), true);
+    const respond = await beginDelayedProcessingSnapshot();
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(true);
+    expect(store.get(sessionHasPendingInteractivePromptAtom(waiting))).toBe(true);
+    store.set(sessionProcessingAtom(sid), value => !value);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('records same-value updater writes without notifying boolean subscribers', () => {
+    const sid = uniqueSessionId('same-value-updater');
+    const processing = sessionProcessingAtom(sid);
+    const onChange = vi.fn();
+    const unsubscribe = store.sub(processing, onChange);
+    try {
+      const before = store.get(sessionProcessingStateAtom(sid));
+      store.set(processing, value => value);
+      expect(store.get(sessionProcessingStateAtom(sid))).not.toBe(before);
+      expect(store.get(processing)).toBe(false);
+      expect(onChange).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
+  it('does not recreate removed family entries through a retained subscriber', async () => {
+    const sid = uniqueSessionId('retained-subscriber');
+    seedRegistry([{ id: sid }]);
+    const processing = sessionProcessingAtom(sid);
+    const unsubscribe = store.sub(processing, () => {});
+    try {
+      const respond = await beginDelayedProcessingSnapshot();
+      store.set(cleanupSessionAtom, sid);
+      store.set(processing, true);
+      await respond([sid]);
+      expect([...sessionProcessingStateAtom.getParams()]).not.toContain(sid);
+      expect([...sessionProcessingAtom.getParams()]).not.toContain(sid);
+    } finally { unsubscribe(); }
+  });
+
+  it('preserves a newly instantiated local state absent from the requested snapshot', async () => {
+    const sid = uniqueSessionId('created-during-snapshot');
+    const respond = await beginDelayedProcessingSnapshot();
+    store.set(sessionProcessingAtom(sid), false);
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('restores a running session that was only read while the snapshot was pending', async () => {
+    const sid = uniqueSessionId('read-during-snapshot');
+    const respond = await beginDelayedProcessingSnapshot();
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(true);
+  });
+
+  it('discards an older restore even when it resolves before the newer snapshot', async () => {
+    const sid = uniqueSessionId('read-between-snapshots');
+    const older = await beginDelayedProcessingSnapshot();
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    const newer = await beginDelayedProcessingSnapshot();
+    await older([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    await newer([]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+});
+
 let uniqueCounter = 0;
 function uniqueSessionId(prefix: string): string {
   uniqueCounter += 1;
@@ -109,6 +261,21 @@ function uniqueSessionId(prefix: string): string {
 }
 
 const WS = '/ws/test-project';
+
+async function beginDelayedProcessingSnapshot() {
+  let resolve!: (value: { success: boolean; sessionIds: string[] }) => void;
+  const response = new Promise<{ success: boolean; sessionIds: string[] }>(done => { resolve = done; });
+  vi.mocked(window.electronAPI.sessionState.getRunningSessionIds).mockReturnValueOnce(response);
+  handlers.get('ai-session-state:event')!({
+    type: 'session:completed', sessionId: uniqueSessionId('reconcile-trigger'), workspacePath: WS,
+  });
+  await vi.advanceTimersByTimeAsync(600);
+  return async (sessionIds: string[]) => {
+    resolve({ success: true, sessionIds });
+    await response;
+    await Promise.resolve();
+  };
+}
 
 beforeEach(async () => {
   handlers = new Map();
@@ -128,6 +295,7 @@ afterEach(() => {
   store.set(activeWorkspacePathAtom, null);
   store.set(sessionListWorkspaceAtom, null);
   store.set(openProjectsAtom, []);
+  store.set(multiProjectModeAtom, false);
   store.set(workstreamStatesLoadedAtom, false);
   vi.unstubAllGlobals();
 });
@@ -136,6 +304,9 @@ describe('notification click navigation', () => {
   it('switches to the immutable workspace carried by the notification', async () => {
     const sid = uniqueSessionId('notification-workspace');
     const targetWorkspace = `/ws/notification-target-${sid}`;
+    // Switching this window to the notification's project is rail behavior;
+    // with the rail off main routes the click to that project's own window.
+    store.set(multiProjectModeAtom, true);
     initWorkstreamState(targetWorkspace);
     store.set(activeWorkspacePathAtom, '/ws/current-project');
     store.set(sessionListWorkspaceAtom, '/ws/current-project');
@@ -1074,6 +1245,316 @@ describe('closed project transcript retention', () => {
       releaseOther();
       store.set(setSessionWorkspaceOpenAtom, { workspacePath, isOpen: true });
       for (const id of ids) store.set(sessionStoreAtom(id), null);
+    }
+  });
+});
+
+describe('transcript rebuild held behind the screen (#919)', () => {
+  it('keeps the complete transcript and reloads when a newer generation streams in behind it', async () => {
+    vi.useFakeTimers();
+    const sessionId = uniqueSessionId('evicted');
+    const workspacePath = '/ws/rebuild-hold';
+    const old = [0, 1, 2].map((i) => ({
+      id: 100 + i, sequence: i, createdAt: new Date(0), type: i % 2 ? 'assistant_message' : 'user_message',
+      text: `m${i}`, subagentId: null, transcriptGeneration: 1,
+    }));
+    let land!: (data: unknown) => void;
+    const aiLoadSession = vi.fn(() => new Promise((resolve) => { land = resolve; }));
+    (window.electronAPI as any).aiLoadSession = aiLoadSession;
+    store.set(sessionStoreAtom(sessionId), { id: sessionId, workspacePath, messages: old } as any);
+    try {
+      // Main evicted the session and rebuilds it from its first row.
+      handlers.get('transcript:event')!({
+        id: 200, sessionId, sequence: 0, transcriptGeneration: 2, createdAt: new Date(0), eventType: 'user_message',
+        searchableText: 'm0', payload: { mode: 'agent', inputType: 'user' }, parentEventId: null, searchable: true,
+        subagentId: null, provider: 'claude-code', providerToolCallId: null,
+      });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(store.get(sessionStoreAtom(sessionId))?.messages).toBe(old);
+      expect(aiLoadSession).toHaveBeenCalledWith(sessionId, workspacePath);
+      land({ id: sessionId, workspacePath, messages: old.map((m) => ({ ...m, id: m.id + 100, transcriptGeneration: 2 })) });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(store.get(sessionStoreAtom(sessionId))?.messages.map((m) => m.id)).toEqual([200, 201, 202]);
+      expect(aiLoadSession).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      store.set(sessionStoreAtom(sessionId), null);
+    }
+  });
+});
+
+// A session left selected in a background window must still report that it
+// finished: "selected" only counts as "being read" while the window is focused.
+// Otherwise the debounced read-sync (hasUnread:false) also clears the tray /
+// menu-bar hint that main set on session:completed.
+describe('unread: selected session in an unfocused window', () => {
+  function selectSession(sessionId: string): void {
+    initWorkstreamState(WS);
+    store.set(selectedWorkstreamAtom(WS), { type: 'session', id: sessionId });
+  }
+
+  function readSyncCalls(sessionId: string): unknown[] {
+    const invoke = window.electronAPI.invoke as ReturnType<typeof vi.fn>;
+    return invoke.mock.calls.filter(
+      ([channel, id, payload]) =>
+        channel === 'ai:updateSessionMetadata' && id === sessionId && payload?.metadata?.hasUnread === false,
+    );
+  }
+
+  afterEach(() => {
+    store.set(windowFocusedAtom, false);
+    store.set(selectedWorkstreamAtom(WS), null);
+  });
+
+  it('marks the selected session unread and skips the read-sync while the window is unfocused', async () => {
+    vi.useFakeTimers();
+    try {
+      const sid = uniqueSessionId('bg-selected');
+      seedRegistry([{ id: sid }]);
+      selectSession(sid);
+      store.set(windowFocusedAtom, false);
+
+      handlers.get('ai:message-logged')!({ sessionId: sid, direction: 'output', workspacePath: WS });
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      expect(store.get(sessionUnreadAtom(sid))).toBe(true);
+      expect(readSyncCalls(sid)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the selected session read and syncs read state while the window is focused', async () => {
+    vi.useFakeTimers();
+    try {
+      const sid = uniqueSessionId('fg-selected');
+      seedRegistry([{ id: sid }]);
+      selectSession(sid);
+      store.set(windowFocusedAtom, true);
+
+      handlers.get('ai:message-logged')!({ sessionId: sid, direction: 'output', workspacePath: WS });
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      expect(store.get(sessionUnreadAtom(sid))).toBe(false);
+      expect(readSyncCalls(sid)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the selected session unread when its window regains focus', () => {
+    const sid = uniqueSessionId('refocus-selected');
+    seedRegistry([{ id: sid }]);
+    selectSession(sid);
+    store.set(windowFocusedAtom, false);
+
+    handlers.get('ai:message-logged')!({ sessionId: sid, direction: 'output', workspacePath: WS });
+    expect(store.get(sessionUnreadAtom(sid))).toBe(true);
+
+    store.set(windowFocusedAtom, true);
+
+    expect(store.get(sessionUnreadAtom(sid))).toBe(true);
+    expect(store.get(globalSessionActivityAtom).get(WS)?.unread.has(sid) ?? false).toBe(true);
+    expect(readSyncCalls(sid)).toHaveLength(0);
+  });
+});
+
+// With the multi-project rail one focused window hosts several projects, and
+// only the one in `activeWorkspacePathAtom` is on screen. A session selected
+// in a hidden rail project is not being read, even though the window has focus.
+describe('unread: selected session in a hidden rail project', () => {
+  const WS_A = '/ws/rail-a';
+  const WS_B = '/ws/rail-b';
+
+  function selectSessionIn(workspacePath: string, sessionId: string): void {
+    initWorkstreamState(workspacePath);
+    store.set(selectedWorkstreamAtom(workspacePath), { type: 'session', id: sessionId });
+  }
+
+  function hasUnreadWrites(sessionId: string): boolean[] {
+    const invoke = window.electronAPI.invoke as ReturnType<typeof vi.fn>;
+    return invoke.mock.calls
+      .filter(([channel, id, payload]) =>
+        channel === 'ai:updateSessionMetadata' && id === sessionId && typeof payload?.metadata?.hasUnread === 'boolean')
+      .map(([, , payload]) => payload.metadata.hasUnread);
+  }
+
+  function isUnreadInActivity(workspacePath: string, sessionId: string): boolean {
+    return store.get(globalSessionActivityAtom).get(workspacePath)?.unread.has(sessionId) ?? false;
+  }
+
+  function logOutput(sessionId: string, workspacePath: string): void {
+    handlers.get('ai:message-logged')!({ sessionId, direction: 'output', workspacePath });
+  }
+
+  // The state a hidden-project answer leaves behind (see the first test of
+  // this block), so a test can measure only what happens afterwards.
+  function seedUnread(sessionId: string, workspacePath: string): void {
+    store.set(sessionUnreadAtom(sessionId), true);
+    store.set(markSessionUnreadAtom, { sessionId, workspacePath });
+    expect(isUnreadInActivity(workspacePath, sessionId)).toBe(true);
+  }
+
+  afterEach(() => {
+    store.set(windowFocusedAtom, false);
+    store.set(multiProjectModeAtom, false);
+    store.set(selectedWorkstreamAtom(WS_A), null);
+    store.set(selectedWorkstreamAtom(WS_B), null);
+  });
+
+  it('marks a session unread when it answers while another rail project is visible in the focused window', async () => {
+    vi.useFakeTimers();
+    try {
+      const sid = uniqueSessionId('rail-hidden');
+      seedRegistry([{ id: sid, workspaceId: WS_A }]);
+      store.set(multiProjectModeAtom, true);
+      selectSessionIn(WS_A, sid);
+      store.set(activeWorkspacePathAtom, WS_B);
+      store.set(windowFocusedAtom, true);
+
+      logOutput(sid, WS_A);
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      expect(store.get(sessionUnreadAtom(sid))).toBe(true);
+      expect(hasUnreadWrites(sid)).toContain(true);
+      expect(hasUnreadWrites(sid)).not.toContain(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a hidden rail project session unread when the window regains focus on another project', () => {
+    const sid = uniqueSessionId('rail-refocus');
+    seedRegistry([{ id: sid, workspaceId: WS_A }]);
+    store.set(multiProjectModeAtom, true);
+    selectSessionIn(WS_A, sid);
+    store.set(activeWorkspacePathAtom, WS_B);
+    store.set(windowFocusedAtom, false);
+
+    logOutput(sid, WS_A);
+    expect(store.get(sessionUnreadAtom(sid))).toBe(true);
+
+    store.set(windowFocusedAtom, true);
+
+    expect(store.get(sessionUnreadAtom(sid))).toBe(true);
+    expect(isUnreadInActivity(WS_A, sid)).toBe(true);
+    expect(hasUnreadWrites(sid)).not.toContain(false);
+  });
+
+  // Only selecting the session reads it -- switching back to its project does not.
+  it('keeps the selected session unread when its rail project becomes visible again', () => {
+    const sid = uniqueSessionId('rail-switch-back');
+    seedRegistry([{ id: sid, workspaceId: WS_A }]);
+    store.set(multiProjectModeAtom, true);
+    selectSessionIn(WS_A, sid);
+    store.set(activeWorkspacePathAtom, WS_B);
+    store.set(windowFocusedAtom, true);
+    seedUnread(sid, WS_A);
+
+    store.set(activeWorkspacePathAtom, WS_A);
+
+    expect(store.get(sessionUnreadAtom(sid))).toBe(true);
+    expect(isUnreadInActivity(WS_A, sid)).toBe(true);
+    expect(hasUnreadWrites(sid)).not.toContain(false);
+  });
+
+  it('marks an unread session read when it is clicked while already selected', async () => {
+    const sid = uniqueSessionId('rail-reclick');
+    seedRegistry([{ id: sid, workspaceId: WS_A }]);
+    store.set(multiProjectModeAtom, true);
+    selectSessionIn(WS_A, sid);
+    store.set(activeWorkspacePathAtom, WS_A);
+    store.set(windowFocusedAtom, true);
+    seedUnread(sid, WS_A);
+
+    await store.set(selectSessionActionAtom, sid);
+
+    expect(store.get(sessionUnreadAtom(sid))).toBe(false);
+    expect(isUnreadInActivity(WS_A, sid)).toBe(false);
+    expect(hasUnreadWrites(sid)).toContain(false);
+  });
+
+  it('does not let a pending read-sync clear the unread state set after the window lost focus', async () => {
+    vi.useFakeTimers();
+    try {
+      const sid = uniqueSessionId('read-sync-race');
+      seedRegistry([{ id: sid, workspaceId: WS_A }]);
+      selectSessionIn(WS_A, sid);
+      store.set(activeWorkspacePathAtom, WS_A);
+      store.set(windowFocusedAtom, true);
+
+      logOutput(sid, WS_A); // read branch: schedules the 5 s read-sync
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      store.set(windowFocusedAtom, false);
+      logOutput(sid, WS_A); // unread branch: hasUnread:true
+      expect(store.get(sessionUnreadAtom(sid))).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(hasUnreadWrites(sid).at(-1)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['focus loss', 'project switch'])('preserves completion after %s with no further output', async (reason) => {
+    vi.useFakeTimers();
+    try {
+      const sid = uniqueSessionId('completion-read-sync');
+      seedRegistry([{ id: sid, workspaceId: WS_A }]);
+      selectSessionIn(WS_A, sid);
+      store.set(activeWorkspacePathAtom, WS_A);
+      store.set(windowFocusedAtom, true);
+      logOutput(sid, WS_A);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      if (reason === 'focus loss') store.set(windowFocusedAtom, false);
+      else store.set(activeWorkspacePathAtom, WS_B);
+      handlers.get('ai-session-state:event')!({ type: 'session:completed', sessionId: sid, workspacePath: WS_A });
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(store.get(sessionUnreadAtom(sid))).toBe(true);
+      expect(isUnreadInActivity(WS_A, sid)).toBe(true);
+      expect(hasUnreadWrites(sid)).toEqual([true]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rechecks visibility when a pending read-sync fires without further events', async () => {
+    vi.useFakeTimers();
+    try {
+      const sid = uniqueSessionId('timer-visibility');
+      seedRegistry([{ id: sid, workspaceId: WS_A }]);
+      selectSessionIn(WS_A, sid);
+      store.set(activeWorkspacePathAtom, WS_A);
+      store.set(windowFocusedAtom, true);
+      logOutput(sid, WS_A);
+      store.set(windowFocusedAtom, false);
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(hasUnreadWrites(sid)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the selected session read in single-project mode while its project is visible and focused', async () => {
+    vi.useFakeTimers();
+    try {
+      const sid = uniqueSessionId('single-visible');
+      seedRegistry([{ id: sid, workspaceId: WS_A }]);
+      selectSessionIn(WS_A, sid);
+      store.set(activeWorkspacePathAtom, WS_A);
+      store.set(windowFocusedAtom, true);
+
+      logOutput(sid, WS_A);
+      await vi.advanceTimersByTimeAsync(6_000);
+
+      expect(store.get(sessionUnreadAtom(sid))).toBe(false);
+      expect(hasUnreadWrites(sid)).toEqual([false]);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

@@ -120,8 +120,9 @@ export function registerTurnControlHandlers(ctx: AIServiceContext): void {
     return { success: true };
   });
 
+  // Only the renderer's send-now invokes this (NIM-7642).
   safeHandle('ai:interruptCurrentTurn', (_event, sessionId: string) =>
-    ctx.interruptCurrentTurn(sessionId)
+    ctx.interruptCurrentTurn(sessionId, { userSendNow: true })
   );
 
   // #1252: compact via the provider's real RPC. The renderer used to send

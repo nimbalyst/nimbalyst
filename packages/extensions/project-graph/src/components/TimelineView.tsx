@@ -14,8 +14,24 @@ import { timeSpansOverlap, type TimelineDateRange } from '../timeline/dateRange'
 const DAY = 24 * 60 * 60 * 1000;
 const GUTTER_W = 224;
 const MIN_PX_PER_DAY = 0.25;
-const MAX_PX_PER_DAY = 240;
+// High enough that a 24-hour range fills a wide viewport (~150px per hour).
+const MAX_PX_PER_DAY = 3600;
 const MAX_ROWS = 1000;
+
+/**
+ * Cap start-sorted rows at `max`, dropping the oldest. Open items run to now,
+ * so in a short range long-open backlog items would otherwise fill the cap and
+ * hide the recent work the range was chosen to show.
+ */
+export function keepMostRecentRows<T extends { start: number }>(sortedRows: T[], max: number): T[] {
+  return sortedRows.length > max ? sortedRows.slice(sortedRows.length - max) : sortedRows;
+}
+
+/** Zoom level that fits `spanMs` into a viewport `viewW` px wide. */
+export function fitPxPerDay(spanMs: number, viewW: number): number {
+  const spanDays = Math.max(spanMs / DAY, 1 / 24);
+  return Math.max(MIN_PX_PER_DAY, Math.min(MAX_PX_PER_DAY, (viewW - GUTTER_W - 24) / spanDays));
+}
 
 export type TimelineGroupBy = 'none' | 'tag';
 
@@ -44,13 +60,16 @@ function getActivity(node: ProjectGraphNode): PhaseActivityEntry[] | undefined {
   return undefined;
 }
 
-function fmtDate(ms: number): string {
-  return new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+function fmtDate(ms: number, withTime = false): string {
+  return withTime
+    ? new Date(ms).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : new Date(ms).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 function fmtDuration(ms: number): string {
   const d = ms / DAY;
-  if (d < 1) return `${Math.max(1, Math.round(ms / (60 * 60 * 1000)))}h`;
+  if (ms < 60 * 60 * 1000) return `${Math.max(1, Math.round(ms / (60 * 1000)))}m`;
+  if (d < 1) return `${Math.round(ms / (60 * 60 * 1000))}h`;
   if (d < 21) return `${Math.round(d)}d`;
   if (d < 90) return `${Math.round(d / 7)}w`;
   if (d < 730) return `${Math.round(d / 30)}mo`;
@@ -61,7 +80,10 @@ export function TimelineView(props: TimelineViewProps) {
   const { nodes, types, selectedNodeId, onSelectNode, onNodeDoubleClick, groupBy, onGroupByChange, dateRange } = props;
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const nowRef = useRef<number>(Date.now());
+  // Re-read on new data or a new range, so a rolling "last 24 hours" window
+  // picked long after mount still ends at the live edge.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const now = useMemo(() => Date.now(), [nodes, dateRange]);
   // null pxPerDay = auto-fit to viewport; a number = user has zoomed.
   const [pxPerDay, setPxPerDay] = useState<number | null>(null);
   const [viewW, setViewW] = useState(1000);
@@ -82,7 +104,6 @@ export function TimelineView(props: TimelineViewProps) {
 
   // ---- Build per-item phase segments (status-bearing, dated items only) ----
   const allRows = useMemo<Row[]>(() => {
-    const now = nowRef.current;
     const rows: Row[] = [];
     for (const node of nodes) {
       // The timeline shows "phased work" -- items with a status. Statusless
@@ -92,6 +113,11 @@ export function TimelineView(props: TimelineViewProps) {
       const segs = buildPhaseSegments({
         createdAt: node.createdAt,
         closedAt: node.closedAt,
+        // A session's work ends at its last message or phase change, not now.
+        // Open tracker items stay open until closed, so they keep running to now.
+        lastActivityAt: node.type === 'ai-session' && typeof node.fields?.lastActivityAt === 'number'
+          ? node.fields.lastActivityAt
+          : undefined,
         status: node.status,
         activity: getActivity(node),
         now,
@@ -101,7 +127,7 @@ export function TimelineView(props: TimelineViewProps) {
     }
     rows.sort((a, b) => a.start - b.start);
     return rows;
-  }, [nodes]);
+  }, [nodes, now]);
 
   const rangedRows = useMemo(
     () => dateRange
@@ -110,12 +136,11 @@ export function TimelineView(props: TimelineViewProps) {
     [allRows, dateRange],
   );
   const hiddenRowCount = Math.max(0, rangedRows.length - MAX_ROWS);
-  const rows = useMemo(() => rangedRows.slice(0, MAX_ROWS), [rangedRows]);
+  const rows = useMemo(() => keepMostRecentRows(rangedRows, MAX_ROWS), [rangedRows]);
 
   // ---- Time range across the visible rows (always includes "now") ----
   const range = useMemo(() => {
     if (dateRange) return { min: dateRange.startMs, max: dateRange.endMs };
-    const now = nowRef.current;
     let min = Infinity;
     let max = -Infinity;
     for (const r of rows) {
@@ -129,17 +154,14 @@ export function TimelineView(props: TimelineViewProps) {
     max = Math.max(max, now);
     const pad = Math.max((max - min) * 0.02, DAY);
     return { min: min - pad, max: max + pad };
-  }, [rows, dateRange]);
+  }, [rows, dateRange, now]);
 
-  const spanDays = Math.max((range.max - range.min) / DAY, 1);
-  const fitPxPerDay = Math.max(
-    MIN_PX_PER_DAY,
-    Math.min(MAX_PX_PER_DAY, (viewW - GUTTER_W - 24) / spanDays),
-  );
-  const pxd = pxPerDay ?? fitPxPerDay;
+  const spanDays = Math.max((range.max - range.min) / DAY, 1 / 24);
+  const fitPxd = fitPxPerDay(range.max - range.min, viewW);
+  const pxd = pxPerDay ?? fitPxd;
   const contentWidth = spanDays * pxd;
   const xForMs = useCallback((ms: number) => ((ms - range.min) / DAY) * pxd, [range.min, pxd]);
-  const todayX = xForMs(nowRef.current);
+  const todayX = xForMs(now);
 
   // ---- Zoom (Ctrl/Cmd + wheel, cursor-anchored) and shift-wheel pan ----
   const onWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
@@ -169,10 +191,10 @@ export function TimelineView(props: TimelineViewProps) {
 
   const zoomBy = useCallback((factor: number) => {
     setPxPerDay(prev => {
-      const base = prev ?? fitPxPerDay;
+      const base = prev ?? fitPxd;
       return Math.max(MIN_PX_PER_DAY, Math.min(MAX_PX_PER_DAY, base * factor));
     });
-  }, [fitPxPerDay]);
+  }, [fitPxd]);
 
   // Scroll to "now" on first layout so the live edge is visible.
   const didInitScroll = useRef(false);
@@ -183,6 +205,13 @@ export function TimelineView(props: TimelineViewProps) {
     didInitScroll.current = true;
     el.scrollLeft = Math.max(0, GUTTER_W + todayX - el.clientWidth + 80);
   }, [rows.length, todayX]);
+
+  // A new range starts fitted; a manual zoom from the old range would leave a
+  // 24-hour window at whatever scale the previous range happened to use.
+  useEffect(() => {
+    setPxPerDay(null);
+    didInitScroll.current = false;
+  }, [dateRange]);
 
   // ---- Tag lanes ----
   const lanes = useMemo(() => {
@@ -224,8 +253,10 @@ export function TimelineView(props: TimelineViewProps) {
       if (visibleEnd < visibleStart) return null;
       const left = xForMs(visibleStart);
       const w = Math.max(2, xForMs(visibleEnd) - left);
-      const endsNow = s.endMs >= nowRef.current - DAY;
-      const title = `${s.statusLabel || s.phaseLabel} · ${fmtDate(s.startMs)} → ${endsNow ? 'now' : fmtDate(s.endMs)} · ${fmtDuration(s.endMs - s.startMs)}`;
+      // Open items end exactly at `now`; anything earlier ended on its own.
+      const endsNow = s.endMs >= now;
+      const withTime = s.endMs - s.startMs < 2 * DAY;
+      const title = `${s.statusLabel || s.phaseLabel} · ${fmtDate(s.startMs, withTime)} → ${endsNow ? 'now' : fmtDate(s.endMs, withTime)} · ${fmtDuration(s.endMs - s.startMs)}`;
       return (
         <div
           key={i}
@@ -365,7 +396,7 @@ export function TimelineView(props: TimelineViewProps) {
                                   key={m.node.id}
                                   className="pg-tl-heat"
                                   style={{ left, width: w }}
-                                  title={`${m.node.label} · ${fmtDate(m.start)} → ${fmtDate(m.end)}`}
+                                  title={`${m.node.label} · ${fmtDate(m.start, m.end - m.start < 2 * DAY)} → ${fmtDate(m.end, m.end - m.start < 2 * DAY)}`}
                                 />
                               );
                             })}

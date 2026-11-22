@@ -20,14 +20,13 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_MIRROR = path.resolve(REPO_ROOT, '../nimbalyst-wiki');
 
-/** What the staged repository is built from. The plugin files change what an install runs; the rest reach it through web/. */
-export const PLUGIN_WATCH = ['plugins/nimbalyst-wiki'];
-export const OTHER_WATCH = [
-  'scripts/wiki-repo', 'scripts/stage-wiki-repo.mjs', 'packages/local-wiki/FORMAT.md',
-  'packages/wiki-web/src', 'packages/wiki-web/index.html', 'packages/wiki-web/vite.config.ts', 'packages/wiki-web/package.json',
-  // These reach web/ through the prebuilt collab-bundle, so they can over-report.
-  'packages/collab-bundle/src', 'packages/collab-client/src', 'packages/runtime/src/editor',
-];
+/**
+ * What the staged repository is built from. The plugin files change what an
+ * install runs; the rest are its docs. The code it runs is @nimbalyst/cli,
+ * released with /publish-npm, so packages/cli and packages/wiki-web are not watched here.
+ */
+export const PLUGIN_WATCH = ['plugins/nimbalyst-wiki', 'plugins/nimbalyst-wiki-team'];
+export const OTHER_WATCH = ['scripts/wiki-repo', 'scripts/stage-wiki-repo.mjs', 'packages/local-wiki/FORMAT.md'];
 
 function run(cmd, args, options = {}) {
   try {
@@ -154,7 +153,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       if (r.baseline) console.log(`  baseline ${r.baseline.slice(0, 9)} (mirror SOURCE)`);
       for (const note of r.notes) console.log(`  note: ${note}`);
       if (r.pluginCommits.length) console.log(`  plugin commits since:\n    ${r.pluginCommits.join('\n    ')}`);
-      if (r.otherCommits.length) console.log(`  web/format commits since (may over-report):\n    ${r.otherCommits.slice(0, 30).join('\n    ')}${r.otherCommits.length > 30 ? '\n    ...' : ''}`);
+      if (r.otherCommits.length) console.log(`  docs and staging commits since:\n    ${r.otherCommits.slice(0, 30).join('\n    ')}${r.otherCommits.length > 30 ? '\n    ...' : ''}`);
       if (r.uncommitted.length) console.log(`  UNCOMMITTED:\n    ${r.uncommitted.join('\n    ')}`);
       if (r.clone.dirty || r.clone.unpushed.length || r.clone.branch !== 'main') {
         console.log(`  mirror clone: branch ${r.clone.branch}${r.clone.dirty ? ', uncommitted files' : ''}${r.clone.unpushed.length ? `, ${r.clone.unpushed.length} unpushed commit(s)` : ''}`);

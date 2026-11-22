@@ -18,6 +18,12 @@ import {
   createTestEditor,
   MARKDOWN_TEST_TRANSFORMERS,
 } from '../../plugins/DiffPlugin/__tests__/utils/testConfig';
+import {DECISION_TRANSFORMER} from '../../plugins/DecisionPlugin/DecisionTransformer';
+import {
+  $createEmbeddedFileNode,
+  EmbeddedFileNode,
+} from '../../plugins/EmbedPlugin/EmbeddedFileNodeCore';
+import {MERMAID_TRANSFORMER} from '../../plugins/MermaidPlugin/MermaidTransformer';
 
 type RoundTripOptions = {
   includeFrontmatter?: boolean;
@@ -128,6 +134,84 @@ describe('Markdown round-trip corpus', () => {
 
     expect(firstExport).toBe(markdown);
     expect(secondExport).toBe(firstExport);
+  });
+
+  it('closes bold that spans a link before the following plain text', () => {
+    const markdown = '**See [a.md](./a.md)** for the plan: an `ipc/` directory.';
+    const {firstExport, secondExport} = doubleRoundTrip(markdown);
+
+    expect(firstExport).toBe(markdown);
+    expect(secondExport).toBe(firstExport);
+  });
+
+  it('keeps bold that runs through a link as one span', () => {
+    // Lexical 0.53 stores the bold on the link's text. A span that continues
+    // past the link stays one span; bold confined to a link is written inside
+    // the brackets, the more common source form (both forms are the same
+    // editor state, so only one can round-trip byte for byte).
+    for (const markdown of [
+      '**[#1027](https://x.y/1) is partially covered.** Its',
+      '**See [a.md](./a.md)** for the plan.',
+      '- [**#1027**](https://x.y/1)',
+      'See [**b**](v) and *[c](w) d*.',
+    ]) {
+      const {firstExport, secondExport} = doubleRoundTrip(markdown);
+
+      expect(firstExport).toBe(markdown);
+      expect(secondExport).toBe(firstExport);
+    }
+  });
+
+  it('keeps a literal backslash before punctuation across repeated saves', () => {
+    // Lexical 0.53 applies CommonMark backslash escapes on import, so an
+    // unescaped `\)` loses its backslash on every save.
+    for (const markdown of [
+      'Autofill (Cmd+\\\\) works',
+      '**Cmd+\\\\]** and `Cmd+\\]` and C:\\Users\\me',
+    ]) {
+      const {firstExport, secondExport} = doubleRoundTrip(markdown);
+
+      expect(firstExport).toBe(markdown);
+      expect(secondExport).toBe(firstExport);
+    }
+  });
+
+  it('sizes the inline code fence to the backticks in its content', () => {
+    const {firstExport, secondExport} = doubleRoundTrip(
+      'Used: `` `${A}-${B}` `` and ```a `` b``` here.',
+    );
+
+    // A span containing a backtick is always padded; CommonMark strips one
+    // space from each side on read, so the code content is unchanged.
+    expect(firstExport).toBe(
+      'Used: `` `${A}-${B}` `` and ``` a `` b ``` here.',
+    );
+    expect(secondExport).toBe(firstExport);
+  });
+
+  it('keeps block decorator nodes at the root instead of wrapping them in a paragraph', () => {
+    // Lexical 0.53 core wraps every inline child of the root in a paragraph
+    // on each update; DecoratorNode defaults to inline, so a block decorator
+    // that does not say otherwise ends up inside a <p>.
+    const editor = createTestEditor({nodes: [EmbeddedFileNode]});
+    editor.update(
+      () => {
+        $convertFromEnhancedMarkdownString(
+          '```mermaid\ngraph TD\n```\n\n```decision\nWhich?\n```',
+          [MERMAID_TRANSFORMER, DECISION_TRANSFORMER, ...MARKDOWN_TEST_TRANSFORMERS],
+        );
+        $getRoot().append($createEmbeddedFileNode({src: 'a.excalidraw', label: 'a'}));
+      },
+      {discrete: true},
+    );
+
+    const types = editor.read(() =>
+      $getRoot()
+        .getChildren()
+        .map((child) => child.getType())
+        .filter((type) => type !== 'paragraph'),
+    );
+    expect(types).toEqual(['mermaid', 'decision', 'embedded-file']);
   });
 
   it('round-trips the tracker strategy excerpt without escaped-emphasis drift', () => {

@@ -1,6 +1,6 @@
 import log from 'electron-log/main';
 import Store from './privateSettingsStore';
-import { app, ipcMain } from 'electron';
+import { app } from 'electron';
 import { formatLogArgs } from './formatLogArgs';
 import { createConsoleStallGuard } from './consoleStallGuard';
 
@@ -104,7 +104,8 @@ interface LoggerConfig {
 
 // Default configuration
 const defaultConfig: LoggerConfig = {
-  globalLevel: process.env.NODE_ENV === 'development' ? LogLevel.DEBUG : LogLevel.INFO,
+  // Development sessions should be readable too; detailed traces are opt-in.
+  globalLevel: LogLevel.INFO,
   fileLogging: true,
   consoleLogging: true,
   components: {
@@ -263,8 +264,7 @@ let config: LoggerConfig = store.get('loggerConfig', defaultConfig);
 // Under vitest, `app.getPath('userData')` is the mocked '/mock/path', so the
 // file transport tries to mkdir a directory that will never exist and emits an
 // ENOENT plus a ~15-frame electron-log stack trace on the first log call in
-// every test file. Both transports are pure noise in a test run -- nothing
-// asserts on them -- so keep them off entirely.
+// every test file. Keep file and console output off in ordinary test runs.
 const IS_TEST = !!process.env.VITEST;
 
 // Configure electron-log
@@ -281,6 +281,11 @@ function configureLogger() {
   // Enable/disable transports based on config
   log.transports.file.level = !IS_TEST && config.fileLogging ? config.globalLevel : false;
   log.transports.console.level = !IS_TEST && config.consoleLogging ? config.globalLevel : false;
+
+  // Main logs already have a file and terminal sink. Broadcasting them to every
+  // window multiplies entries in the renderer debug log by the window count.
+  // This does not disable incoming renderer-to-main logging.
+  if (log.transports.ipc) log.transports.ipc.level = false;
 
   // Clean, readable format
   log.transports.console.format = '[{h}:{i}:{s}] {scope}: {text}';
@@ -450,8 +455,9 @@ export function resetLoggerConfig() {
   configureLogger();
 }
 
-// Override console methods to use our logger
-// This ensures all console output goes to both the log file AND stdout
+// Route console calls through the configured transports exactly once. The
+// console transport already writes to stdout/stderr through the stall guard;
+// re-emitting here would duplicate output and bypass the configured log level.
 export function overrideConsole() {
   const originalConsole = {
     log: console.log.bind(console),
@@ -461,33 +467,24 @@ export function overrideConsole() {
     debug: console.debug.bind(console)
   };
 
-  // Override console methods to log to both file and original console (stdout).
-  // The re-emission goes through the shared terminal guard: it is a synchronous
-  // TTY write in dev, and an unguarded one has blocked the main thread for
-  // 12.6s. See `consoleStallGuard.ts`.
   console.log = (...args: any[]) => {
     logger.main.info(formatLogArgs(args));
-    terminalGuard.run(() => originalConsole.log(...args)); // Also log to stdout
   };
 
   console.error = (...args: any[]) => {
     logger.main.error(formatLogArgs(args));
-    terminalGuard.run(() => originalConsole.error(...args)); // Also log to stderr
   };
 
   console.warn = (...args: any[]) => {
     logger.main.warn(formatLogArgs(args));
-    terminalGuard.run(() => originalConsole.warn(...args)); // Also log to stderr
   };
 
   console.info = (...args: any[]) => {
     logger.main.info(formatLogArgs(args));
-    terminalGuard.run(() => originalConsole.info(...args)); // Also log to stdout
   };
 
   console.debug = (...args: any[]) => {
     logger.main.debug(formatLogArgs(args));
-    terminalGuard.run(() => originalConsole.debug(...args)); // Also log to stdout
   };
 
   return originalConsole;

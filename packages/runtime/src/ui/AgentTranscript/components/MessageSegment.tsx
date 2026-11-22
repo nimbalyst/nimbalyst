@@ -155,9 +155,18 @@ export const MessageSegment = React.memo(function MessageSegment({
   // Persisted on the assistant_message payload (see AssistantMessagePayload.thinking).
   const renderThinking = () => {
     if (isUser) return null;
-    if (!showThinking) return null;
-    const thinking = (message as TranscriptViewMessage).thinking;
+    const { thinking, progressUpdate } = message as TranscriptViewMessage;
     if (!thinking || !thinking.trim()) return null;
+    // An API progress update is the only trace of text the model wrote for
+    // the user between tool calls (#1801), so it is shown, never collapsed.
+    if (progressUpdate) {
+      return (
+        <div className="rich-transcript-progress-update text-sm italic text-[var(--nim-text-muted)] whitespace-pre-wrap select-text">
+          {thinking.trim()}
+        </div>
+      );
+    }
+    if (!showThinking) return null;
     return (
       <details className="rich-transcript-thinking rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)]">
         <summary className="flex items-center gap-1.5 px-2 py-1 text-xs text-[var(--nim-text-muted)] cursor-pointer select-none">

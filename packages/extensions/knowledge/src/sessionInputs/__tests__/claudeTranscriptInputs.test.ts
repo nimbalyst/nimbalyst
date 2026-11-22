@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -7,8 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { parseCitationLink } from '@nimbalyst/runtime/core/citationSyntax';
 import { citableInputsFromTranscript, selectInputs } from '../claudeTranscriptInputs';
 import { encodeProjectDir, locateTranscript } from '../claudeTranscriptLocator';
-import { pathToFileURL } from 'node:url';
-import { handleMessage, isEntry, type ServerDeps } from '../server';
+import { handleMessage, type ServerDeps } from '../server';
 
 const FIXTURE = readFileSync(path.join(__dirname, 'fixtures', 'session-main.jsonl'), 'utf8');
 const SESSION = '11111111-aaaa-4bbb-8ccc-000000000001';
@@ -131,18 +130,3 @@ describe('locating the calling session transcript', () => {
   });
 });
 
-describe('starting as a plugin script', () => {
-  it('recognizes itself as the entry when the plugin path runs through a symlink', () => {
-    const real = mkdtempSync(path.join(tmpdir(), 'session-inputs-'));
-    const link = `${real}-link`;
-    try {
-      writeFileSync(path.join(real, 'session-inputs.mjs'), '');
-      symlinkSync(real, link);
-      expect(isEntry(path.join(link, 'session-inputs.mjs'), pathToFileURL(path.join(real, 'session-inputs.mjs')).href)).toBe(true);
-      expect(isEntry(path.join(link, 'other.mjs'), pathToFileURL(path.join(real, 'session-inputs.mjs')).href)).toBe(false);
-    } finally {
-      rmSync(link, { force: true });
-      rmSync(real, { recursive: true, force: true });
-    }
-  });
-});

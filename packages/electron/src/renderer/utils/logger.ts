@@ -60,7 +60,8 @@ log.transports.console.level = 'info';
 // Clean, readable format
 log.transports.console.format = '{scope}: {text}';
 
-// Disabled components
+// Disabled components (warn, info and debug are dropped for these scopes).
+// Errors still log: a dropped error leaves no trace in main.log (#1818).
 const disabledComponents = new Set([
   LogComponent.UI,
   LogComponent.EDITOR,
@@ -80,7 +81,7 @@ function createComponentLogger(component: LogComponent) {
   
   return {
     error: (message: string, ...args: any[]) => {
-      if (!isDisabled) scope.error(message, ...args);
+      scope.error(message, ...args);
     },
     warn: (message: string, ...args: any[]) => {
       if (!isDisabled) scope.warn(message, ...args);

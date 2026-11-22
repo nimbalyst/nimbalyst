@@ -64,6 +64,12 @@ export interface RetentionResult extends RetentionProgress {
   durationMs: number;
   cutoffIso: string;
   stoppedEarly: boolean;
+  /**
+   * Highest row id examined. Pass it back as `startAfterId` so a scheduled run
+   * resumes where the last one stopped instead of re-reading every row it
+   * already tombstoned.
+   */
+  lastId: number;
 }
 
 export interface RetentionOptions {
@@ -71,6 +77,8 @@ export interface RetentionOptions {
   retentionDays: number;
   /** Cap on rows examined in one run so a first pass on a huge table ends. */
   maxRows?: number;
+  /** Resume after this row id. Omit to walk from the start of the table. */
+  startAfterId?: number;
   onProgress?: (p: RetentionProgress) => void;
   /**
    * Log sink. Injected rather than imported because this pass executes inside
@@ -87,6 +95,8 @@ interface CandidateRow {
   id: number;
   source: string;
   content: string;
+  /** Selected by `CANDIDATE_SQL` only; the sampling query filters age in SQL. */
+  created_at?: string;
 }
 
 function cutoffIso(retentionDays: number, now: number): string {
@@ -96,19 +106,32 @@ function cutoffIso(retentionDays: number, now: number): string {
 const SOURCE_PREDICATE = ELIGIBLE_SOURCE_PREFIXES.map(() => `m.source LIKE ? || '%'`).join(' OR ');
 
 /**
- * Candidate selection. Tool rows only, older than the cutoff, in a session
- * that is not currently active.
+ * Candidate selection. Tool rows only, in a session that is not currently
+ * active.
  *
- * `message_kind = 'tool'` covers claude-code; codex persists its raw item
- * events as `meta`, so both are admitted and the pure rewrite decides whether
- * a given row actually carries output.
+ * Age is NOT filtered here. The walk is resumed from a persisted row id, and
+ * ids do not rise with timestamps: an imported or copied row keeps its old
+ * `created_at` at a new id. With `created_at < cutoff` in this query, one such
+ * row carried the cursor past every younger row below it, and those rows were
+ * never examined again once they aged (NIM-7735; on the measured install the
+ * cursor sat 558k rows past the cutoff and a nightly run freed 5-17 MB). The
+ * age filter also made the `LIMIT` scan walk every young row to the end of the
+ * table looking for matches, an 11 s chunk on the same install. The chunk loop
+ * reads `created_at` and stops at the first row still inside the window.
+ *
+ * `tool` covers claude-code and, since the classifier change, codex
+ * app-server tool items. `meta` is still admitted, and the pure rewrite
+ * decides whether a row actually carries output, because three populations of
+ * tool output remain under `meta`: codex rows the message-kind backfill has not
+ * reached yet, the legacy codex SDK and ACP shapes the classifier does not
+ * label, and hidden rows, which are `meta` for every provider. Codex lifecycle
+ * frames are `system` now, so they no longer reach this query at all.
  */
 const CANDIDATE_SQL = `
-  SELECT m.id, m.source, m.content
+  SELECT m.id, m.source, m.content, m.created_at
   FROM ai_agent_messages m
   JOIN ai_sessions s ON s.id = m.session_id
   WHERE m.id > ?
-    AND m.created_at < ?
     AND m.direction = 'output'
     AND m.message_kind IN ('tool', 'meta')
     AND (${SOURCE_PREDICATE})
@@ -387,19 +410,19 @@ export function createToolOutputRetentionWork(
   const maxRows = options.maxRows ?? Number.POSITIVE_INFINITY;
 
   const progress: RetentionProgress = { scanned: 0, rewritten: 0, bytesSaved: 0 };
-  let lastId = 0;
+  let lastId = options.startAfterId ?? 0;
 
   return {
     name: 'tool-output-retention',
     chunk(db: SqliteDatabase): { done: boolean } {
       if (progress.scanned >= maxRows) {
-        onDone({ ...progress, durationMs: now() - startedAt, cutoffIso: cutoff, stoppedEarly: true });
+        onDone({ ...progress, durationMs: now() - startedAt, cutoffIso: cutoff, stoppedEarly: true, lastId });
         return { done: true };
       }
 
       const rows = db
         .prepare(CANDIDATE_SQL)
-        .all(lastId, cutoff, ...ELIGIBLE_SOURCE_PREFIXES, CHUNK_ROWS) as CandidateRow[];
+        .all(lastId, ...ELIGIBLE_SOURCE_PREFIXES, CHUNK_ROWS) as CandidateRow[];
 
       if (rows.length === 0) {
         log(
@@ -407,14 +430,26 @@ export function createToolOutputRetentionWork(
           `[ToolRetention] complete: scanned=${progress.scanned} rewritten=${progress.rewritten} `
             + `saved=${(progress.bytesSaved / 1024 / 1024).toFixed(1)}MB`,
         );
-        onDone({ ...progress, durationMs: now() - startedAt, cutoffIso: cutoff, stoppedEarly: false });
+        onDone({ ...progress, durationMs: now() - startedAt, cutoffIso: cutoff, stoppedEarly: false, lastId });
         return { done: true };
       }
 
       const update = db.prepare('UPDATE ai_agent_messages SET content = ? WHERE id = ?');
+      let reachedWindow = false;
       for (const row of rows) {
+        const createdAt = row.created_at ?? '';
+        // A row dated after "now" (clock skew, a synced row) would otherwise
+        // hold the cursor in place forever. Walk past it untouched.
+        const futureDated = createdAt > stampIso;
+        if (createdAt >= cutoff && !futureDated) {
+          // Still inside the retention window. Leave the cursor before this
+          // row so the next run starts here once it has aged.
+          reachedWindow = true;
+          break;
+        }
         lastId = row.id;
         progress.scanned++;
+        if (futureDated) continue;
         const rewritten = tombstoneRawContent(row.content, row.source, stampIso);
         if (rewritten === null) continue;
         update.run(rewritten, row.id);
@@ -423,6 +458,15 @@ export function createToolOutputRetentionWork(
       }
 
       options.onProgress?.({ ...progress });
+      if (reachedWindow) {
+        log(
+          'info',
+          `[ToolRetention] complete: scanned=${progress.scanned} rewritten=${progress.rewritten} `
+            + `saved=${(progress.bytesSaved / 1024 / 1024).toFixed(1)}MB`,
+        );
+        onDone({ ...progress, durationMs: now() - startedAt, cutoffIso: cutoff, stoppedEarly: false, lastId });
+        return { done: true };
+      }
       return { done: false };
     },
   };
@@ -533,7 +577,8 @@ function emptyByReason(): Record<PruneReason, number> {
  * Deliberately WIDER than `CANDIDATE_SQL`: that one restricts to
  * `message_kind IN ('tool','meta')` because only those carry tool output, but
  * the frames this lane removes are classified as `system` (claude-code
- * `thinking_tokens`) as well as `meta` (codex notifications). Narrowing by
+ * `thinking_tokens`, codex status notifications) as well as `meta` (codex
+ * deltas, and codex notifications written before the relabel). Narrowing by
  * `message_kind` here would silently skip the single largest population.
  *
  * Every other guard is the same, and for the same reasons: output only, older

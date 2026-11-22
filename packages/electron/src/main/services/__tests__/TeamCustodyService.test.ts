@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -6,9 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  *
  *  - The per-org TTL cache collapses concurrent settings reads into one GET
  *    and memoizes it for the window; a FAILED fetch must not be cached.
- *  - The mode parse is fail-closed: anything that is not the literal
- *    `server-managed` marker reads as `unmigrated`. An unknown value must
- *    never fall through to the permissive reading.
+ *  - Unknown/malformed responses are unavailable, never evidence that a team
+ *    needs migration. Only an explicit legacy marker means unmigrated.
  */
 
 const { fetchMock } = vi.hoisted(() => ({ fetchMock: vi.fn() }));
@@ -65,10 +65,6 @@ describe('TeamCustodyService', () => {
     const NON_SERVER_MANAGED: Array<[unknown, string]> = [
       ['legacy-e2e', 'the retired client-managed marker'],
       ['unmigrated', 'the explicit unmigrated marker'],
-      ['SERVER-MANAGED', 'a case variant'],
-      [undefined, 'a missing mode'],
-      [null, 'a null mode'],
-      ['something-new', 'an unknown future value'],
     ];
 
     it.each(NON_SERVER_MANAGED)('treats %s as unmigrated (%s)', async (mode) => {
@@ -85,6 +81,16 @@ describe('TeamCustodyService', () => {
 
       await expect(fetchTeamKeyStatus('org-1', 'jwt')).rejects.toThrow(/503/);
     });
+
+    it.each([null, {}, { mode: null }, { mode: 'SERVER-MANAGED' }, { mode: 'future-mode' }])(
+      'does not mistake malformed status %j for a legacy organization or cache it', async (body) => {
+        fetchMock.mockResolvedValueOnce(jsonResponse(body));
+        await expect(fetchTeamKeyStatus('org-1', 'jwt')).rejects.toThrow('Invalid team key status');
+        fetchMock.mockResolvedValueOnce(jsonResponse({ mode: 'server-managed' }));
+        await expect(fetchTeamKeyStatus('org-1', 'jwt')).resolves.toMatchObject({ mode: 'server-managed' });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      },
+    );
   });
 
   describe('TTL cache', () => {

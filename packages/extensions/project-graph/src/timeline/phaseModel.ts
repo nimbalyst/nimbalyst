@@ -117,6 +117,12 @@ export interface BuildPhaseSegmentsInput {
   createdAt?: number;
   /** Epoch ms the item entered a terminal state (undefined = still open). */
   closedAt?: number;
+  /**
+   * Epoch ms of the item's last observed activity (a session's last message).
+   * When set on an open item, the bar ends at the later of this and the last
+   * status change instead of running to `now`.
+   */
+  lastActivityAt?: number;
   /** Current status string. */
   status?: string;
   /** Raw activity log (from tracker `data.activity`). */
@@ -154,7 +160,7 @@ interface RawSpan {
  * segments that resolve to the same phase are merged so the bar reads cleanly.
  */
 export function buildPhaseSegments(input: BuildPhaseSegmentsInput): PhaseSegment[] {
-  const { createdAt, closedAt, status, activity, now } = input;
+  const { createdAt, closedAt, lastActivityAt, status, activity, now } = input;
 
   // Status transitions, sorted by time, with timestamps clamped to >= createdAt
   // (an activity recorded slightly before the item's created date shouldn't
@@ -169,7 +175,9 @@ export function buildPhaseSegments(input: BuildPhaseSegmentsInput): PhaseSegment
   const start = createdAt ?? transitions[0]?.timestamp;
   if (start == null) return [];
 
-  const end = closedAt ?? now;
+  const lastTransition = transitions[transitions.length - 1]?.timestamp;
+  const end = closedAt
+    ?? (lastActivityAt != null ? Math.min(now, Math.max(lastActivityAt, lastTransition ?? lastActivityAt)) : now);
 
   // No transitions → one span in the current status.
   if (transitions.length === 0) {
@@ -194,11 +202,17 @@ export function buildPhaseSegments(input: BuildPhaseSegmentsInput): PhaseSegment
   return finalize(spans);
 }
 
-/** Drop zero/negative-width spans and merge adjacent same-phase spans. */
+/**
+ * Drop zero/negative-width spans and merge adjacent same-phase spans. A
+ * zero-width trailing span after real history is kept so the bar still shows
+ * the current phase when the status changed at the item's last activity.
+ */
 function finalize(spans: RawSpan[]): PhaseSegment[] {
   const out: PhaseSegment[] = [];
-  for (const span of spans) {
-    if (span.endMs <= span.startMs) continue;
+  for (let i = 0; i < spans.length; i++) {
+    const span = spans[i]!;
+    const isTrailingCap = i === spans.length - 1 && out.length > 0 && span.endMs === span.startMs;
+    if (span.endMs <= span.startMs && !isTrailingCap) continue;
     const phase = phaseForStatus(span.status);
     const prev = out[out.length - 1];
     if (prev && prev.phaseKey === phase.key) {

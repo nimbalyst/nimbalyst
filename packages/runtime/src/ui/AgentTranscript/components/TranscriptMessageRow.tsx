@@ -454,7 +454,7 @@ export function computeTranscriptRowInfos(
       if (!isInteractiveWidget && !hasInteractiveToolsBefore) {
         // The most recent user message before this is a teammate notification:
         // hide empty processing turns (no substantive content).
-        if (lastUserIdx >= 0 && messages[lastUserIdx].metadata?.isTeammateMessage && !message.text?.trim()) {
+        if (lastUserIdx >= 0 && messages[lastUserIdx].metadata?.isTeammateMessage && !message.text?.trim() && !message.progressUpdate) {
           info.kind = 'hidden';
           return;
         }

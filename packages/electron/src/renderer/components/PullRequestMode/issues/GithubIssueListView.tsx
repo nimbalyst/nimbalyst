@@ -184,7 +184,7 @@ export function GithubIssueListView({
       <GithubListToolbar
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Search by title, number, or label"
+        searchPlaceholder="Search title, number, label, or author:login"
         sortOptions={SORT_OPTIONS}
         sortKey={sortKey}
         onSortChange={(key) => setLayout({ sortKey: key })}

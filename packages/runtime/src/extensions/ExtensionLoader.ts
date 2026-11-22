@@ -242,6 +242,14 @@ function validateManifest(
     });
   }
 
+  if (m.requiresDeveloperMode !== undefined && typeof m.requiresDeveloperMode !== 'boolean') {
+    errors.push({
+      error: `Invalid 'requiresDeveloperMode' - should be a boolean`,
+      field: 'requiresDeveloperMode',
+      suggestion: 'Use "requiresDeveloperMode": true or false',
+    });
+  }
+
   if (
     m.requiredReleaseChannel !== undefined &&
     m.requiredReleaseChannel !== 'stable' &&

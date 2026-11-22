@@ -233,6 +233,7 @@ export class FakeTrackerRoom {
   private nextIssueNumber = 1;
   private config: TrackerRoomConfig;
   private rejectAll: boolean;
+  private rejectCode: TrackerMutationRejectCode = 'forbidden';
   private readonly rejectConfigPrefix?: string;
 
   /** Mutation log for test assertions. */
@@ -249,7 +250,8 @@ export class FakeTrackerRoom {
   }
 
   /** Stop rejecting (used after the "first attempt fails, retry succeeds" tests). */
-  setRejectAll(value: boolean): void {
+  setRejectAll(value: boolean, code: TrackerMutationRejectCode = 'forbidden'): void {
+    this.rejectCode = code;
     this.rejectAll = value;
   }
 
@@ -373,7 +375,7 @@ export class FakeTrackerRoom {
     this.receivedMutations.push({ itemId: msg.itemId, clientMutationId: msg.clientMutationId });
 
     if (this.rejectAll) {
-      this.sendReject(ws, msg.clientMutationId, 'forbidden', 'rejectAll=true');
+      this.sendReject(ws, msg.clientMutationId, this.rejectCode, 'rejectAll=true');
       return;
     }
 

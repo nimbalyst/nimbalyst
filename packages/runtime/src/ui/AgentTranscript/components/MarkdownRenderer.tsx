@@ -9,6 +9,7 @@ import {
 } from '../contributions';
 import { useAtomValue } from 'jotai';
 import { escapeCurrencyDollars } from '../utils/escapeCurrencyDollars';
+import { rehypeTextColorSpans } from '../markdown/rehypeTextColorSpans';
 import { rehypeAutolinkFilePaths } from '../markdown/rehypeAutolinkFilePaths';
 import { rehypeAutolinkTrackerRefs } from '../markdown/rehypeAutolinkTrackerRefs';
 import { rehypeAutolinkSessionRefs } from '../markdown/rehypeAutolinkSessionRefs';
@@ -640,6 +641,9 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({
   const sessionIdKey = useAtomValue(sessionRefIdsKeyAtom);
   const rehypePlugins = useMemo<PluggableList>(
     () => [
+      // Colored text (`<span style="color: ...">`) renders styled; other raw
+      // HTML stays literal text. First, so text inside a span still autolinks.
+      rehypeTextColorSpans,
       // Autolink bare file paths into clickable file-open links. Only useful
       // when there is a file-open handler to route the click to.
       ...(onOpenFile ? [rehypeAutolinkFilePaths] : []),

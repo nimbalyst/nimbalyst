@@ -176,7 +176,7 @@ describe('ElectronTrackerDataSource', () => {
     }> = [
       {
         command: { type: 'list-items' },
-        expected: ['document-service:tracker-items-list'],
+        expected: ['document-service:tracker-items-list', '/workspace/one'],
       },
       {
         command: { type: 'refresh-items' },
@@ -309,6 +309,42 @@ describe('ElectronTrackerDataSource', () => {
       await vi.advanceTimersByTimeAsync(600);
       expect(invoke).toHaveBeenCalledTimes(2);
       expect(changes).toContainEqual({ type: 'items-replaced', items: [item('one')] });
+
+      source.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // #1822: with several projects on the rail, a list request that carried no
+  // project was answered for whichever project main had marked active at that
+  // moment, so one project's board could show another project's items. Every
+  // list request must name this data source's own project.
+  it('names its own project in every tracker item list request (#1822)', async () => {
+    vi.useFakeTimers();
+    try {
+      const invoke = vi.fn(async (channel: string) => {
+        if (channel === 'tracker-sync:get-status') return { status: 'connected', projectId: 'p' };
+        return [];
+      });
+      const { ipc, handlers } = createIpc(invoke);
+      const source = new ElectronTrackerDataSource({ workspacePath: '/workspace/two', ipc });
+      source.subscribe(() => {});
+
+      // The three places the data source asks for the list: the first load,
+      // the list-items command, and the reload after a metadata change.
+      await source.snapshot();
+      await source.command({ type: 'list-items' });
+      handlers.get('document-service:metadata-changed')!(undefined);
+      await vi.advanceTimersByTimeAsync(600);
+
+      const listCalls = invoke.mock.calls.filter(
+        ([channel]) => channel === 'document-service:tracker-items-list',
+      );
+      expect(listCalls).toHaveLength(3);
+      for (const call of listCalls) {
+        expect(call).toEqual(['document-service:tracker-items-list', '/workspace/two']);
+      }
 
       source.dispose();
     } finally {

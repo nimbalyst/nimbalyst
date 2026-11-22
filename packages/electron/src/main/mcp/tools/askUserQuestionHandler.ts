@@ -25,6 +25,7 @@ import {
   type InteractivePromptSettleReason,
 } from "./interactivePromptAbandonment";
 import { findFreshInteractiveResponse } from "./interactiveResponsePolling";
+import { fallbackAnswerNamesAnotherCard } from "./interactivePromptFallback";
 
 type McpToolResult = {
   content: Array<{ type: string; text: string }>;
@@ -386,12 +387,27 @@ export async function handleAskUserQuestion(
       _event: unknown,
       result: {
         questionId?: string;
+        rawQuestionId?: string;
         answers?: Record<string, string>;
         cancelled?: boolean;
         respondedBy?: "desktop" | "mobile";
         reason?: string;
       }
     ) => {
+      // The session channel carries answers for any question in the session;
+      // one naming another card must not settle this one (session 723ddabd).
+      const responseQuestionIds = [result.questionId, result.rawQuestionId].filter(
+        (id): id is string => typeof id === "string" && id.length > 0
+      );
+      if (
+        fallbackAnswerNamesAnotherCard({
+          waiterPromptId: questionId,
+          promptIdAliasSet: questionIdAliasSet,
+          responsePromptIds: responseQuestionIds,
+        })
+      ) {
+        return;
+      }
       settle(result, "ipc-fallback", settleReasonFromResponse(result));
     };
 
@@ -409,7 +425,9 @@ export async function handleAskUserQuestion(
       if (settled) return;
     } else {
       ipcMain.once(questionResponseChannel, onQuestionIdResponse);
-      ipcMain.once(fallbackSessionChannel, onSessionFallbackResponse);
+      // `on`, not `once`: an ignored answer for another card must not take
+      // this question's fallback listener with it. Cleanup removes it.
+      ipcMain.on(fallbackSessionChannel, onSessionFallbackResponse);
     }
 
     // #1341: keep the call off the client's idle watchdog while the question is

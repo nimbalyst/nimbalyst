@@ -23,10 +23,11 @@ import { ModelIdentifier, type ChatAttachment, type SessionData } from '@nimbaly
 import { stripMcpPrefix } from '@nimbalyst/runtime/ai/server/interactivePromptTools';
 import type { SessionMeta } from '@nimbalyst/runtime';
 import deepEqual from 'fast-deep-equal';
-import { captureTranscriptMessages, reconcileTranscriptMessages } from '../transcriptReconciliation';
+import { captureTranscriptMessages, preserveTranscriptMessageIdentity, reconcileTranscriptMessages, warnOnDuplicateUserPrompt } from '../transcriptReconciliation';
 import { sessionLaunchCountsAtom } from './sessionLaunchCounts';
 import { sessionListMetadata } from './sessionListMetadata';
 import { workstreamStateAtom, setWorkstreamActiveChildAtom } from './workstreamState';
+import { clearSessionUnreadAtom } from './sessionActivity';
 import { aiInputHistoryAtom } from './aiInputUndo';
 
 // SessionMeta is imported from @nimbalyst/runtime (canonical type).
@@ -106,9 +107,22 @@ export const activeSessionIdAtom = atom<string | null>(null);
  * Set when AI is actively generating a response.
  * SessionListItem subscribes to show processing indicator.
  */
-export const sessionProcessingAtom = atomFamily((_sessionId: string) =>
-  atom(false)
+// Each write gets a fresh identity, including same-value lifecycle writes.
+// Async reconciliation uses it to avoid overwriting newer turn/composer state.
+export const sessionProcessingStateAtom = atomFamily((_sessionId: string) =>
+  atom<Readonly<{ processing: boolean; hasLocalWrite: boolean }>>({ processing: false, hasLocalWrite: false })
 );
+
+export const sessionProcessingAtom = atomFamily((sessionId: string) => {
+  const state = sessionProcessingStateAtom(sessionId);
+  return atom(
+    get => get(state).processing,
+    (get, set, update: boolean | ((previous: boolean) => boolean)) => {
+      const processing = typeof update === 'function' ? update(get(state).processing) : update;
+      set(state, { processing, hasLocalWrite: true });
+    },
+  );
+});
 
 /**
  * Per-session unread state.
@@ -725,6 +739,7 @@ export const updateSessionStoreAtom = atom(
       if (updates.tokenUsage !== undefined && deepEqual(current.tokenUsage, updates.tokenUsage)) {
         normalizedUpdates.tokenUsage = current.tokenUsage;
       }
+      if (updates.messages) warnOnDuplicateUserPrompt(sessionId, 'update', updates.messages);
       set(sessionStoreAtom(sessionId), { ...current, ...normalizedUpdates });
     }
 
@@ -765,6 +780,15 @@ export const updateSessionStoreAtom = atom(
  */
 export const sessionLoadingAtom = atomFamily((_sessionId: string) =>
   atom<boolean>(true)
+);
+
+/**
+ * Per-session load failure: why the last load threw, or null. Lets the view
+ * tell a session that failed to load apart from one that does not exist
+ * (#1812).
+ */
+export const sessionLoadErrorAtom = atomFamily((_sessionId: string) =>
+  atom<string | null>(null)
 );
 
 /**
@@ -1180,6 +1204,9 @@ export const loadSessionChildrenAtom = atom(
         { includeArchived: false }
       );
       // console.log('[loadSessionChildrenAtom] IPC result:', result);
+      // The window may have switched projects while this was in flight.
+      const listWorkspace = get(sessionListWorkspaceAtom);
+      if (listWorkspace && listWorkspace !== workspacePath) return [];
       if (result.success && Array.isArray(result.children)) {
         const childIds = result.children.map((c: any) => c.id);
         // console.log('[loadSessionChildrenAtom] Setting children:', childIds);
@@ -1205,11 +1232,12 @@ export const loadSessionChildrenAtom = atom(
         // - If no children (single session): use the parent session itself
         const isWrapper = registry.get(parentSessionId)?.sessionType === 'workstream';
         const tabIds = isWrapper ? childIds : [parentSessionId, ...childIds];
-        const newActiveChild = currentActive && tabIds.includes(currentActive) ? currentActive : tabIds[0] ?? parentSessionId;
+        // A workstream container is never a transcript: with no visible sessions it has no active tab.
+        const newActiveChild = currentActive && tabIds.includes(currentActive) ? currentActive : tabIds[0] ?? (isWrapper ? null : parentSessionId);
         // console.log('[loadSessionChildrenAtom] Setting activeChildId to:', newActiveChild);
 
         set(workstreamStateAtom(parentSessionId), {
-          type: childIds.length > 0 ? 'workstream' : registry.get(parentSessionId)?.worktreeId ? 'worktree' : 'single',
+          type: childIds.length > 0 || isWrapper ? 'workstream' : registry.get(parentSessionId)?.worktreeId ? 'worktree' : 'single',
           worktreeId: registry.get(parentSessionId)?.worktreeId ?? null,
           childSessionIds: childIds,
           activeChildId: newActiveChild,
@@ -1390,7 +1418,16 @@ export const reparentSessionAtom = atom(
       const selection = get(selectedWorkstreamAtom(workspacePath));
       const activeId = selection && get(workstreamStateAtom(selection.id)).activeChildId;
       set(sessionParentIdAtom(sessionId), newParentId);
-      set(updateSessionStoreAtom, { sessionId, updates: { parentSessionId: newParentId, createdBySessionId: restoreManagerId !== undefined ? restoreManagerId : newParentId } });
+      // Mirrors the store's move rule (#1858): the manager survives only while it is
+      // still an ancestor at the new position; an undo restores it explicitly.
+      const currentManagerId = registry.get(sessionId)?.createdBySessionId ?? null;
+      let keepsManager = false;
+      for (let id = newParentId, seen = new Set<string>(); id && !seen.has(id); id = registry.get(id)?.parentSessionId ?? null) {
+        seen.add(id);
+        if (id === currentManagerId) keepsManager = true;
+      }
+      const managerId = restoreManagerId !== undefined ? restoreManagerId : keepsManager ? currentManagerId : null;
+      set(updateSessionStoreAtom, { sessionId, updates: { parentSessionId: newParentId, createdBySessionId: managerId } });
       const updatedRegistry = get(sessionRegistryAtom);
       const nodes = buildSessionTree([...updatedRegistry.values()]);
       const reconcile = (node: typeof nodes[number]) => {
@@ -1432,284 +1469,68 @@ export const reparentSessionAtom = atom(
 );
 
 /**
- * Convert a single session into a workstream by:
- * 1. Creating a new parent session (the workstream root)
- * 2. Making the current session a child of the new parent
- * 3. Creating a new sibling session
- * Returns the new parent session ID.
- *
- * IMPORTANT: This operation is guarded against:
- * - Converting a session that already has a parent (is already a child)
- * - Converting a session that is already a workstream root (has children)
- * - Partial failures (rolls back parent creation if subsequent steps fail)
+ * Row that should open its inline title editor once it renders. Set when the
+ * user creates a workstream from the + menu so the default name is easy to change.
  */
-export const convertToWorkstreamAtom = atom(
+export const pendingSessionRenameAtom = atom<string | null>(null);
+
+/**
+ * Create a user-made workstream: an empty `workstream` container row marked
+ * `userWorkstream` so the sidebar never merges it into a single session, then
+ * move `sessionIds` into it. Moves go through `reparentSessionAtom`, which never
+ * assigns a manager, so the sessions inside stay peers.
+ *
+ * Returns the new workstream id, or null when the row could not be created.
+ * Sessions that fail to move stay where they were and are counted in `failed`.
+ */
+export const createWorkstreamAtom = atom(
   null,
-  async (get, set, { sessionId, workspacePath, model, skipSiblingCreation }: {
-    sessionId: string;
+  async (get, set, { workspacePath, title, sessionIds = [], select = false, rename = false }: {
     workspacePath: string;
-    model?: string;
-    /** When true, skip creating a new sibling session (used for drag-drop where another session takes that role) */
-    skipSiblingCreation?: boolean;
-  }) => {
-    if (!sessionId || !workspacePath || !window.electronAPI) {
-      return null;
-    }
-
-    try {
-      // Get current session data
-      const sessionData = get(sessionStoreAtom(sessionId));
-      if (!sessionData) {
-        console.error(`[sessions] Cannot convert to workstream: session ${sessionId} not found`);
-        return null;
-      }
-
-      // Don't convert if already has a parent (is already a child session)
-      if (sessionData.parentSessionId) {
-        console.error(`[sessions] Cannot convert to workstream: session ${sessionId} already has a parent`);
-        return null;
-      }
-
-      // Don't convert if the session is in a worktree. A worktree IS the workstream —
-      // wrapping a worktree-resident session in a workstream container produces a
-      // forbidden third layer (worktree → workstream → session). New sessions in a
-      // worktree should just be created as flat siblings, never via this conversion path.
-      if (sessionData.worktreeId) {
-        console.error(`[sessions] Cannot convert to workstream: session ${sessionId} is in worktree ${sessionData.worktreeId} (the worktree is already the workstream)`);
-        return null;
-      }
-
-      // Don't convert if already a workstream root (has children or isWorkstreamRoot flag)
-      // Check children in the atom first
-      const existingChildren = get(sessionChildrenAtom(sessionId));
-      if (existingChildren.length > 0) {
-        console.error(`[sessions] Cannot convert to workstream: session ${sessionId} already has children`);
-        return null;
-      }
-
-      // Also check database via registry for childCount
-      const registry = get(sessionRegistryAtom);
-      const sessionMeta = registry.get(sessionId);
-      if (sessionMeta?.childCount && sessionMeta.childCount > 0) {
-        console.error(`[sessions] Cannot convert to workstream: session ${sessionId} already has ${sessionMeta.childCount} children in database`);
-        return null;
-      }
-
-      // Check isWorkstreamRoot metadata flag
-      if (sessionData.metadata?.isWorkstreamRoot) {
-        console.error(`[sessions] Cannot convert to workstream: session ${sessionId} is already marked as workstream root`);
-        return null;
-      }
-
-      // Check if the original session is pinned - we'll transfer the pin to the parent workstream
-      const originalWasPinned = sessionMeta?.isPinned ?? false;
-
-      // Create a new parent session (the workstream root)
-      const parentId = crypto.randomUUID();
-      const createResult = await window.electronAPI.invoke('sessions:create', {
-        session: {
-          id: parentId,
-          provider: sessionData.provider || 'claude-code',
-          model: sessionData.model,
-          title: sessionData.title || 'Workstream',
-          sessionType: 'workstream',
-          metadata: {
-            isWorkstreamRoot: true,
-          },
-        },
-        workspaceId: workspacePath,
-        // The app manufactures this root to hold sessions the user already
-        // made; nobody asked for a new session, so it must not read as one.
-        launchSource: 'workstream_convert',
-      });
-
-      if (!createResult.success || !createResult.id) {
-        console.error('[sessions] Failed to create workstream parent session');
-        return null;
-      }
-
-      const parentSessionId = createResult.id;
-
-      // If the original session was pinned, transfer the pin to the new parent workstream
-      if (originalWasPinned) {
-        try {
-          await window.electronAPI.invoke('sessions:update-pinned', parentSessionId, true);
-        } catch (error) {
-          console.error('[sessions] Failed to pin parent workstream (non-fatal):', error);
-          // Continue anyway - pinning is not critical to the conversion
-        }
-      }
-
-      // Helper to clean up parent on failure
-      const rollbackParent = async () => {
-        try {
-          await window.electronAPI.invoke('sessions:delete', parentSessionId);
-          console.log(`[sessions] Rolled back parent session ${parentSessionId}`);
-        } catch (rollbackError) {
-          console.error(`[sessions] Failed to rollback parent session ${parentSessionId}:`, rollbackError);
-        }
-      };
-
-      // Update current session to be a child of the new parent
-      // Also unpin the original session if it was pinned (pin transfers to parent workstream)
-      try {
-        await window.electronAPI.invoke('sessions:update-metadata', sessionId, {
-          parentSessionId,
-          ...(originalWasPinned && { isPinned: false }),
-        });
-      } catch (error) {
-        console.error('[sessions] Failed to set parent on original session, rolling back:', error);
-        await rollbackParent();
-        return null;
-      }
-
-      // Create a new sibling session (unless skipSiblingCreation is set, e.g. for drag-drop)
-      let siblingResult: { success: boolean; sessionId?: string; error?: string } = { success: false };
-      if (!skipSiblingCreation) {
-        try {
-          // Derive provider from model ID to prevent provider/model mismatches
-          let siblingProvider = sessionData.provider || 'claude-code';
-          if (model) {
-            const modelId = ModelIdentifier.tryParse(model);
-            if (modelId) {
-              siblingProvider = modelId.provider;
-            }
-          }
-          siblingResult = await window.electronAPI.invoke('sessions:create-child', {
-            parentSessionId,
-            workspacePath,
-            worktreeId: sessionData.worktreeId,
-            provider: siblingProvider,
-            model,
-          });
-        } catch (error) {
-          // Sibling creation failed - rollback: remove parentSessionId from original, delete parent
-          console.error('[sessions] Failed to create sibling session (exception), rolling back:', error);
-          try {
-            await window.electronAPI.invoke('sessions:update-metadata', sessionId, {
-              parentSessionId: null,
-            });
-          } catch (revertError) {
-            console.error('[sessions] Failed to revert parentSessionId on original session:', revertError);
-          }
-          await rollbackParent();
-          return null;
-        }
-
-        // Check if IPC returned an error (didn't throw but returned { success: false })
-        if (!siblingResult.success) {
-          console.error('[sessions] Failed to create sibling session (IPC error), rolling back:', siblingResult.error);
-          try {
-            await window.electronAPI.invoke('sessions:update-metadata', sessionId, {
-              parentSessionId: null,
-            });
-          } catch (revertError) {
-            console.error('[sessions] Failed to revert parentSessionId on original session:', revertError);
-          }
-          await rollbackParent();
-          return null;
-        }
-      }
-
-      // All database operations succeeded - now update atoms
-      // Set parent ID for the original session
-      set(sessionParentIdAtom(sessionId), parentSessionId);
-
-      // Initialize children list with both sessions
-      const children = [sessionId];
-      if (siblingResult.success && siblingResult.sessionId) {
-        children.push(siblingResult.sessionId);
-        set(sessionParentIdAtom(siblingResult.sessionId), parentSessionId);
-        // Initialize sessionStoreAtom for the sibling so derived atoms (mode, model) work
-        // This prevents showing default values before loadSessionDataAtom runs
-        set(sessionStoreAtom(siblingResult.sessionId), {
-          id: siblingResult.sessionId,
-          title: 'New Session',
-          provider: sessionData.provider || 'claude-code',
-          model: model || sessionData.model || 'claude-code:sonnet',
-          mode: 'agent',
-          messages: [],
-          parentSessionId,
-          worktreeId: sessionData.worktreeId || undefined,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        } as SessionData);
-      }
-      set(sessionChildrenAtom(parentSessionId), children);
-
-      // Set the active child and mark as read
-      if (siblingResult.success && siblingResult.sessionId) {
-        // Normal conversion: set the new sibling as active (user wants to work in the new session)
-        set(sessionActiveChildAtom(parentSessionId), siblingResult.sessionId);
-        set(setWorkstreamActiveChildAtom, { workstreamId: parentSessionId, childId: siblingResult.sessionId });
-        set(markSessionReadAtom, siblingResult.sessionId);
-      } else {
-        // Drag-drop (no sibling): set the original session as active child
-        set(sessionActiveChildAtom(parentSessionId), sessionId);
-        set(setWorkstreamActiveChildAtom, { workstreamId: parentSessionId, childId: sessionId });
-      }
-
-      // Update unified workstream state. Always runs so drag-drop conversions
-      // (skipSiblingCreation=true) initialize childSessionIds; otherwise subsequent
-      // reparentSession calls operate on uninitialized state and the workstream's
-      // child list never reflects further drops.
-      const { transferSessionStateToWrapperAtom } = await import('./workstreamState');
-      set(transferSessionStateToWrapperAtom, {
-        sessionId,
-        parentId: parentSessionId,
-        ...(siblingResult.success && siblingResult.sessionId
-          ? { siblingId: siblingResult.sessionId }
-          : {}),
-      });
-
-      // Add the new parent session to the session list so it appears in the sidebar
-      // If original was pinned, transfer pin to the parent workstream
-      const now = Date.now();
-      set(addSessionFullAtom, {
-        id: parentSessionId,
-        title: sessionData.title || 'Workstream',
-        provider: sessionData.provider || 'claude-code',
-        model: sessionData.model,
+    title?: string;
+    sessionIds?: readonly string[];
+    /** Select the new workstream in Agent mode (shows its empty state when it has no sessions). */
+    select?: boolean;
+    /** Open the inline title editor on the new row. */
+    rename?: boolean;
+  }): Promise<{ id: string; failed: number } | null> => {
+    if (!workspacePath) throw new Error('createWorkstreamAtom requires workspacePath');
+    if (!window.electronAPI) return null;
+    const id = crypto.randomUUID();
+    const name = title?.trim() || 'New Workstream';
+    const result = await window.electronAPI.invoke('sessions:create', {
+      session: {
+        id,
+        provider: 'claude-code',
+        title: name,
         sessionType: 'workstream',
-        createdAt: now,
-        updatedAt: now,
-        workspaceId: workspacePath,
-        messageCount: 0,
-        isArchived: false,
-        isPinned: originalWasPinned,
-        // Workstreams never carry a worktreeId — the worktree IS the workstream,
-        // and the early-return above already blocks this path for worktree sessions.
-        worktreeId: null,
-        parentSessionId: null, // This is the root
-        childCount: children.length,
-        uncommittedCount: 0,
-      });
-
-      // Update the original session in the list to show it now has a parent
-      // Also update isPinned to false if it was pinned (pin transferred to parent)
-      set(updateSessionFullAtom, {
-        id: sessionId,
-        parentSessionId: parentSessionId,
-        ...(originalWasPinned && { isPinned: false }),
-      });
-
-      // Update the selected workstream to point to the new parent
-      // This is critical - without it, the sidebar still shows the old session
-      // IMPORTANT: Use setSelectedWorkstreamAtom (not selectedWorkstreamAtom directly)
-      // to ensure the selection is persisted to workspace state
-      set(setSelectedWorkstreamAtom, {
-        workspacePath,
-        selection: {
-          type: 'workstream' as WorkstreamType,
-          id: parentSessionId,
-        },
-      });
-
-      return { parentId: parentSessionId, siblingId: siblingResult.sessionId ?? null };
-    } catch (error) {
-      console.error(`[sessions] Failed to convert session ${sessionId} to workstream:`, error);
+        metadata: { isWorkstreamRoot: true, userWorkstream: true },
+      },
+      workspaceId: workspacePath,
+      // A container is not a session anybody asked to run; count it as app-made.
+      launchSource: 'workstream_convert',
+    });
+    if (!result?.success) {
+      console.error('[sessions] Failed to create workstream:', result?.error);
       return null;
     }
+    // Show the row now; the list refresh below replaces it with the stored one.
+    const now = Date.now();
+    set(sessionRegistryAtom, new Map(get(sessionRegistryAtom)).set(id, {
+      id, title: name, provider: 'claude-code', sessionType: 'workstream', userWorkstream: true,
+      workspaceId: workspacePath, worktreeId: null, parentSessionId: null, childCount: 0, uncommittedCount: 0,
+      createdAt: now, updatedAt: now, messageCount: 0, isArchived: false, isPinned: false,
+    }));
+    await set(refreshSessionListAtom);
+    let failed = 0;
+    for (const sessionId of sessionIds) {
+      const oldParentId = get(sessionRegistryAtom).get(sessionId)?.parentSessionId ?? null;
+      const moved = await set(reparentSessionAtom, { sessionId, oldParentId, newParentId: id, workspacePath });
+      if (!moved) failed++;
+    }
+    if (rename) set(pendingSessionRenameAtom, id);
+    if (select) set(setSelectedWorkstreamAtom, { workspacePath, selection: { type: 'workstream', id } });
+    return { id, failed };
   }
 );
 
@@ -1784,6 +1605,7 @@ export const setSessionWorkspaceOpenAtom = atom(
       closed.delete(workspacePath);
     } else {
       closed.add(workspacePath);
+      sessionListCache.delete(workspacePath);
       const generations = new Map(get(sessionWorkspaceGenerationsAtom));
       generations.set(workspacePath, {});
       set(sessionWorkspaceGenerationsAtom, generations);
@@ -1806,6 +1628,12 @@ export const setSessionWorkspaceOpenAtom = atom(
   }
 );
 
+
+/** The thrown reason, without Electron's "Error invoking remote method" wrapper. */
+function describeSessionLoadError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/^Error invoking remote method '[^']*': /, '');
+}
 
 /**
  * Load session data into the atom.
@@ -1830,6 +1658,7 @@ export const loadSessionDataAtom = atom(
     }
 
     set(sessionLoadingAtom(sessionId), true);
+    set(sessionLoadErrorAtom(sessionId), null);
     const draftWasHydrated = get(sessionDraftHydratedAtom(sessionId));
     const draftModifiedAtStart = get(sessionDraftLocalModifiedAtAtom(sessionId));
 
@@ -1850,6 +1679,7 @@ export const loadSessionDataAtom = atom(
           get(sessionStoreAtom(sessionId))?.messages ?? [], sessionData.messages ?? [],
           { startedWith: messagesAtStart },
         );
+        warnOnDuplicateUserPrompt(sessionId, 'load', sessionData.messages);
         // Set sessionStoreAtom - derived atoms (mode, model, archived) will automatically sync
         set(sessionStoreAtom(sessionId), sessionData);
 
@@ -1879,6 +1709,9 @@ export const loadSessionDataAtom = atom(
       }
     } catch (error) {
       console.error(`[sessions] Failed to load session ${sessionId}:`, error);
+      if (get(sessionWorkspaceGenerationsAtom).get(workspacePath) === generation) {
+        set(sessionLoadErrorAtom(sessionId), describeSessionLoadError(error));
+      }
     } finally {
       if (get(sessionWorkspaceGenerationsAtom).get(workspacePath) === generation) {
         set(sessionLoadingAtom(sessionId), false);
@@ -1924,37 +1757,13 @@ export const updateSessionDataAtom = atom(
  */
 const pendingReloads = new Map<string, { version: number; aborted: boolean; workspacePath: string }>();
 
-function preserveEquivalentArrayRef<T>(current: T[] | undefined, next: T[] | undefined): T[] | undefined {
-  if (!current || !next) return next;
-  if (current === next) return current;
-  if (current.length !== next.length) return next;
-  if (deepEqual(current, next)) return current;
-  // Per-element preservation: if individual entries are deep-equal, reuse the
-  // current reference for that index so virtualized row memos can bail out.
-  // The outer array reference still changes (some element differs) — that's
-  // expected — but rows whose underlying message didn't change keep identity.
-  let changed = false;
-  const merged: T[] = new Array(next.length);
-  for (let i = 0; i < next.length; i++) {
-    const c = current[i];
-    const n = next[i];
-    if (c === n || deepEqual(c, n)) {
-      merged[i] = c;
-    } else {
-      merged[i] = n;
-      changed = true;
-    }
-  }
-  return changed ? merged : current;
-}
-
 function preserveEquivalentValue<T>(current: T | undefined, next: T | undefined): T | undefined {
   if (current === undefined || next === undefined) return next;
   return deepEqual(current, next) ? current : next;
 }
 
 export function preserveReloadIdentity(current: SessionData, next: SessionData): SessionData {
-  const normalizedMessages = preserveEquivalentArrayRef(current.messages, next.messages);
+  const normalizedMessages = preserveTranscriptMessageIdentity(current.messages, next.messages);
   const currentTeammates = Array.isArray(current.metadata?.currentTeammates)
     ? current.metadata.currentTeammates
     : undefined;
@@ -2040,6 +1849,7 @@ export const reloadSessionDataAtom = atom(
         sessionData.messages = reconcileTranscriptMessages(
           current?.messages ?? [], sessionData.messages ?? [], { startedWith: messagesAtStart },
         );
+        warnOnDuplicateUserPrompt(sessionId, 'reload', sessionData.messages);
         if (current) {
           // Preserve read state
           const preservedTimestamp = current.lastReadMessageTimestamp || 0;
@@ -2082,10 +1892,12 @@ export const cleanupSessionAtom = atom(null, (get, set, sessionId: string) => {
   // Remove all per-session atoms
   sessionStoreAtom.remove(sessionId);
   sessionLoadingAtom.remove(sessionId);
+  sessionLoadErrorAtom.remove(sessionId);
   sessionModeAtom.remove(sessionId);
   sessionModelAtom.remove(sessionId);
   sessionArchivedAtom.remove(sessionId);
   sessionProcessingAtom.remove(sessionId);
+  sessionProcessingStateAtom.remove(sessionId);
   sessionUnreadAtom.remove(sessionId);
   sessionPendingPromptAtom.remove(sessionId);
   sessionHasPendingInteractivePromptAtom.remove(sessionId);
@@ -2144,6 +1956,7 @@ export const markSessionReadAtom = atom(null, (get, set, sessionId: string) => {
   const now = Date.now();
   set(sessionUnreadAtom(sessionId), false);
   set(sessionLastReadAtom(sessionId), now);
+  set(clearSessionUnreadAtom, { sessionId });
 
   // Always push lastReadAt through sync for cross-device read state.
   // Even if this device didn't consider the session "unread", another device
@@ -2206,6 +2019,9 @@ export const sessionListRootAtom = atom<SessionListItem[]>((get) => {
 
   return Array.from(registry.values())
     .filter(s => {
+      // GitHub #1887: the send path rejects a session whose workspace_id is not
+      // this workspace, so never list one (the registry is shared per window).
+      if (workspacePath && s.workspaceId && s.workspaceId !== workspacePath) return false;
       if ((s.remoteHostDeviceId ?? "") !== host) return false;
       if (!showArchived && s.isArchived) return false;
       // Root sessions (no parent) are always included
@@ -2324,11 +2140,16 @@ export const refreshSessionListAtom = atom(
  */
 let initInProgress: Promise<void> | null = null;
 let lastInitWorkspacePath: string | null = null;
+/** Session list of each project this window switched away from, by workspace path. */
+const sessionListCache = new Map<string, { registry: Map<string, SessionMeta>; launchCounts: Record<string, number> }>();
 let initializedWorkspacePath: string | null = null;
 
 export async function initSessionList(workspacePath: string): Promise<void> {
-  // If already initialized for this workspace, return immediately
-  if (initializedWorkspacePath === workspacePath) {
+  // If already initialized for this workspace, return immediately. A rail
+  // switch away and back before the other project's load finished leaves
+  // initializedWorkspacePath on this project while the list points at the
+  // other one, so the list's workspace must match too.
+  if (initializedWorkspacePath === workspacePath && store.get(sessionListWorkspaceAtom) === workspacePath) {
     return;
   }
 
@@ -2338,17 +2159,36 @@ export async function initSessionList(workspacePath: string): Promise<void> {
   }
 
   lastInitWorkspacePath = workspacePath;
-  if (store.get(sessionListWorkspaceAtom) !== workspacePath) store.set(sessionLaunchCountsAtom, {});
+  const previousWorkspacePath = store.get(sessionListWorkspaceAtom);
+  if (previousWorkspacePath !== workspacePath) {
+    // The registry holds one project's sessions. Keep the outgoing project's
+    // list and show the incoming one's cached list while it refetches, so a
+    // rail switch back to a project does not blank the list for the round trip.
+    // A switch can land before the outgoing project's first refresh did, when
+    // the registry still holds an older project; cache only matching rows.
+    const outgoing = [...store.get(sessionRegistryAtom)].filter(([, s]) => s.workspaceId === previousWorkspacePath);
+    if (previousWorkspacePath && outgoing.length > 0) {
+      sessionListCache.set(previousWorkspacePath, {
+        registry: new Map(outgoing),
+        launchCounts: store.get(sessionLaunchCountsAtom),
+      });
+    }
+    const cached = sessionListCache.get(workspacePath);
+    store.set(sessionLaunchCountsAtom, cached?.launchCounts ?? {});
+    if (cached) store.set(sessionRegistryAtom, cached.registry);
+  }
   store.set(sessionListWorkspaceAtom, workspacePath);
 
   // Trigger initial load and track the promise
-  initInProgress = store.set(refreshSessionListAtom);
+  const load = store.set(refreshSessionListAtom);
+  initInProgress = load;
   try {
-    await initInProgress;
-    // Mark as initialized only after successful completion
-    initializedWorkspacePath = workspacePath;
+    await load;
+    // Mark as initialized only after successful completion, and only if the
+    // list still shows this project: a switch during the load discards it.
+    if (store.get(sessionListWorkspaceAtom) === workspacePath) initializedWorkspacePath = workspacePath;
   } finally {
-    initInProgress = null;
+    if (initInProgress === load) initInProgress = null;
   }
 }
 
@@ -2557,11 +2397,11 @@ export const setSelectedWorkstreamAtom = atom(
  */
 export const workstreamSessionsAtom = atomFamily((workstreamId: string) =>
   atom((get) => {
-    // Helper to filter out archived sessions
-    const filterArchived = (sessionIds: string[]) =>
-      sessionIds.filter(id => !get(sessionArchivedAtom(id)));
-
     const registry = get(sessionRegistryAtom);
+    // Archived per the loaded transcript or the list row; an unloaded child only has the row.
+    const filterArchived = (sessionIds: string[]) =>
+      sessionIds.filter(id => !get(sessionArchivedAtom(id)) && !registry.get(id)?.isArchived);
+
     const meta = registry.get(workstreamId);
     const subtree = buildSessionTree([...registry.values()]).find(node => node.session.id === workstreamId);
     const loadedChildren = get(sessionChildrenAtom(workstreamId));
@@ -2569,6 +2409,8 @@ export const workstreamSessionsAtom = atomFamily((workstreamId: string) =>
       return filterArchived(meta?.sessionType === 'workstream' ? subtree.ids.slice(1) : subtree.ids);
     }
     if (loadedChildren.length) return filterArchived(meta?.sessionType === 'workstream' ? loadedChildren : [workstreamId, ...loadedChildren]);
+    // A container with no visible sessions has no tabs; it is never its own tab.
+    if (meta?.sessionType === 'workstream') return [];
     const worktreeId = meta?.worktreeId ?? get(sessionStoreAtom(workstreamId))?.worktreeId;
     if (worktreeId && registry.get(meta?.parentSessionId ?? '')?.sessionType === 'blitz') {
       const sessions = [...registry.values()].filter(row => row.worktreeId === worktreeId).sort((a,b) => a.createdAt-b.createdAt).map(row=>row.id);
@@ -2586,12 +2428,27 @@ export const workstreamSessionsAtom = atomFamily((workstreamId: string) =>
 export const setActiveSessionInWorkstreamAtom = atom(
   null,
   (get, set, { workstreamId, sessionId }: { workstreamId: string; sessionId: string }) => {
+    // A workstream container has no transcript and must never be the active session.
+    if (get(sessionRegistryAtom).get(sessionId)?.sessionType === 'workstream') return;
     set(setWorkstreamActiveChildAtom, { workstreamId, childId: sessionId });
     set(markSessionReadAtom, sessionId);
     // Also set the global active session so components like VoiceModeButton
     // (which live outside of the workstream context) can read it.
     set(activeSessionIdAtom, sessionId);
   }
+);
+
+/**
+ * The session Agent mode publishes as active for a selection: its active tab,
+ * else the selected row itself. A workstream container is never the answer, so
+ * voice and other global consumers cannot address a prompt to it.
+ */
+export const selectedActiveSessionIdAtom = atomFamily((selectedId: string) =>
+  atom((get) => {
+    const registry = get(sessionRegistryAtom);
+    const candidate = get(workstreamStateAtom(selectedId)).activeChildId || selectedId;
+    return registry.get(candidate)?.sessionType === 'workstream' ? null : candidate;
+  })
 );
 
 /**

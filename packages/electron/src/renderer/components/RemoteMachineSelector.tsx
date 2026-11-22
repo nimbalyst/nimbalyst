@@ -9,6 +9,7 @@ import {
   setSelectedWorkstreamAtom,
 } from "../store/atoms/sessions";
 import type { DeviceInfo } from "@nimbalyst/runtime/sync/types";
+import { localMachineLabel } from "./remoteMachineLabel";
 
 export function RemoteMachineSelector({
   workspacePath,
@@ -22,6 +23,7 @@ export function RemoteMachineSelector({
   const currentSelection = useAtomValue(selectedWorkstreamAtom(workspacePath));
   const select = useSetAtom(setSelectedWorkstreamAtom);
   const [hosts, setHosts] = useState<DeviceInfo[]>([]);
+  const [localName, setLocalName] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
@@ -29,6 +31,12 @@ export function RemoteMachineSelector({
         .invoke("ai:remoteHosts", workspacePath)
         .then((value) => {
           if (!cancelled) setHosts(value);
+        })
+        .catch(() => {});
+      void window.electronAPI
+        .invoke("ai:localDeviceName")
+        .then((value) => {
+          if (!cancelled) setLocalName(value);
         })
         .catch(() => {});
     };
@@ -61,7 +69,7 @@ export function RemoteMachineSelector({
         });
       }}
     >
-      <option value="">This Mac</option>
+      <option value="">{localMachineLabel(localName)}</option>
       {hosts.map((device) => (
         <option key={device.deviceId} value={device.deviceId} title={device.lastSeenAt ? `Last seen ${new Date(device.lastSeenAt).toLocaleString()}` : undefined}>
           {device.name}

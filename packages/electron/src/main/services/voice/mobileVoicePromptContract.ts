@@ -2,6 +2,14 @@ import { createHash } from "node:crypto";
 import type { InteractivePromptPayload } from "@nimbalyst/runtime/ai/server/transcript/types";
 import type { PromptResponsePayload } from "../ai/MobileSessionControlHandler";
 
+/**
+ * #1756: voice never names a commit's target branch or path, so it must not
+ * approve a commit into another worktree. Refusing leaves the proposal open
+ * for the desktop card, which shows both.
+ */
+export const VOICE_WORKTREE_COMMIT_REFUSAL =
+  "This commit goes into another worktree. Approve it in the commit card on desktop.";
+
 /** Whole utterances only: qualifiers/negation must never match an affirmative substring. */
 export function explicitVoiceDecision(answer: string): boolean | null {
   const text = answer
@@ -149,6 +157,8 @@ export function exactVoiceResponse(
       promptType: "tool_permission",
       response: { decision: decision ? "allow" : "deny", scope: "once" },
     };
+  if (prompt.promptType === "git_commit_proposal" && decision && prompt.targetWorktree)
+    throw new Error(VOICE_WORKTREE_COMMIT_REFUSAL);
   if (prompt.promptType === "git_commit_proposal")
     return {
       promptId,

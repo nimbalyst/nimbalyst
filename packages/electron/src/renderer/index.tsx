@@ -60,6 +60,7 @@ import {
   initExternalEditorSettings,
 } from './store/atoms/appSettings';
 import { initVoiceModeListeners } from './store/listeners/voiceModeListeners';
+import { dictationSettingsAtom, initDictationSettings } from './store/atoms/dictation';
 import { initDeepLinkNoticeListeners } from './store/listeners/deepLinkNoticeListeners';
 import {
   autoCommitEnabledAtom,
@@ -222,6 +223,9 @@ await Promise.allSettled([
   initDiffPeekSize().then((size) => {
     if (size) store.set(diffPeekSizeAtom, size);
   }),
+  initDictationSettings().then((settings) => {
+    store.set(dictationSettingsAtom, settings);
+  }),
   initTrackerAutomationSettings().then((settings) => {
     store.set(trackerAutomationAtom, settings);
   }),
@@ -267,6 +271,11 @@ const posthogClient = posthog.init(
     // so they produced 241,643 events in 30 days that nothing consumed.
     capture_pageview: false,
     capture_pageleave: false,
+    // The renderer reads no feature flags, but posthog-js calls /flags on every
+    // window load by default, and PostHog bills each call that evaluates an
+    // active flag. Any flag created for the main process would make every
+    // window open billable.
+    advanced_disable_flags: true,
     session_idle_timeout_seconds: 30 * 60, // 30 minutes
     loaded: (posthog) => {
       console.log(`[RENDERER] PostHog loaded (analytics ID: ${posthog.get_distinct_id()}, session: ${posthog.get_session_id()}, official build: ${isOfficialBuild})`);
@@ -287,8 +296,9 @@ const posthogClient = posthog.init(
     // gate here (rather than relying only on opt_out_capturing) means no
     // existing or future `posthog.capture(...)` call site can leak an event
     // while the user has analytics turned off.
+    // E2E launches are covered here too: main reports consent as denied under
+    // the test environment (see analyticsSuppression.ts).
     before_send: (event) => {
-      if (process.env.PLAYWRIGHT_TEST) return null;
       if (!isAnalyticsConsentGranted()) return null;
       // Mark users as dev users if they've ever used a non-official build.
       // Attached to an event that was going to be sent anyway rather than

@@ -2,3 +2,5 @@
 
 # Claude helper binary (built during release, ~75MB)
 resources/claude-helper-bin/
+# On-device dictation helper (built by scripts/build-dictation-helper.sh)
+resources/dictation-helper-bin/

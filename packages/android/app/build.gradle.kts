@@ -290,7 +290,7 @@ androidComponents {
             if (isRelease) {
                 bundleSources.from(
                     "../src/editor-mobile", "../editor.html", "../vite.config.editor.ts",
-                    "../../runtime/src"
+                    "../../runtime/src", "../../collab-protocol/src"
                 )
             }
         }

@@ -11,11 +11,11 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node ../../../../scripts/tsc-native.mjs --noEmit",
     "serve": "node dist/serve.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "better-sqlite3": "13.0.3",
     "chokidar": "4.0.3",
     "fast-glob": "3.3.3",
@@ -29,6 +29,6 @@
     "@types/better-sqlite3": "*",
     "@types/js-yaml": "*",
     "@types/node": "*",
-    "typescript": "^5.0.0"
+    "typescript": "^6.0.3"
   }
 }

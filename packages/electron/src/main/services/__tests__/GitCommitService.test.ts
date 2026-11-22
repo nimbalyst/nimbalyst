@@ -10,6 +10,7 @@ import {
   executeGitCommit,
 } from '../GitCommitService';
 import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
+import { gitOperationLock } from '../GitOperationLock';
 
 const execFileAsync = promisify(execFile);
 
@@ -84,6 +85,25 @@ describe('GitCommitService', () => {
 
     expect(result.success).toBe(true);
     expect(result.commitHash).toBeTruthy();
+  });
+
+  // #1682: a Stop that arrives while the commit still waits for the repo lock means no commit.
+  it('does not commit when the abort signal fired while it waited for the lock', async () => {
+    await initScratchRepo(tmpRoot);
+    const file = path.join(tmpRoot, 'a.txt');
+    await fs.writeFile(file, 'hello\n', 'utf8');
+    let release!: () => void;
+    const holder = gitOperationLock.withLock(tmpRoot, 'test-holder', () => new Promise<void>(resolve => { release = resolve; }));
+    const controller = new AbortController();
+    const pending = executeGitCommit(tmpRoot, 'must not land', [file], { signal: controller.signal });
+    controller.abort();
+    release();
+    await holder;
+
+    const result = await pending;
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/cancelled before it started/);
+    await expect(gitOutput(['rev-parse', '--verify', 'HEAD'], tmpRoot)).rejects.toThrow();
   });
 
   it('ignores inherited repository-selection env and commits only in the requested workspace', async () => {

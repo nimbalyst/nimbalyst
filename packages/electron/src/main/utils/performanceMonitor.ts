@@ -3,11 +3,27 @@ import { safeOn } from './ipcRegistry';
 import { promises as fs } from 'fs';
 import path from 'path';
 import inspector from 'inspector';
+import { pruneCpuProfiles } from './cpuProfileRetention';
 
 let lastCpuUsage = process.cpuUsage();
 let lastTime = Date.now();
 let performanceInterval: NodeJS.Timeout | null = null;
 let lagTimer: NodeJS.Timeout | null = null;
+let profileRetentionTimer: NodeJS.Timeout | null = null;
+let profileRetentionInFlight = false;
+
+async function pruneAutomaticProfiles() {
+    if (profileRetentionInFlight) return;
+    profileRetentionInFlight = true;
+    try {
+        const result = await pruneCpuProfiles(path.join(app.getPath('userData'), 'logs'));
+        if (result.deletedCount > 0) console.log('[PERF] Pruned automatic CPU profiles:', result);
+    } catch (error) {
+        console.warn('[PERF] CPU profile retention failed:', error);
+    } finally {
+        profileRetentionInFlight = false;
+    }
+}
 
 // Event-loop lag detector. The CPU sampler above runs every 10s and only
 // shows *that* a freeze happened. The lag detector runs every 250ms, so a
@@ -81,6 +97,13 @@ async function captureCpuProfile(triggerCpuPercent: number, reason: string = 'cp
 let rendererJankRegistered = false;
 
 export function startPerformanceMonitoring() {
+    // Main owns retention for main/PGLite/SQLite captures, including old runs.
+    // A periodic pass also covers workers when main itself never captures CPU.
+    if (!profileRetentionTimer) {
+        void pruneAutomaticProfiles();
+        profileRetentionTimer = setInterval(() => { void pruneAutomaticProfiles(); }, 60_000);
+        profileRetentionTimer.unref();
+    }
     scheduleLagSample();
     if (!rendererJankRegistered) {
         rendererJankRegistered = true;
@@ -126,6 +149,10 @@ export function startPerformanceMonitoring() {
 }
 
 export function stopPerformanceMonitoring() {
+    if (profileRetentionTimer) {
+        clearInterval(profileRetentionTimer);
+        profileRetentionTimer = null;
+    }
     if (performanceInterval) {
         clearInterval(performanceInterval);
         performanceInterval = null;

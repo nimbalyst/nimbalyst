@@ -1,34 +1,51 @@
 /**
- * The `nimbalyst-local` server as the Claude Code plugin runs it: `nim mcp`
- * alone, bundled into plugins/nimbalyst-wiki/scripts/nim-local-mcp.mjs by
- * scripts/build-wiki-plugin.mjs, since a plugin installed from git has no
- * `npm install`. Claude Code starts it in the project directory. Codex
- * expands no variables in a plugin's MCP args, so its manifest starts the
- * server in the plugin's own directory and forwards the project as `PWD`.
+ * `nim mcp --plugin-root <dir>` and `nim mcp --plugin-agent codex`: the
+ * `nimbalyst-local` server as the nimbalyst-wiki plugin starts it, through a
+ * pinned `npx @nimbalyst/cli@<version>`. Claude Code passes
+ * `${CLAUDE_PLUGIN_ROOT}` and starts it in the project. Codex expands no
+ * variables in a plugin's MCP args and npx replaces `PWD` with its own working
+ * directory, so Codex starts it in the project with no plugin root, and the
+ * install is found in Codex's plugin cache under this CLI's version, which the
+ * plugin pins to its own. The install decides the update notice.
  */
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { runMcp } from '../commands/mcp.js';
+import { codexHome, type MachineEnv } from '../update/installs.js';
 import { resolvePluginWorkspace } from './pluginWorkspace.js';
-import { detectPluginInstall, startUpdateCheck } from './updateCheck.js';
+import { detectPluginInstall, MANIFEST_URLS, PLUGIN_NAME, type PluginInstall, type UnmanagedReason } from './updateCheck.js';
 
-declare const __NIM_VERSION__: string;
+export interface PluginServerSetup {
+  workspace: string;
+  install: PluginInstall | { kind: 'unmanaged'; reason: UnmanagedReason };
+}
 
-// The bundle is <plugin>/scripts/nim-local-mcp.mjs.
-const pluginRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const workspace = resolvePluginWorkspace(process.env, process.cwd(), pluginRoot);
-// The published plugin ships the browser app in web/; a monorepo checkout finds packages/wiki-web instead.
-const webDir = path.join(pluginRoot, 'web');
-const flags: Record<string, string> = existsSync(path.join(webDir, 'index.html')) ? { workspace, assets: webDir } : { workspace };
-// Only an install from one of our marketplaces has anything to update.
-const install = detectPluginInstall(process.env, process.cwd(), pluginRoot);
-const updateCheck = install ? startUpdateCheck({ install }) : null;
-runMcp(__NIM_VERSION__, { noun: 'mcp', positionals: [], flags }, {
-  takeNotice: updateCheck?.takeNotice,
-  install: install ?? { kind: 'unmanaged', reason: 'checkout' },
-  executable: fileURLToPath(import.meta.url),
-}).catch((err) => {
-  process.stderr.write(`nimbalyst-local: ${(err as Error).stack ?? err}\n`);
-  process.exit(1);
-});
+export interface PluginServerFlags {
+  /** `--plugin-root`, from Claude Code. */
+  root?: string;
+  /** `--plugin-agent codex`. */
+  agent?: string;
+}
+
+/** The Codex install of this version of the plugin, from one of our marketplaces, or null. */
+function codexPluginRoot(machine: MachineEnv, version: string): string | null {
+  for (const marketplace of Object.keys(MANIFEST_URLS)) {
+    const root = path.join(codexHome(machine), 'plugins', 'cache', marketplace, PLUGIN_NAME, version);
+    if (existsSync(root)) return root;
+  }
+  return null;
+}
+
+export function pluginServerSetup(machine: MachineEnv, cwd: string, flags: PluginServerFlags, version: string): PluginServerSetup {
+  // Only an install from one of our marketplaces has anything to update; the
+  // plugin directory and `--plugin-dir` update some other way.
+  const unmanaged = { kind: 'unmanaged' as const, reason: 'checkout' as const };
+  if (flags.agent === 'codex') {
+    const root = codexPluginRoot(machine, version);
+    return { workspace: cwd, install: (root && detectPluginInstall(machine.env, cwd, root, 'codex')) || unmanaged };
+  }
+  const pluginRoot = path.resolve(cwd, flags.root ?? cwd);
+  return {
+    workspace: resolvePluginWorkspace(machine.env, cwd, pluginRoot),
+    install: detectPluginInstall(machine.env, cwd, pluginRoot, 'claude') ?? unmanaged,
+  };
+}

@@ -3,6 +3,7 @@ import {
   dateRangeFromInputs,
   formatDateInput,
   recentDateRange,
+  recentHoursRange,
   type TimelineDateRange,
 } from '../timeline/dateRange';
 
@@ -13,7 +14,11 @@ interface TimelineRangeBarProps {
 }
 
 function rangeLabel(range: TimelineDateRange): string {
-  const format = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  // Sub-two-day windows (the 24-hour preset) need the time to be meaningful.
+  const withTime = range.endMs - range.startMs < 2 * 24 * 60 * 60 * 1000;
+  const format = new Intl.DateTimeFormat(undefined, withTime
+    ? { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }
+    : { year: 'numeric', month: 'short', day: 'numeric' });
   return `${format.format(range.startMs)} – ${format.format(range.endMs)}`;
 }
 
@@ -55,6 +60,9 @@ export function TimelineRangeBar({ range, onChange, onClose }: TimelineRangeBarP
           className={!range ? 'is-active' : ''}
         >
           All time
+        </button>
+        <button type="button" onClick={() => applyRange(recentHoursRange(24))}>
+          24 hours
         </button>
         {[7, 30, 90].map(days => (
           <button key={days} type="button" onClick={() => applyRange(recentDateRange(days))}>

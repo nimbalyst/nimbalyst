@@ -1,0 +1,28 @@
+{
+  "name": "@nimbalyst/extension-run-manager",
+  "version": "0.1.0",
+  "description": "Run Manager: start, stop and watch a project's long-running processes",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "src/index.tsx",
+  "scripts": {
+    "build": "vite build && vite build --config vite.backend.config.ts",
+    "build:backend": "vite build --config vite.backend.config.ts",
+    "dev": "vite build --watch",
+    "typecheck": "node ../../../scripts/tsc-native.mjs --noEmit",
+    "test": "echo \"run-manager tests run via root vitest\""
+  },
+  "devDependencies": {
+    "@nimbalyst/extension-sdk": "workspace:*",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.2.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.0.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0 || ^19.0.0",
+    "react-dom": "^18.2.0 || ^19.0.0"
+  }
+}

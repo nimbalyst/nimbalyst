@@ -65,20 +65,20 @@
     "build": "pnpm run build:types && node scripts/build-dist.mjs && pnpm run check:production-output",
     "build:types": "node scripts/build-types.mjs",
     "check:production-output": "node scripts/check-production-output.mjs",
-    "typecheck": "pnpm run check:bundle",
+    "typecheck": "pnpm run build:types && node ../../scripts/tsc-native.mjs --noEmit",
     "test": "vitest --run --config vitest.config.ts",
-    "check:bundle": "pnpm run build && tsc --noEmit && node ../../scripts/check-collab-bundle.mjs",
-    "validate": "pnpm run typecheck && pnpm run test"
+    "check:bundle": "pnpm run build && node ../../scripts/check-collab-bundle.mjs",
+    "validate": "pnpm run typecheck && pnpm run check:bundle && pnpm run test"
   },
   "dependencies": {
     "jotai": "^2.16.1",
     "jotai-family": "^1.1.0"
   },
   "peerDependencies": {
-    "@lexical/yjs": "^0.44.0",
+    "@lexical/yjs": "^0.53.0",
     "@revolist/react-datagrid": "4.21.4",
     "@revolist/revogrid": "4.21.4",
-    "lexical": "^0.44.0",
+    "lexical": "^0.53.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "y-protocols": "^1.0.6",
@@ -97,9 +97,9 @@
     "jsdom": "^26.1.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "typescript": "^5.5.0",
+    "typescript": "^6.0.3",
     "vite": "^7.1.12",
-    "vitest": "4.1.11",
-    "yjs": "13.6.32"
+    "vitest": "4.1.12",
+    "yjs": "13.6.33"
   }
 }

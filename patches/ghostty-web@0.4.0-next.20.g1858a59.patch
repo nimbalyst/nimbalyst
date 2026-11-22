@@ -1,0 +1,43 @@
+diff --git a/dist/ghostty-web.js b/dist/ghostty-web.js
+index bb02e76ebacbb954d2a4f006caece5c15dad95ac..f9f0f0eed5f07aacd2ff8daad1ca98d317b59118 100644
+--- a/dist/ghostty-web.js
++++ b/dist/ghostty-web.js
+@@ -2038,7 +2038,7 @@ class BA {
+ const l = class n {
+   // ms between scroll steps
+   constructor(A, Q, g, E) {
+-    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.mouseDownX = 0, this.mouseDownY = 0, this.dragThresholdMet = !1, this.mouseDownTarget = null, this.dirtySelectionRows = /* @__PURE__ */ new Set(), this.selectionChangedEmitter = new J(), this.boundMouseUpHandler = null, this.boundContextMenuHandler = null, this.boundClickHandler = null, this.boundDocumentMouseMoveHandler = null, this.autoScrollInterval = null, this.autoScrollDirection = 0, this.terminal = A, this.renderer = Q, this.wasmTerm = g, this.textarea = E, this.attachEventListeners();
++    this.selectionStart = null, this.selectionEnd = null, this.isSelecting = !1, this.mouseDownX = 0, this.mouseDownY = 0, this.dragThresholdMet = !1, this.mouseDownTarget = null, this.dirtySelectionRows = /* @__PURE__ */ new Set(), this.selectionChangedEmitter = new J(), this.boundMouseUpHandler = null, this.boundContextMenuHandler = null, this.boundClickHandler = null, this.boundDocumentMouseMoveHandler = null, this.boundDocumentMouseDownHandler = null, this.autoScrollInterval = null, this.autoScrollDirection = 0, this.terminal = A, this.renderer = Q, this.wasmTerm = g, this.textarea = E, this.attachEventListeners();
+   }
+   // pixels from edge to trigger scroll
+   /**
+@@ -2222,7 +2222,7 @@ const l = class n {
+    * Cleanup resources
+    */
+   dispose() {
+-    this.selectionChangedEmitter.dispose(), this.stopAutoScroll(), this.boundMouseUpHandler && (document.removeEventListener("mouseup", this.boundMouseUpHandler), this.boundMouseUpHandler = null), this.boundDocumentMouseMoveHandler && (document.removeEventListener("mousemove", this.boundDocumentMouseMoveHandler), this.boundDocumentMouseMoveHandler = null), this.boundContextMenuHandler && (this.renderer.getCanvas().removeEventListener("contextmenu", this.boundContextMenuHandler), this.boundContextMenuHandler = null), this.boundClickHandler && (document.removeEventListener("click", this.boundClickHandler), this.boundClickHandler = null);
++    this.selectionChangedEmitter.dispose(), this.stopAutoScroll(), this.boundMouseUpHandler && (document.removeEventListener("mouseup", this.boundMouseUpHandler), this.boundMouseUpHandler = null), this.boundDocumentMouseMoveHandler && (document.removeEventListener("mousemove", this.boundDocumentMouseMoveHandler), this.boundDocumentMouseMoveHandler = null), this.boundContextMenuHandler && (this.renderer.getCanvas().removeEventListener("contextmenu", this.boundContextMenuHandler), this.boundContextMenuHandler = null), this.boundClickHandler && (document.removeEventListener("click", this.boundClickHandler), this.boundClickHandler = null), this.boundDocumentMouseDownHandler && (document.removeEventListener("mousedown", this.boundDocumentMouseDownHandler), this.boundDocumentMouseDownHandler = null), /* Nimbalyst patch: drop the links to the terminal engine so it can be freed. */ this.terminal = void 0, this.renderer = void 0, this.wasmTerm = void 0;
+   }
+   // ==========================================================================
+   // Private Methods
+@@ -2274,9 +2274,9 @@ const l = class n {
+           this.selectionEnd = { col: o.col, absoluteRow: w }, this.requestRender();
+         }
+       }
+-    }, document.addEventListener("mousemove", this.boundDocumentMouseMoveHandler), document.addEventListener("mousedown", (Q) => {
++    }, document.addEventListener("mousemove", this.boundDocumentMouseMoveHandler), /* Nimbalyst patch: keep this listener in a named field so dispose() can remove it. An unnamed one stayed on the page forever and kept every closed terminal (and its WASM memory) alive. */ this.boundDocumentMouseDownHandler = (Q) => {
+       this.mouseDownTarget = Q.target;
+-    }), this.boundMouseUpHandler = (Q) => {
++    }, document.addEventListener("mousedown", this.boundDocumentMouseDownHandler), this.boundMouseUpHandler = (Q) => {
+       if (this.isSelecting) {
+         if (this.isSelecting = !1, this.stopAutoScroll(), !this.dragThresholdMet) {
+           this.clearSelection();
+@@ -3111,7 +3111,7 @@ class iA {
+    * Clean up components (called on dispose or error)
+    */
+   cleanupComponents() {
+-    this.selectionManager && (this.selectionManager.dispose(), this.selectionManager = void 0), this.inputHandler && (this.inputHandler.dispose(), this.inputHandler = void 0), this.renderer && (this.renderer.dispose(), this.renderer = void 0), this.canvas && this.canvas.parentNode && (this.canvas.parentNode.removeChild(this.canvas), this.canvas = void 0), this.textarea && this.textarea.parentNode && (this.textarea.parentNode.removeChild(this.textarea), this.textarea = void 0), this.element && (this.element.removeEventListener("wheel", this.handleWheel), this.element.removeEventListener("mousedown", this.handleMouseDown, { capture: !0 }), this.element.removeEventListener("mousemove", this.handleMouseMove), this.element.removeEventListener("mouseleave", this.handleMouseLeave), this.element.removeEventListener("click", this.handleClick), this.element.removeAttribute("contenteditable"), this.element.removeAttribute("role"), this.element.removeAttribute("aria-label"), this.element.removeAttribute("aria-multiline")), this.isOpen && typeof document < "u" && document.removeEventListener("mouseup", this.handleMouseUp), this.scrollbarHideTimeout && (window.clearTimeout(this.scrollbarHideTimeout), this.scrollbarHideTimeout = void 0), this.linkDetector && (this.linkDetector.dispose(), this.linkDetector = void 0), this.wasmTerm && (this.wasmTerm.free(), this.wasmTerm = void 0), this.ghostty = void 0, this.element = void 0, this.textarea = void 0;
++    this.selectionManager && (this.selectionManager.dispose(), this.selectionManager = void 0), this.inputHandler && (this.inputHandler.dispose(), this.inputHandler = void 0), this.renderer && (this.renderer.dispose(), this.renderer = void 0), this.canvas && this.canvas.parentNode && (this.canvas.parentNode.removeChild(this.canvas), this.canvas = void 0), this.textarea && this.textarea.parentNode && (this.textarea.parentNode.removeChild(this.textarea), this.textarea = void 0), this.element && (this.element.removeEventListener("wheel", this.handleWheel), this.element.removeEventListener("mousedown", this.handleMouseDown, { capture: !0 }), this.element.removeEventListener("mousemove", this.handleMouseMove), this.element.removeEventListener("mouseleave", this.handleMouseLeave), this.element.removeEventListener("click", this.handleClick), this.element.removeAttribute("contenteditable"), this.element.removeAttribute("role"), this.element.removeAttribute("aria-label"), this.element.removeAttribute("aria-multiline")), /* Nimbalyst patch: isOpen is already false when dispose() gets here, so remove the listener every time. */ typeof document < "u" && document.removeEventListener("mouseup", this.handleMouseUp), this.scrollbarHideTimeout && (window.clearTimeout(this.scrollbarHideTimeout), this.scrollbarHideTimeout = void 0), this.linkDetector && (this.linkDetector.dispose(), this.linkDetector = void 0), this.wasmTerm && (this.wasmTerm.free(), this.wasmTerm = void 0), this.ghostty = void 0, this.element = void 0, this.textarea = void 0;
+   }
+   /**
+    * Assert terminal is open (throw if not)

@@ -27,6 +27,7 @@ import {
 import { HR_TRANSFORMER } from './HorizontalRuleTransformer';
 import { PAGE_BREAK_TRANSFORMER } from '../plugins/PageBreakPlugin/PageBreakTransformer';
 import { HASHTAG_TRANSFORMER } from './HashtagTransformer';
+import { TEXT_COLOR_TRANSFORMER } from '../plugins/TextColorPlugin/TextColorTransformer';
 
 // Element transformers
 const ELEMENT_TRANSFORMERS: Array<Transformer> = [
@@ -56,6 +57,9 @@ const TEXT_FORMAT_TRANSFORMERS: Array<Transformer> = [
 
 // Text match transformers
 const TEXT_MATCH_TRANSFORMERS: Array<Transformer> = [
+  // Colored text: `<span style="color: #...">`. Its style holds `#hex`, which
+  // the hashtag transformer would otherwise claim.
+  TEXT_COLOR_TRANSFORMER,
   LINK,
   HASHTAG_TRANSFORMER,
 ];

@@ -61,6 +61,7 @@ function checkGitAvailable(): boolean {
   // On other platforms this is the primary check
   try {
     execSync('git --version', {
+      windowsHide: true,
       encoding: 'utf8',
       timeout: 2000,
       stdio: ['pipe', 'pipe', 'pipe']
@@ -174,7 +175,7 @@ export async function getUntrackedFilesInDirectories(
       execFile(
         'git',
         ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard', '-z', '--', ...chunk],
-        { cwd: repoRoot, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER },
+        { windowsHide: true, cwd: repoRoot, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER },
         (error, chunkStdout) => {
           if (error) {
             rejectOutput(error);
@@ -244,7 +245,7 @@ export async function listIgnoredNestedRepositories(repoRoot: string): Promise<s
     ({ stdout } = await execFileAsync(
       'git',
       ['--no-optional-locks', 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
-      { cwd: repoRoot, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER },
+      { windowsHide: true, cwd: repoRoot, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER },
     ));
   } catch (error) {
     console.error('[gitUtils] git ls-files failed while listing ignored nested repositories', repoRoot, error);
@@ -440,6 +441,7 @@ export async function getRawGitRemote(workspacePath: string): Promise<string | n
 async function spawnGitRemote(workspacePath: string): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
+      windowsHide: true,
       cwd: workspacePath,
       encoding: 'utf8',
       timeout: 5000,

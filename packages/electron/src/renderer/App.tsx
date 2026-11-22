@@ -78,7 +78,8 @@ import {
   setSelectedWorkstreamAtom,
   initSessionList,
 } from './store/atoms/sessions';
-import { dispatchCreateNewSession } from './store/actions/sessionHistoryActions';
+import { dispatchCreateNewSession, openWorktreeSessionActionAtom } from './store/actions/sessionHistoryActions';
+import { openSessionInOwningProject } from './store/actions/sessionNotificationNavigation';
 import { NavigationGutter } from './components/NavigationGutter';
 // NOTE: useTabs and useTabNavigation removed - EditorMode manages tabs now
 import type { ContentMode } from './types/WindowModeTypes';
@@ -123,8 +124,11 @@ import { initClaudeUsageListeners } from './store/listeners/claudeUsageListeners
 import { initPromptSuggestionListeners } from './store/listeners/promptSuggestionListeners';
 import { initClaudeCliTerminalListeners } from './store/listeners/claudeCliTerminalListeners';
 import { initWindowFocusListeners } from './store/listeners/windowFocusListeners';
+import { initRailProjectListeners } from './store/listeners/railProjectListeners';
+import { initProjectMoveListeners } from './store/listeners/projectMoveListeners';
 import { initCodexUsageListeners } from './store/listeners/codexUsageListeners';
 import { initGeminiUsageListeners } from './store/listeners/geminiUsageListeners';
+import { initFileOpenListeners } from './store/listeners/fileOpenListeners';
 import { initFileChangeListeners } from './store/listeners/fileChangeListeners';
 import { initMcpListeners } from './store/listeners/mcpListeners';
 import { initMenuCommandListeners } from './store/listeners/menuCommandListeners';
@@ -142,6 +146,7 @@ import { initCollabConversionListeners } from './store/listeners/collabConversio
 import { initNotificationListeners } from './store/listeners/notificationListeners';
 import { initExtensionPermissionListeners } from './store/listeners/extensionPermissionListeners';
 import { initPanelGutterBadgeListeners } from './store/listeners/panelGutterBadgeListeners';
+import { initTerminalRevealListeners } from './store/listeners/terminalRevealListeners';
 import { initPermissionListeners } from './store/listeners/permissionListeners';
 import { initSoundListeners } from './store/listeners/soundListeners';
 import { initStytchAuthListeners } from './store/listeners/stytchAuthListeners';
@@ -166,11 +171,15 @@ import { initBlitzListeners } from './store/listeners/blitzListeners';
 import { initUpdateListeners } from './store/listeners/updateListeners';
 import { initWalkthroughListeners } from './store/listeners/walkthroughListeners';
 import { initWakeupListeners } from './store/listeners/wakeupListener';
+import { initDictationListeners } from './store/listeners/dictationListeners';
+import { installDictationShortcut } from './dictation/dictationShortcut';
+import { getDictationController } from './dictation/dictationController';
+import { DictationPendingOverlay } from './dictation/DictationPendingOverlay';
 import { TrackerMode } from './components/TrackerMode';
 import { PullRequestMode, type PullRequestModeRef } from './components/PullRequestMode';
 import { CollabMode, type CollabModeRef } from './components/CollabMode';
 import { navigatePagesHistory } from './components/CollabMode/pagesTabNavigation';
-import { openAgentEditedPage } from './utils/agentEditedPage';
+import { openAgentEditedPage, openFileAsWikiPage } from './utils/agentEditedPage';
 import { openConsoleLinkInWindow } from './utils/openConsoleLink';
 import {
   OrgModeHost,
@@ -309,7 +318,6 @@ import {
   closeTerminalPanelAtom,
   openTerminalPanelAtom,
   loadTerminalPanelState,
-  resetTerminalPanelHydration,
 } from './store/atoms/terminals';
 
 interface TitleBarGitActionState {
@@ -429,14 +437,18 @@ export default function App() {
     const cleanupPromptSuggestion = initPromptSuggestionListeners();
     const cleanupClaudeCliTerminal = initClaudeCliTerminalListeners();
     const cleanupWindowFocus = initWindowFocusListeners();
+    const cleanupRailProjects = initRailProjectListeners();
+    const cleanupProjectMoves = initProjectMoveListeners();
     const cleanupCodex = initCodexUsageListeners();
     const cleanupGemini = initGeminiUsageListeners();
+    const cleanupFileOpen = initFileOpenListeners();
     const cleanupFileChange = initFileChangeListeners();
     const cleanupMcp = initMcpListeners();
     const cleanupMenuCommand = initMenuCommandListeners();
     const cleanupNotification = initNotificationListeners();
     const cleanupExtensionPermission = initExtensionPermissionListeners();
     const cleanupPanelGutterBadges = initPanelGutterBadgeListeners();
+    const cleanupTerminalReveal = initTerminalRevealListeners();
     const cleanupPermission = initPermissionListeners();
     const cleanupSound = initSoundListeners();
     const cleanupStytchAuth = initStytchAuthListeners();
@@ -455,6 +467,8 @@ export default function App() {
     const cleanupUpdate = initUpdateListeners();
     const cleanupWalkthrough = initWalkthroughListeners();
     const cleanupWakeup = initWakeupListeners();
+    const cleanupDictation = initDictationListeners();
+    const cleanupDictationShortcut = installDictationShortcut(getDictationController);
     const cleanupNetworkAvailability = initNetworkAvailabilityListeners();
     const cleanupTeamInbox = initTeamInboxListeners();
     const cleanupConversations = initConversationListeners();
@@ -482,14 +496,18 @@ export default function App() {
       cleanupPromptSuggestion?.();
       cleanupClaudeCliTerminal?.();
       cleanupWindowFocus?.();
+      cleanupRailProjects?.();
+      cleanupProjectMoves?.();
       cleanupCodex?.();
       cleanupGemini?.();
+      cleanupFileOpen();
       cleanupFileChange?.();
       cleanupMcp?.();
       cleanupMenuCommand?.();
       cleanupNotification?.();
       cleanupExtensionPermission?.();
       cleanupPanelGutterBadges();
+      cleanupTerminalReveal();
       cleanupPermission?.();
       cleanupSound?.();
       cleanupStytchAuth?.();
@@ -508,6 +526,8 @@ export default function App() {
       cleanupUpdate?.();
       cleanupWalkthrough?.();
       cleanupWakeup?.();
+      cleanupDictation();
+      cleanupDictationShortcut();
       cleanupNetworkAvailability?.();
       cleanupTeamInbox?.();
       cleanupConversations?.();
@@ -1062,7 +1082,6 @@ export default function App() {
   // Load terminal panel state from terminal store into Jotai atoms
   useEffect(() => {
     if (!workspacePath) return;
-    resetTerminalPanelHydration();
     void loadTerminalPanelState(workspacePath);
   }, [workspacePath]);
 
@@ -1728,6 +1747,15 @@ export default function App() {
     }
   }, [workspacePath, setActiveMode]);
 
+  // A transcript link: a Local wiki page opens in Pages, anything else in Files.
+  const handleFileLinkOpen = useCallback(async (filePath: string, location?: EditorRevealPosition) => {
+    if (workspacePath && await openFileAsWikiPage(filePath, workspacePath, 'agent_tool')) {
+      if (location) revealEditorPosition(filePath, location);
+      return;
+    }
+    await handleWorkspaceFileSelect(filePath, location);
+  }, [workspacePath, handleWorkspaceFileSelect]);
+
   // Configure aiToolService with handleWorkspaceFileSelect
   useEffect(() => {
     aiToolService.setHandleWorkspaceFileSelectFunction(handleWorkspaceFileSelect);
@@ -2302,6 +2330,14 @@ export default function App() {
         });
       }
 
+      // A session from another project must open in that project, not under
+      // whichever project is active: in another rail project, or with the
+      // rail off, in that project's own window.
+      if (eventWorkspacePath && eventWorkspacePath !== store.get(activeWorkspacePathAtom)) {
+        await openSessionInOwningProject({ sessionId, workspacePath: eventWorkspacePath, sourceLabel: '' });
+        return;
+      }
+
       setActiveMode('agent');
 
       // Open the session using the AgentMode ref
@@ -2312,6 +2348,23 @@ export default function App() {
 
     window.addEventListener('open-ai-session', handleOpenAiSession as unknown as EventListener);
     return () => window.removeEventListener('open-ai-session', handleOpenAiSession as unknown as EventListener);
+  }, [setActiveMode]);
+
+  // #1959: the Git panel's branch switcher asks to open the worktree session
+  // that already has a branch checked out, instead of switching to it.
+  useEffect(() => {
+    const handleOpenWorktreeSession = async (event: CustomEvent<{ worktreeId?: string }>) => {
+      const worktreeId = event.detail?.worktreeId;
+      if (!worktreeId) return;
+      try {
+        const sessionId = await store.set(openWorktreeSessionActionAtom, worktreeId);
+        if (sessionId) setActiveMode('agent');
+      } catch (error) {
+        console.error('[App] Failed to open worktree session:', error);
+      }
+    };
+    window.addEventListener('nimbalyst:open-worktree-session', handleOpenWorktreeSession as unknown as EventListener);
+    return () => window.removeEventListener('nimbalyst:open-worktree-session', handleOpenWorktreeSession as unknown as EventListener);
   }, [setActiveMode]);
 
   // Receive explicit git-extension selections and seed a new standalone commit session.
@@ -2394,13 +2447,14 @@ export default function App() {
 
   // Handle QuickOpen file selection - delegates to EditorMode and switches mode if needed
   const handleQuickOpenFileSelect = useCallback(async (filePath: string) => {
+    if (workspacePath && await openFileAsWikiPage(filePath, workspacePath, 'quick_open')) return;
     setActiveMode('files');
 
     // Delegate to EditorMode's file selection handler
     if (editorModeRef.current) {
       await editorModeRef.current.selectFile(filePath);
     }
-  }, [setActiveMode]);
+  }, [workspacePath, setActiveMode]);
 
   // Handle QuickOpen folder selection - switches to files mode so the file tree is visible
   const handleQuickOpenFolderSelect = useCallback(() => {
@@ -3150,7 +3204,7 @@ export default function App() {
                   ref={collabModeRef}
                   workspacePath={workspacePath}
                   isActive={activeMode === 'collab'}
-                  onFileOpen={handleWorkspaceFileSelect}
+                  onFileOpen={handleFileLinkOpen}
                   onPanelStateChange={setCollabPanelState}
                 />
               )}
@@ -3210,7 +3264,7 @@ export default function App() {
                           ref={chatSidebarRef}
                           workspacePath={workspacePath}
                           documentContext={extensionPanelDocumentContext}
-                          onFileOpen={handleWorkspaceFileSelect}
+                          onFileOpen={handleFileLinkOpen}
                         />
                       </div>
                     )}
@@ -3295,6 +3349,7 @@ export default function App() {
       {/* UnifiedOnboarding is now managed by DialogProvider via useOnboarding hook */}
       {/* ClaudeCommandsToast removed - commands now via extension-based plugins */}
       <ErrorToastContainer />
+      <DictationPendingOverlay />
       <ExtensionHostComponents />
       <ExtensionPermissionPrompt />
       <UpdateToast />

@@ -305,6 +305,36 @@ type: confirm`);
     expect(testNode.content).toContain("Greg: gutter");
   });
 
+  it("offers a written Other answer when allowOther is set, and seals the text", () => {
+    const fence = `${SINGLE}\nallowOther: true`;
+    testNode.content = fence;
+    const config: DecisionsConfig = {
+      getYDoc: () => null,
+      currentUser: { id: "greg", name: "Greg" },
+    };
+    render(
+      <DecisionsProvider config={config}>
+        <DecisionComponent className="" content={fence} nodeKey="k1" />
+      </DecisionsProvider>
+    );
+
+    const answer = screen.getByTestId("decision-answer") as HTMLButtonElement;
+    fireEvent.click(screen.getByTestId("decision-other-row"));
+    // Choosing Other with nothing written is not an answer yet.
+    expect(answer.disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("decision-other-text"), {
+      target: { value: "Both, gutter on desktop" },
+    });
+    expect(answer.disabled).toBe(false);
+    fireEvent.click(answer);
+    expect(testNode.content).toContain("resolved: Both, gutter on desktop");
+  });
+
+  it("shows no Other row without allowOther", () => {
+    renderBlock(SINGLE);
+    expect(screen.queryByTestId("decision-other-row")).toBeNull();
+  });
+
   it("lets the sealer override a tied single-select tally", () => {
     const doc = new Y.Doc();
     const repository = new YDocDecisionRepository(doc);

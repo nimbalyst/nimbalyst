@@ -32,43 +32,38 @@ echo ""
 # kept here, a restart only rebuilds main/preload and relaunches Electron.
 RENDERER_PORT="${VITE_PORT:-5273}"
 RENDERER_PID=""
-trap 'kill $RENDERER_PID 2>/dev/null' EXIT
+RENDERER_READY=$(mktemp "${TMPDIR:-/tmp}/nimbalyst-renderer-ready.XXXXXX") || exit 1
+cleanup_renderer() {
+  if [ -n "$RENDERER_PID" ]; then
+    kill "$RENDERER_PID" 2>/dev/null
+    wait "$RENDERER_PID" 2>/dev/null
+  fi
+  rm -f "$RENDERER_READY"
+}
+trap cleanup_renderer EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-start_renderer() {
-  node ./scripts/renderer-dev-server.mjs &
-  RENDERER_PID=$!
-  until curl -s -o /dev/null "http://localhost:$RENDERER_PORT/"; do
-    if ! kill -0 $RENDERER_PID 2>/dev/null; then
-      echo "Renderer dev server failed to start"
+wait_for_renderer() {
+  local deadline=$((SECONDS + 180))
+  until [ -s "$RENDERER_READY" ]; do
+    if ! kill -0 "$RENDERER_PID" 2>/dev/null || [ "$SECONDS" -ge "$deadline" ]; then
+      echo "Renderer supervisor stopped or Vite did not become ready within 180 seconds"
       exit 1
     fi
     sleep 0.5
   done
 }
 
-# A long-lived server can stop answering (it once wedged on a file-watcher
-# listener leak after a few days). Relaunching Electron against it would leave
-# every window blank, so replace it first.
-ensure_renderer_responsive() {
-  if curl -s -m 10 -o /dev/null "http://localhost:$RENDERER_PORT/"; then
-    return
-  fi
-  echo "Renderer dev server is not responding; restarting it..."
-  kill $RENDERER_PID 2>/dev/null
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    kill -0 $RENDERER_PID 2>/dev/null || break
-    sleep 0.5
-  done
-  kill -9 $RENDERER_PID 2>/dev/null
-  start_renderer
-}
-
-start_renderer
+# Supervision continues while dev.sh blocks on Electron, so crashes and hangs
+# recover without an app restart. Only this supervisor owns the Vite child.
+node ./scripts/renderer-supervisor.mjs "$RENDERER_READY" &
+RENDERER_PID=$!
 export NIMBALYST_EXTERNAL_RENDERER=1
 export ELECTRON_RENDERER_URL="http://localhost:$RENDERER_PORT"
 
 while true; do
-  ensure_renderer_responsive
+  wait_for_renderer
 
   # Run the dev server (use dev.sh directly so env vars like NIMBALYST_USER_DATA_DIR propagate)
   ./scripts/dev.sh

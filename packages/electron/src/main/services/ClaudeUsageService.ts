@@ -38,7 +38,9 @@ import {
 import { logger } from '../utils/logger';
 import { getShellEnvironment } from './shellEnvironment';
 import { ClaudeSettingsManager } from './ClaudeSettingsManager';
-import { parseWeeklyModelLimits, type ClaudeUsageData } from '../../shared/claudeUsage';
+import { parseClaudeUsageResponse, type ClaudeUsageData } from '../../shared/claudeUsage';
+import { claudeUsageWeekSamples } from '../../shared/usageHistory';
+import { usageHistoryStore } from './UsageHistoryStore';
 export type { ClaudeUsageData } from '../../shared/claudeUsage';
 
 /** Env shape the Claude config-dir resolvers read. */
@@ -146,15 +148,15 @@ class ClaudeUsageServiceImpl {
             `No Claude Code credentials found for config dir ${resolveClaudeConfigDir(env)}. ` +
             'Please log in to Claude Code.',
         };
-        this.cachedUsage = errorData;
+        this.cachedUsage = this.withWeeklyHistory(errorData);
         this.broadcastUpdate();
-        return errorData;
+        return this.cachedUsage;
       }
 
       const usageData = await this.fetchUsageData(token);
-      this.cachedUsage = usageData;
+      this.cachedUsage = this.withWeeklyHistory(usageData);
       this.broadcastUpdate();
-      return usageData;
+      return this.cachedUsage;
     } catch (error) {
       logger.main.error('[ClaudeUsageService] Error refreshing usage:', error);
       const errorData: ClaudeUsageData = {
@@ -163,9 +165,9 @@ class ClaudeUsageServiceImpl {
         lastUpdated: Date.now(),
         error: error instanceof Error ? error.message : 'Unknown error fetching usage',
       };
-      this.cachedUsage = errorData;
+      this.cachedUsage = this.withWeeklyHistory(errorData);
       this.broadcastUpdate();
-      return errorData;
+      return this.cachedUsage;
     }
   }
 
@@ -373,22 +375,7 @@ class ClaudeUsageServiceImpl {
 
         const data = await response.json();
 
-        return {
-          fiveHour: {
-            utilization: data.five_hour?.utilization ?? 0,
-            resetsAt: data.five_hour?.resets_at ?? null,
-          },
-          sevenDay: {
-            utilization: data.seven_day?.utilization ?? 0,
-            resetsAt: data.seven_day?.resets_at ?? null,
-          },
-          sevenDayOpus: data.seven_day_opus ? {
-            utilization: data.seven_day_opus.utilization ?? 0,
-            resetsAt: data.seven_day_opus.resets_at ?? null,
-          } : undefined,
-          weeklyModelLimits: parseWeeklyModelLimits(data.limits),
-          lastUpdated: Date.now(),
-        };
+        return parseClaudeUsageResponse(data, Date.now());
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
 
@@ -435,6 +422,15 @@ class ClaudeUsageServiceImpl {
       return normalized;
     } catch {
       return '';
+    }
+  }
+
+  private withWeeklyHistory(data: ClaudeUsageData): ClaudeUsageData {
+    try {
+      return { ...data, weeklyHistory: usageHistoryStore.record('claude', claudeUsageWeekSamples(data)) };
+    } catch (error) {
+      logger.main.error('[ClaudeUsageService] Failed to record weekly usage history:', error);
+      return data;
     }
   }
 

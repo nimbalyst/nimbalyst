@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/cli",
-  "version": "0.10.0",
+  "version": "0.12.7",
   "description": "nim — companion command-line tool for Nimbalyst trackers and agent interop",
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -39,7 +39,7 @@
   "scripts": {
     "build": "pnpm --filter @nimbalyst/local-wiki run build && node scripts/build.mjs",
     "dev": "tsc --watch",
-    "typecheck": "pnpm --filter @nimbalyst/local-wiki run build && tsc --noEmit",
+    "typecheck": "pnpm --filter @nimbalyst/local-wiki run build && node ../../scripts/tsc-native.mjs --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "pnpm run build"
@@ -59,7 +59,9 @@
     "@types/node": "^20.0.0",
     "esbuild": "^0.28.2",
     "js-yaml": "^4.3.2",
-    "typescript": "^5.0.0",
-    "vitest": "4.1.11"
+    "marked": "16.4.2",
+    "typescript": "^6.0.3",
+    "vitest": "4.1.12",
+    "yjs": "13.6.33"
   }
 }

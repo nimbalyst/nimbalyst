@@ -81,12 +81,30 @@ export const ZoomableImageSurface: React.FC<ZoomableImageSurfaceProps> = ({
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
+  // Reset during render, and only on a real change. A post-mount effect here
+  // could run after a fast data URL had already fired onLoad, wiping the
+  // measured size for good and leaving the image unsized and unzoomable.
+  const [resetKey, setResetKey] = useState({ src, defaultMode });
+  if (resetKey.src !== src || resetKey.defaultMode !== defaultMode) {
+    setResetKey({ src, defaultMode });
     setZoomMode(defaultMode === 'actual' ? 'custom' : 'fit');
-    setCustomScale(defaultMode === 'actual' ? 1 : 1);
+    setCustomScale(1);
     setNaturalSize(null);
     setCopyState('idle');
-  }, [defaultMode, src]);
+  }
+
+  // An image can finish loading before React attaches onLoad; measure it here
+  // so the load event is not the only way to learn its size.
+  useLayoutEffect(() => {
+    const img = imageRef.current;
+    if (img?.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+      const dimensions = { width: img.naturalWidth, height: img.naturalHeight };
+      setNaturalSize(dimensions);
+      onImageLoad?.(dimensions);
+    }
+    // onImageLoad is a caller callback; re-measuring only matters per image.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src]);
 
   useEffect(() => {
     if (copyState !== 'copied' && copyState !== 'error') return;

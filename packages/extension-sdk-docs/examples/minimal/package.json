@@ -12,7 +12,7 @@
   "devDependencies": {
     "@nimbalyst/extension-sdk": "workspace:*",
     "@types/react": "^19.2.17",
-    "typescript": "^5.0.0",
+    "typescript": "^6.0.3",
     "vite": "^7.1.12"
   }
 }

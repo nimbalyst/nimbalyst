@@ -71,17 +71,18 @@ export type UpdateSource = PluginInstall | NpmInstall;
  * The install this server runs from, or null when it is not one we can update:
  * a monorepo checkout, `--plugin-dir`, or a marketplace we don't publish to.
  * Both agents install to `.../plugins/cache/<marketplace>/<plugin>/<version>`.
- * Codex starts the server in the plugin directory with no `CLAUDE_PROJECT_DIR`
- * (see pluginWorkspace.ts); anything else is Claude Code.
+ * `agent` says which agent installed it; without one, a server started in the
+ * plugin directory with no `CLAUDE_PROJECT_DIR` is Codex (see
+ * pluginWorkspace.ts) and anything else is Claude Code.
  */
-export function detectPluginInstall(env: NodeJS.ProcessEnv, cwd: string, pluginRoot: string): PluginInstall | null {
+export function detectPluginInstall(env: NodeJS.ProcessEnv, cwd: string, pluginRoot: string, agentFlag?: PluginAgent): PluginInstall | null {
   const parts = path.resolve(pluginRoot).split(path.sep);
   const n = parts.length;
   if (n < 5 || parts[n - 5] !== 'plugins' || parts[n - 4] !== 'cache' || parts[n - 2] !== PLUGIN_NAME) return null;
   const marketplace = parts[n - 3];
   const urls = MANIFEST_URLS[marketplace];
   if (!urls) return null;
-  const agent: PluginAgent = !env.CLAUDE_PROJECT_DIR && path.resolve(cwd) === path.resolve(pluginRoot) ? 'codex' : 'claude';
+  const agent: PluginAgent = agentFlag ?? (!env.CLAUDE_PROJECT_DIR && path.resolve(cwd) === path.resolve(pluginRoot) ? 'codex' : 'claude');
   const manifest = path.join(pluginRoot, agent === 'codex' ? '.codex-plugin' : '.claude-plugin', 'plugin.json');
   let version: unknown;
   try {

@@ -67,6 +67,12 @@ final class WorkspaceNavigationState: ObservableObject {
         hasMultipleHosts ? hostDeviceId : nil
     }
 
+    var isSelectedHostConnected: Bool {
+        hosts.contains { device in
+            device.isOnline != false && (hostDeviceId.map { $0 == device.deviceId } ?? (device.type == "desktop"))
+        }
+    }
+
     func stopObservingHosts() {
         hostSubscription?.cancel()
         hostSubscription = nil
@@ -78,7 +84,7 @@ final class WorkspaceNavigationState: ObservableObject {
         // Re-subscribing during layout replays the current roster. Publishing
         // nil over nil here invalidates navigation and can prevent first paint.
         guard hostDeviceId == nil,
-              let defaultHost = hosts.first(where: { $0.type == "desktop" }) ?? hosts.first else { return }
+              let defaultHost = hosts.first(where: { $0.type == "desktop" && $0.isOnline != false }) else { return }
         hostDeviceId = defaultHost.deviceId
     }
 
@@ -140,7 +146,9 @@ final class WorkspaceNavigationState: ObservableObject {
     private func host(for session: Session?) -> String? {
         if let owner = session?.hostDeviceId { return owner }
         if hosts.contains(where: { $0.deviceId == hostDeviceId && $0.type == "desktop" }) { return hostDeviceId }
-        return hosts.first(where: { $0.type == "desktop" })?.deviceId ?? hostDeviceId
+        // The roster keeps offline installations; landing on one strands creation.
+        let desktops = hosts.filter { $0.type == "desktop" }
+        return (desktops.first(where: { $0.isOnline != false }) ?? desktops.first)?.deviceId ?? hostDeviceId
     }
 }
 
@@ -264,7 +272,7 @@ struct WorkspaceNavigationView: View {
 
     private var isDesktopConnected: Bool {
         if appState.screenshotMode { return true }
-        return appState.syncManager?.connectedDevices.contains(where: { $0.type == "desktop" }) ?? false
+        return navigation.isSelectedHostConnected
     }
 
     @ViewBuilder
@@ -296,7 +304,7 @@ struct WorkspaceNavigationView: View {
             )) {
                 Text("Choose a machine").tag(String?.none)
                 ForEach(hosts, id: \.deviceId) { device in
-                    Text(device.name).tag(Optional(device.deviceId))
+                    Text(device.isOnline == false ? "\(device.name) · Offline" : device.name).tag(Optional(device.deviceId))
                 }
                 if let host = navigation.hostDeviceId, !hosts.contains(where: { $0.deviceId == host }) {
                     Text("Remote machine · Offline").tag(Optional(host))

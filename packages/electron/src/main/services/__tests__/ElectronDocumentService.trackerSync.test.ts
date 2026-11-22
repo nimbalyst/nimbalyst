@@ -572,7 +572,8 @@ describe('createTrackerItem sync status policy', () => {
   // optimistically, so without a sweep here it renders "No key yet" until the
   // next full re-list (NIM.2842).
   it('numbers a newly created personal item before returning it', async () => {
-    mockGlobalRegistryGet.mockReturnValue({ sharing: 'personal', draftByDefault: false, localNumbers: true });
+    // No `localNumbers` key: numbering is the default, not an opt-in.
+    mockGlobalRegistryGet.mockReturnValue({ sharing: 'personal', draftByDefault: false });
     mockIsTrackerSyncActive.mockReturnValue(false);
     mockAssignLocalKeysToRows.mockResolvedValue(new Map([['bug-local', 'NIM.42']]));
 
@@ -600,9 +601,8 @@ describe('createTrackerItem sync status policy', () => {
     expect(created.localKey).toBe('NIM.42');
   });
 
-  // Local numbers are opt-in per type; a type that says nothing gets none.
-  it('leaves a new item of a type without localNumbers unnumbered', async () => {
-    mockGlobalRegistryGet.mockReturnValue({ sharing: 'personal', draftByDefault: false });
+  it('leaves a new item of a type that opts out of localNumbers unnumbered', async () => {
+    mockGlobalRegistryGet.mockReturnValue({ sharing: 'personal', draftByDefault: false, localNumbers: false });
     mockIsTrackerSyncActive.mockReturnValue(false);
 
     mockQuery.mockResolvedValueOnce({ rows: [{ min_key: null }] }); // kanbanSortOrder MIN
@@ -774,5 +774,68 @@ describe('getTrackerItemContent', () => {
     const content = await service.getTrackerItemContent('bug-001');
 
     expect(content).toBe(markdown);
+  });
+});
+
+// ============================================================================
+// document-service:tracker-items-list names its project (#1822)
+// ============================================================================
+
+// #1822: the rail told main "project B is now active" without waiting, so a list
+// request for project A that arrived next was answered from B. The request now
+// carries the project path, and main must answer for exactly that path no matter
+// which project the window has marked active.
+describe('document-service:tracker-items-list project scoping (#1822)', () => {
+  const PATH_A = '/Users/test/project-a';
+  const PATH_B = '/Users/test/project-b';
+  const itemA = makeTrackerItem('a-1');
+  const itemB = makeTrackerItem('b-1');
+  let serviceA: ElectronDocumentService;
+  let serviceB: ElectronDocumentService;
+
+  beforeEach(() => {
+    serviceA = new ElectronDocumentService(PATH_A);
+    serviceB = new ElectronDocumentService(PATH_B);
+    vi.spyOn(serviceA, 'listTrackerItems').mockResolvedValue([itemA] as any);
+    vi.spyOn(serviceB, 'listTrackerItems').mockResolvedValue([itemB] as any);
+
+    // Stand-in for the real window lookup. The window's active project is B.
+    // A request that names a project it has open is answered for that project;
+    // a request that names nothing falls back to the active project (B).
+    // A project the window does not have open gets no service.
+    const openProjects = new Map([[PATH_A, serviceA], [PATH_B, serviceB]]);
+    setupDocumentServiceHandlers(((_event: unknown, workspacePath?: string) => {
+      if (workspacePath === undefined) return serviceB;
+      return openProjects.get(workspacePath) ?? null;
+    }) as any);
+  });
+
+  afterEach(() => {
+    serviceA.destroy();
+    serviceB.destroy();
+    // Put back the single-service resolver the rest of this file relies on.
+    setupDocumentServiceHandlers(() => service);
+  });
+
+  it("answers project A's request with A's items while B is the active project", async () => {
+    const handler = mockIpcHandlers.get('document-service:tracker-items-list')!;
+
+    const items = await handler({}, PATH_A);
+
+    expect(items).toEqual([itemA]);
+    expect(serviceB.listTrackerItems).not.toHaveBeenCalled();
+  });
+
+  it('throws when the request names no project, instead of answering for the active one', async () => {
+    const handler = mockIpcHandlers.get('document-service:tracker-items-list')!;
+
+    await expect(handler({})).rejects.toThrow(/workspacePath/);
+    expect(serviceB.listTrackerItems).not.toHaveBeenCalled();
+  });
+
+  it('throws when the request names a project the window does not have open', async () => {
+    const handler = mockIpcHandlers.get('document-service:tracker-items-list')!;
+
+    await expect(handler({}, '/Users/test/not-open')).rejects.toThrow(/No document service/);
   });
 });

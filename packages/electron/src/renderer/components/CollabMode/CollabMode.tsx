@@ -23,7 +23,6 @@ import {
   useTabsActions,
   useTabs,
   useTabNavigationShortcuts,
-  type TabData,
 } from '../../contexts/TabsContext';
 import { TabManager } from '../TabManager/TabManager';
 import { TrackerTabIssueKeyContext } from '../TabManager/trackerTabIssueKey';
@@ -80,8 +79,7 @@ import {
 } from './collabTree';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { collabFileType, type SerializableDocumentContext } from '../../hooks/useDocumentContext';
-import { getTextSelection } from '../UnifiedAI/TextSelectionIndicator';
-import { getActiveEditorContextItems } from '../../stores/editorContextStore';
+import { getPagesDocumentContext, pagesDocumentIdentity } from './pagesDocumentContext';
 import { categorizeTeamAnalyticsError, toStableAnalyticsCategory } from '../../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 
@@ -334,74 +332,38 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeInnerProps>(f
   const sidebarDragRef = useRef({ startX: 0, startWidth: 0, latestWidth: sidebarWidth });
   sidebarDragRef.current.latestWidth = sidebarWidth;
 
-  // Track active tab and its getContent function so the right-pane chat can
-  // pull a fresh snapshot of the live (Yjs-synced) document on each message.
-  // Refs avoid re-rendering CollabMode on every tab switch / keystroke.
-  const activeTabForContextRef = useRef<TabData | null>(null);
-  const getContentByTabIdRef = useRef<Map<string, () => string>>(new Map());
+  // A page click reuses the tab ID. Keep the getter's document identity too,
+  // so the next page cannot send the previous page's body while loading.
+  const getContentByTabIdRef = useRef<Map<string, { filePath: string; read: () => string }>>(new Map());
 
   const handleGetContentReady = useCallback((tabId: string, getContentFn: () => string) => {
-    getContentByTabIdRef.current.set(tabId, getContentFn);
-  }, []);
+    const tab = tabsActions.getSnapshot().tabs.get(tabId);
+    if (tab) getContentByTabIdRef.current.set(tabId, { filePath: tab.filePath, read: getContentFn });
+  }, [tabsActions]);
 
   const getDocumentContext = useCallback(async (): Promise<SerializableDocumentContext> => {
-    const activeTab = activeTabForContextRef.current;
-    if (!activeTab || !isCollabUri(activeTab.filePath)) {
-      return {
-        filePath: '',
-        fileType: 'unknown',
-        content: '',
-      };
-    }
+    const snapshot = tabsActions.getSnapshot();
+    const activeTab = snapshot.activeTabId ? snapshot.tabs.get(snapshot.activeTabId) : undefined;
+    return getPagesDocumentContext(
+      activeTab,
+      activeTab ? getContentByTabIdRef.current.get(activeTab.id) : undefined,
+      async (filePath) => {
+        const result = await window.electronAPI.readFileContent(filePath);
+        if (!result?.success) throw new Error(`Could not read page context: ${filePath}`);
+        return result.content ?? '';
+      },
+    );
+  }, [tabsActions]);
 
-    // Read the latest content directly from the live Lexical editor for this
-    // tab. This reflects whatever Yjs has merged into the local Y.Doc, which
-    // is the source of truth for shared docs (the file does NOT exist on
-    // disk, so window.electronAPI.readFileContent is not appropriate here).
-    let content = '';
-    const getContentFn = getContentByTabIdRef.current.get(activeTab.id);
-    if (getContentFn) {
-      try {
-        content = getContentFn() ?? '';
-      } catch (err) {
-        console.error('[CollabMode] Failed to read collab doc content:', err);
-      }
-    }
-
-    // Include the current text selection so the agent gets the "+ selection"
-    // context, but only if it belongs to this collab document. Mirrors
-    // EditorMode.getDocumentContext for regular files.
-    const textSelectionData = getTextSelection();
-    const textSelection = textSelectionData && textSelectionData.filePath === activeTab.filePath
-      ? textSelectionData
-      : undefined;
-
-    return {
-      filePath: activeTab.filePath,
-      fileType: collabFileType(activeTab.filePath),
-      content,
-      textSelection,
-      textSelectionTimestamp: textSelection?.timestamp,
-      // Extension-provided selection context (e.g. a spreadsheet's selected
-      // cells) for the active collab document. Mirrors EditorMode; without it a
-      // collaborative spreadsheet's "+ selection" never reaches the agent.
-      editorContextItems: getActiveEditorContextItems(activeTab.filePath),
-    };
-  }, []);
-
-  // Keep activeTabForContextRef in sync with the currently active tab and
-  // prune getContent entries for tabs that no longer exist.
+  // Prune getContent entries for tabs that no longer exist.
   useEffect(() => {
-    const activeTab = activeTabId ? tabs.find(t => t.id === activeTabId) : null;
-    activeTabForContextRef.current = activeTab || null;
-
     const liveTabIds = new Set(tabs.map(t => t.id));
     for (const tabId of getContentByTabIdRef.current.keys()) {
       if (!liveTabIds.has(tabId)) {
         getContentByTabIdRef.current.delete(tabId);
       }
     }
-  }, [tabs, activeTabId]);
+  }, [tabs]);
 
   // Tell the MCP layer about the active collab document so applyDiff /
   // applyCollabDocEdit can resolve the collab:// URI to this window.
@@ -778,16 +740,12 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeInnerProps>(f
     host.openArtifact({ kind: 'document', scope, documentId, teamProjectId: scope.indexConfig.teamProjectId ?? null }, 'sidebar');
   }, [restored, tabs.length, teamScope, teamHomeId, personalHomeId, workspacePath, personalScope]);
 
-  // File path of the active collab document, so the chat panel scopes its
-  // "+ selection" chips to the doc the user is actually looking at. Without a
-  // currentFilePath the chip row falls back to "most recent" and leaks a stale
-  // selection from a previously-active tab (e.g. a spreadsheet's cells still
-  // showing after switching to a markdown doc). Empty for Search and Types.
-  const activeCollabFilePath = useMemo(() => {
-    if (!activeTabId) return '';
-    const tab = tabs.find((t) => t.id === activeTabId);
-    return tab && isCollabUri(tab.filePath) ? tab.filePath : '';
-  }, [activeTabId, tabs]);
+  // Match the send path for shared, Personal and Local wiki pages. Navigation
+  // tabs have no document context, so they cannot expose another tab's selection.
+  const activePageContext = useMemo(
+    () => pagesDocumentIdentity(tabs.find((tab) => tab.id === activeTabId)),
+    [activeTabId, tabs],
+  );
 
   // The header-bar session chip acts on the chat sidebar this mode already
   // owns. Deliberately no `openInAgentMode` — a shared document isn't a file
@@ -814,7 +772,7 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeInnerProps>(f
       }
     },
     reopenLastClosedTab: async () => {
-      await tabsActions.reopenLastClosedTab(async () => {});
+      await tabsActions.reopenLastClosedTab();
     },
     getActiveDocumentPath: () => {
       if (!activeTabId) return null;
@@ -946,7 +904,7 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeInnerProps>(f
           isActive={isActive}
           isCollapsed={chatCollapsed}
           onToggleCollapse={toggleChatCollapsed}
-          documentContext={{ filePath: activeCollabFilePath }}
+          documentContext={activePageContext}
           getDocumentContext={getDocumentContext}
           onFileOpen={async (filePath) => onFileOpen(filePath)}
           width={chatWidth}

@@ -178,6 +178,10 @@ export function buildTestEnv(
     // `options.env` so a spec can still pick its own directory.
     NIMBALYST_USER_DATA_DIR: TEST_USER_DATA_DIR,
     ...options?.env,
+    // After `options.env` and never deleted below: every launch wipes
+    // userData, so any event sent from a test registers as a new install.
+    // `PLAYWRIGHT` alone is not enough because session-restore specs drop it.
+    NIMBALYST_DISABLE_ANALYTICS: '1',
   };
 
   const permissionMode = options?.permissionMode ?? 'allow-all';

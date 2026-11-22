@@ -18,8 +18,12 @@ import {
   isTrackerSyncActive,
   onTrackerItemApplied,
 } from '../TrackerSyncManager';
-import { findTeamForWorkspace } from '../TeamService';
-import { getPersonalUserId } from '../StytchAuthService';
+import {
+  findTeamForWorkspace,
+  hasLocalOrgBinding,
+  resolveTeamForWorkspace,
+} from '../TeamService';
+import { getPersonalUserId, isAuthenticated } from '../StytchAuthService';
 import { getCollabAssetStore } from '../CollabAssetStore';
 import { getCollabAssetOutboxDrainCoordinator } from '../CollabAssetOutboxDrainCoordinator';
 import {
@@ -88,12 +92,46 @@ function snapshotMarkdown(content: string): string {
   return bodyMarkdown(JSON.parse(content));
 }
 
+/**
+ * True when this workspace has no team to publish to. Team-shared built-in
+ * types (bug, decision, milestone, release) otherwise leave every creation
+ * pending forever behind a Retry that cannot succeed (#1960).
+ *
+ * - Signed in: the team lookup completed without a match. An incomplete lookup
+ *   (directory offline) keeps the retry.
+ * - Signed out: the workspace shows no team history on this machine, meaning no
+ *   org binding and no server-assigned issue key. A team member whose sign-in
+ *   expired has one of those and keeps the retry.
+ *
+ * Callers report such receipts as `local` but never rewrite them: the connect
+ * hook only resumes `pending` receipts, so a workspace that later joins a team
+ * still publishes the creation body.
+ */
+export async function isTeamlessWorkspace(workspace: string): Promise<boolean> {
+  if (isTrackerSyncActive(workspace)) return false;
+  if (!isAuthenticated()) {
+    if (hasLocalOrgBinding(workspace)) return false;
+    const keyed = await database.query(
+      'SELECT 1 FROM tracker_items WHERE workspace = $1 AND issue_key IS NOT NULL LIMIT 1',
+      [workspace],
+    );
+    return keyed.rows.length === 0;
+  }
+  const { team, complete } = await resolveTeamForWorkspace(workspace);
+  return complete && !team;
+}
+
 export async function getTrackerCreationPublication(
   workspace: string,
   itemId: string,
 ): Promise<TrackerCreationPublication | null> {
   const receipt = await getCreationReceipt(workspace, itemId);
   if (!receipt) return null;
+  if (
+    receipt.publication_status === 'pending' &&
+    (await isTeamlessWorkspace(workspace))
+  )
+    return { itemId, status: 'local' };
   const snapshot =
     receipt.publication_status === 'pending'
       ? await database.query(
@@ -200,8 +238,11 @@ export function publishTrackerCreation(
         await setCreationPublication(workspace, itemId, 'local');
         return { itemId, status: 'local' };
       }
-      if (!isTrackerSyncActive(workspace))
+      if (!isTrackerSyncActive(workspace)) {
+        // Receipt stays pending so a later team connection still publishes it.
+        if (await isTeamlessWorkspace(workspace)) return { itemId, status: 'local' };
         throw new Error('Saved locally. Team sync is not connected.');
+      }
       await syncTrackerItem(item);
       // Always keep version 1 as the original source. Later edits are never replayed as creation.
       const snapshot = await database.query(

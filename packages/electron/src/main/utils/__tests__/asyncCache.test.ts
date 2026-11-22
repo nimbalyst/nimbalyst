@@ -1,5 +1,6 @@
+// @vitest-environment node
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { createSingleFlight, createTtlCache } from '../asyncCache';
+import { createSingleFlight, createTrailingSingleFlight, createTtlCache } from '../asyncCache';
 
 describe('createSingleFlight', () => {
   it('collapses N concurrent calls for the same key into 1 upstream fetch', async () => {
@@ -140,5 +141,36 @@ describe('createTtlCache', () => {
 
     expect(fetcherA).toHaveBeenCalledTimes(2);
     expect(fetcherB).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('createTrailingSingleFlight', () => {
+  it('runs a burst as one current run plus one trailing run that starts after the late callers', async () => {
+    const flight = createTrailingSingleFlight<string, number>();
+    const releases: Array<() => void> = [];
+    let starts = 0;
+    const fetcher = () => new Promise<number>(resolve => {
+      const run = ++starts;
+      releases.push(() => resolve(run));
+    });
+
+    const first = flight('w', fetcher);
+    const late = Array.from({ length: 7 }, () => flight('w', fetcher));
+    expect(starts).toBe(1);
+
+    releases[0]();
+    expect(await first).toBe(1);
+    await vi.waitFor(() => expect(starts).toBe(2));
+    releases[1]();
+    expect(await Promise.all(late)).toEqual([2, 2, 2, 2, 2, 2, 2]);
+    expect(starts).toBe(2);
+  });
+
+  it('starts the trailing run even when the current run rejects', async () => {
+    const flight = createTrailingSingleFlight<string, string>();
+    const first = flight('w', () => Promise.reject(new Error('boom')));
+    const late = flight('w', async () => 'fresh');
+    await expect(first).rejects.toThrow('boom');
+    await expect(late).resolves.toBe('fresh');
   });
 });

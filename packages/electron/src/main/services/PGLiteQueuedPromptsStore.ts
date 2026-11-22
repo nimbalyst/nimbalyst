@@ -200,6 +200,9 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
   };
 }
 
+/** Rows deleted per statement in `cleanup`, so a first prune of a large backlog never holds the worker. */
+const CLEANUP_BATCH_ROWS = 1000;
+
 export function createPGLiteQueuedPromptsStore(
   db: PGliteLike,
   ensureDbReady?: EnsureReadyFn
@@ -213,6 +216,17 @@ export function createPGLiteQueuedPromptsStore(
   return {
     async create(input: CreateQueuedPromptInput): Promise<QueuedPrompt> {
       await ensureReady();
+
+      // Every queue route (composer, voice, phone, agents) lands here. A
+      // workstream container only groups sessions and has no agent, so a
+      // prompt queued for it would never run.
+      const { rows: target } = await db.query<{ session_type: string | null }>(
+        `SELECT session_type FROM ai_sessions WHERE id = $1`,
+        [input.sessionId]
+      );
+      if (target[0]?.session_type === 'workstream') {
+        throw new Error(`Cannot queue a prompt for workstream ${input.sessionId}; start a session inside it instead`);
+      }
 
       const { rows } = await db.query<any>(
         `INSERT INTO queued_prompts (id, session_id, prompt, attachments, document_context)
@@ -617,18 +631,26 @@ export function createPGLiteQueuedPromptsStore(
 
       const cutoffDate = new Date(Date.now() - olderThanMs);
 
-      const { rows } = await db.query<{ count: string }>(
-        `WITH deleted AS (
-           DELETE FROM queued_prompts
-           WHERE status IN ('completed', 'failed')
-             AND completed_at < $1
-           RETURNING 1
-         )
-         SELECT COUNT(*) as count FROM deleted`,
-        [cutoffDate]
-      );
+      // Bounded batches of plain DELETE ... RETURNING, which both PGLite and
+      // SQLite accept (a data-modifying CTE is Postgres-only). Only terminal
+      // rows are eligible; pending and executing prompts are never touched.
+      let count = 0;
+      for (;;) {
+        const { rows } = await db.query<{ id: string }>(
+          `DELETE FROM queued_prompts
+           WHERE id IN (
+             SELECT id FROM queued_prompts
+             WHERE status IN ('completed', 'failed')
+               AND completed_at < $1
+             LIMIT $2
+           )
+           RETURNING id`,
+          [cutoffDate, CLEANUP_BATCH_ROWS]
+        );
+        count += rows.length;
+        if (rows.length < CLEANUP_BATCH_ROWS) break;
+      }
 
-      const count = parseInt(rows[0]?.count || '0', 10);
       if (count > 0) {
         console.log(`[QueuedPromptsStore] Cleaned up ${count} old prompts`);
       }

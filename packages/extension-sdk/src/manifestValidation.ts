@@ -40,6 +40,7 @@ const KNOWN_PERMISSION_IDS: readonly ExtensionPermissionId[] = [
   'secrets-read',
   'mcp-server-register',
   'ai-sessions',
+  'terminals',
 ];
 
 /**

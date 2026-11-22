@@ -24,8 +24,9 @@ import {
   listExtensionBackendModules,
   resolveExtensionBackendModules,
 } from '../ipc/ExtensionHandlers';
-import { getExtensionEnabled } from '../utils/store';
+import { getExtensionEnabled, isDeveloperMode } from '../utils/store';
 import { getRegisteredWorkspacePaths } from '../mcp/mcpWorkspaceResolver';
+import { listOpenWorkspacePaths } from '../window/windowState';
 import { clearBackendToolsForModule, clearBackendTools } from '../mcp/backendToolRegistry';
 import { logger } from '../utils/logger';
 import { isGitRepositoryInUse } from '../file/GitWatcherLifecycle';
@@ -45,6 +46,12 @@ export interface ResolvedBackendModules {
    * open before the user has opted into the provider.
    */
   agentProviderModuleIds?: string[];
+  /**
+   * Manifest `requiresDeveloperMode`. These modules are started only while
+   * Developer Mode is on and stopped when it is turned off, which is also what
+   * keeps their MCP tools away from agents.
+   */
+  requiresDeveloperMode?: boolean;
 }
 
 /**
@@ -58,6 +65,8 @@ export interface BackendModuleLifecycleDeps {
   resolveBackendModules: (extensionId: string) => Promise<ResolvedBackendModules | null>;
   /** Whether an extension is enabled (mirrors store.getExtensionEnabled). */
   isExtensionEnabled: (extensionId: string) => boolean;
+  /** Whether Developer Mode is on (mirrors store.isDeveloperMode). */
+  isDeveloperMode: () => boolean;
   /** Currently-open workspace paths. */
   collectWorkspaces: () => string[];
   isWorkspaceInUse: (workspacePath: string) => boolean;
@@ -134,6 +143,12 @@ async function startModulesAcrossWorkspaces(
   workspaces: string[],
   deps: BackendModuleLifecycleDeps
 ): Promise<void> {
+  if (resolved.requiresDeveloperMode && !deps.isDeveloperMode()) {
+    logger.main.info(
+      `[backendModuleLifecycle] skip ${resolved.extensionId}: requires Developer Mode, which is off`
+    );
+    return;
+  }
   if (workspaces.length === 0) {
     logger.main.info(
       `[backendModuleLifecycle] ${resolved.extensionId}: no open workspaces; ` +
@@ -158,6 +173,8 @@ async function startModulesAcrossWorkspaces(
       try {
         await runForModule(workspacePath, resolved.extensionId, module.id, async () => {
           if (!deps.isWorkspaceInUse(workspacePath) || !deps.isExtensionEnabled(resolved.extensionId)) return;
+          // Developer Mode may have been turned off while this start was queued.
+          if (resolved.requiresDeveloperMode && !deps.isDeveloperMode()) return;
           const handle = await deps.startModule({
             extensionId: resolved.extensionId,
             extensionName: resolved.extensionName,
@@ -169,10 +186,21 @@ async function startModulesAcrossWorkspaces(
             `[backendModuleLifecycle] start ${resolved.extensionId}/${module.id} ` +
               `@ ${workspacePath} -> ${handle.state.status}`
           );
-          // Consent or process startup may have finished after the last owner left.
-          if (!deps.isWorkspaceInUse(workspacePath)) {
+          // Consent or process startup may have finished after the last owner
+          // left, after the extension was disabled, or after Developer Mode was
+          // turned off. The stop for those ran while this start was in flight
+          // and may have found nothing to stop, so undo the start here.
+          const stillWanted =
+            deps.isWorkspaceInUse(workspacePath) &&
+            deps.isExtensionEnabled(resolved.extensionId) &&
+            (!resolved.requiresDeveloperMode || deps.isDeveloperMode());
+          if (!stillWanted) {
             await deps.stopModule(resolved.extensionId, module.id, workspacePath);
             deps.clearBackendTools(workspacePath, resolved.extensionId, module.id);
+            logger.main.info(
+              `[backendModuleLifecycle] stopped ${resolved.extensionId}/${module.id} @ ${workspacePath}: ` +
+                `no longer wanted by the time it started`
+            );
           }
         });
       } catch (error) {
@@ -253,6 +281,45 @@ export async function startWorkspaceBackendModules(
 }
 
 /**
+ * Bring `requiresDeveloperMode` extensions in line with the Developer Mode
+ * setting after it changes: start their backend modules in every open
+ * workspace when it is turned on, stop them everywhere when it is turned off.
+ * Extensions without the flag are untouched.
+ */
+export async function syncDeveloperModeBackendModules(
+  deps: BackendModuleLifecycleDeps
+): Promise<void> {
+  const developerMode = deps.isDeveloperMode();
+  const all = await deps.listBackendModuleExtensions();
+  for (const resolved of all) {
+    if (!resolved.requiresDeveloperMode) continue;
+    if (!developerMode) {
+      await stopExtensionBackendModules(resolved.extensionId, deps);
+    } else if (deps.isExtensionEnabled(resolved.extensionId)) {
+      await startModulesAcrossWorkspaces(resolved, deps.collectWorkspaces(), deps);
+    }
+  }
+}
+
+/**
+ * Retry every module parked in `awaiting-trust`. Called after a workspace is
+ * trusted: the host never retries on its own, so without this a module that
+ * tried to start before trust stays down until the workspace is reopened.
+ */
+export async function retryBackendModulesAwaitingTrust(
+  deps: BackendModuleLifecycleDeps
+): Promise<void> {
+  const workspaces = new Set(
+    deps.listModuleHandles()
+      .filter((handle) => handle.state.status === 'awaiting-trust')
+      .map((handle) => handle.workspacePath)
+  );
+  for (const workspacePath of workspaces) {
+    await startWorkspaceBackendModules(workspacePath, deps);
+  }
+}
+
+/**
  * Start the backend modules of every enabled extension across all open
  * workspaces. Called once after windows/workspaces are ready at startup.
  */
@@ -277,7 +344,12 @@ export function getDefaultBackendModuleLifecycleDeps(): BackendModuleLifecycleDe
     listBackendModuleExtensions: () => listExtensionBackendModules(),
     resolveBackendModules: (extensionId) => resolveExtensionBackendModules(extensionId),
     isExtensionEnabled: (extensionId) => getExtensionEnabled(extensionId),
-    collectWorkspaces: () => getRegisteredWorkspacePaths(),
+    isDeveloperMode: () => isDeveloperMode(),
+    // A workspace is registered for MCP routing only once its window reports an
+    // open file or runs an agent turn. A window that has done neither is still
+    // an open project: turning an extension on (or Developer Mode, for an
+    // extension that requires it) must start its modules there too.
+    collectWorkspaces: () => [...new Set([...getRegisteredWorkspacePaths(), ...listOpenWorkspacePaths()])],
     isWorkspaceInUse: workspacePath => isGitRepositoryInUse(workspacePath, new Set([workspacePath])),
     clearBackendTools,
     startModule: (args) => getPrivilegedExtensionHost().startModule(args),

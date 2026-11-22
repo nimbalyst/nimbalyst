@@ -1,3 +1,5 @@
+import { isClaudeCodeToolUseId } from "./interactivePromptFallback";
+
 type InteractiveResponseMessage = {
   content: string;
   createdAt?: Date | string;
@@ -13,10 +15,13 @@ export function findFreshInteractiveResponse(
     // NIM-1981: when set, accept the freshest row of expectedType regardless of
     // its ids. Used only when a single interactive prompt is pending for the
     // session, where the persisted response is unambiguously ours even though the
-    // Codex tool-call ids don't line up.
+    // Codex tool-call ids don't line up. Ignored for a Claude Code waiter, whose
+    // id is its card's own (see isClaudeCodeToolUseId).
     matchAnyId?: boolean;
   },
 ): Record<string, unknown> | null {
+  const matchAnyId = options.matchAnyId === true
+    && ![...options.acceptedIds].some(isClaudeCodeToolUseId);
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     const createdAt = message.createdAt instanceof Date
@@ -29,7 +34,7 @@ export function findFreshInteractiveResponse(
     try {
       const content = JSON.parse(message.content) as Record<string, unknown>;
       if (content.type !== options.expectedType) continue;
-      const matches = options.matchAnyId === true
+      const matches = matchAnyId
         || options.idFields.some((field) => {
           const value = content[field];
           return typeof value === "string" && options.acceptedIds.has(value);

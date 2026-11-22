@@ -420,7 +420,12 @@ export async function getAvailableExtensionTools(
               "Absolute path to the file to operate on, or a Team page's uri (collab://...) from createSharedDoc, importFileToPages or listPages to edit that shared page.",
           },
         },
-        required: [...(tool.inputSchema.required || []), "filePath"],
+        // #1885: optional on global tools. Requiring it made agents pass a
+        // workspace folder to tools such as browser_open_session. Routing uses
+        // the session's workspacePath; filePath only sets activeFilePath.
+        required: tool.scope === "global"
+          ? tool.inputSchema.required
+          : [...(tool.inputSchema.required || []), "filePath"],
       },
     };
   });

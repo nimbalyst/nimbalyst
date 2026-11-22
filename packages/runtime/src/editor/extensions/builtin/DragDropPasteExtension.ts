@@ -5,25 +5,32 @@
  * extension falls back to the electron document-service IPC for images,
  * with a final base64 fallback when the API is unavailable.
  *
+ * Under WSL an image copied in Windows reaches the paste as an empty text
+ * entry, because WSLg passes only text to Linux apps. An empty paste asks the
+ * host for the Windows clipboard image and handles it like a pasted file.
+ *
  * Headless extension (Phase 7.3). Replaces the prior React-component
  * `DragDropPaste` mounted in Editor.tsx.
  */
 
 import { $createLinkNode } from '@lexical/link';
 import { DRAG_DROP_PASTE } from '@lexical/rich-text';
-import { $wrapNodeInElement, isMimeType } from '@lexical/utils';
+import { $wrapNodeInElement, isMimeType, mergeRegister } from '@lexical/utils';
 import {
   $createParagraphNode,
   $createTextNode,
   $insertNodes,
   $isRootOrShadowRoot,
   COMMAND_PRIORITY_HIGH,
+  COMMAND_PRIORITY_LOW,
+  PASTE_COMMAND,
   type LexicalEditor,
   defineExtension,
 } from 'lexical';
 
 import type { UploadedEditorAsset } from '../../EditorConfig';
 import { INSERT_IMAGE_COMMAND } from '../../plugins/ImagesPlugin';
+import { isEmptyPaste, readWindowsClipboardImage } from '../../../utils/clipboard';
 import { uploadEditorImageAsset } from './imageAssetUpload';
 
 const ACCEPTABLE_IMAGE_TYPES = [
@@ -70,8 +77,8 @@ export interface DragDropPasteConfig {
 export const DragDropPasteExtension = defineExtension({
   name: '@nimbalyst/editor/drag-drop-paste',
   config: { uploadAsset: undefined } as DragDropPasteConfig,
-  register: (editor, config) => {
-    return editor.registerCommand(
+  register: (editor, config) => mergeRegister(
+    editor.registerCommand(
       DRAG_DROP_PASTE,
       (files) => {
         // console.log('[DragDropPaste] DRAG_DROP_PASTE', {
@@ -104,6 +111,22 @@ export const DragDropPasteExtension = defineExtension({
         return true;
       },
       COMMAND_PRIORITY_HIGH,
-    );
-  },
+    ),
+    // LOW so every paste handler that wants the paste sees it first.
+    editor.registerCommand(
+      PASTE_COMMAND,
+      (event) => {
+        if (!('clipboardData' in event) || !event.clipboardData || !isEmptyPaste(event.clipboardData)) {
+          return false;
+        }
+        if (!editor.isEditable()) return false;
+        event.preventDefault();
+        void readWindowsClipboardImage().then((file) => {
+          if (file) editor.dispatchCommand(DRAG_DROP_PASTE, [file]);
+        });
+        return true;
+      },
+      COMMAND_PRIORITY_LOW,
+    ),
+  ),
 });

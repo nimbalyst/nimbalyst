@@ -901,12 +901,6 @@ class PGLiteWorker {
       CREATE INDEX IF NOT EXISTS idx_history_workspace_file ON document_history(workspace_id, file_path);
       CREATE INDEX IF NOT EXISTS idx_history_timestamp ON document_history(timestamp);
 
-      -- Create index to speed up duplicate detection (most recent snapshot check)
-      -- This is just for performance, not uniqueness
-      CREATE INDEX IF NOT EXISTS idx_history_file_content_hash
-        ON document_history(file_path, (metadata->>'baseMarkdownHash'))
-        WHERE metadata->>'baseMarkdownHash' IS NOT NULL;
-
       -- Migration: Clean up duplicate pending tags before creating unique index
       -- Keep only the most recent pending tag per file (any type)
       DELETE FROM document_history
@@ -955,10 +949,7 @@ class PGLiteWorker {
         metadata JSONB DEFAULT '{}'
       );
 
-      CREATE INDEX IF NOT EXISTS idx_session_files_session ON session_files(session_id);
       CREATE INDEX IF NOT EXISTS idx_session_files_file ON session_files(file_path);
-      CREATE INDEX IF NOT EXISTS idx_session_files_type ON session_files(link_type);
-      CREATE INDEX IF NOT EXISTS idx_session_files_workspace ON session_files(workspace_id);
       CREATE INDEX IF NOT EXISTS idx_session_files_workspace_file ON session_files(workspace_id, file_path);
       CREATE INDEX IF NOT EXISTS idx_session_files_unique ON session_files(session_id, file_path, link_type);
       -- Optimized index for "latest session per file" lookup
@@ -1188,7 +1179,6 @@ class PGLiteWorker {
         );
 
         CREATE INDEX IF NOT EXISTS idx_tracker_type ON tracker_items(type);
-        CREATE INDEX IF NOT EXISTS idx_tracker_workspace ON tracker_items(workspace);
         CREATE INDEX IF NOT EXISTS idx_tracker_status ON tracker_items(status);
         CREATE INDEX IF NOT EXISTS idx_tracker_created ON tracker_items(created);
         CREATE INDEX IF NOT EXISTS idx_tracker_updated ON tracker_items(updated);
@@ -1240,7 +1230,6 @@ class PGLiteWorker {
             );
 
             CREATE INDEX IF NOT EXISTS idx_tracker_type ON tracker_items(type);
-            CREATE INDEX IF NOT EXISTS idx_tracker_workspace ON tracker_items(workspace);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_tracker_workspace_issue_key ON tracker_items(workspace, issue_key) WHERE issue_key IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_tracker_status ON tracker_items(status);
             CREATE INDEX IF NOT EXISTS idx_tracker_created ON tracker_items(created);
@@ -1626,6 +1615,7 @@ class PGLiteWorker {
           confirmed_sync_id BIGINT,
           last_rejection JSONB
         );
+        ALTER TABLE tracker_transactions ADD COLUMN IF NOT EXISTS base_sync_id BIGINT;
         CREATE INDEX IF NOT EXISTS idx_tracker_txn_workspace_state ON tracker_transactions(workspace_path, state);
         CREATE INDEX IF NOT EXISTS idx_tracker_txn_item ON tracker_transactions(item_id);
       `);
@@ -1823,7 +1813,6 @@ class PGLiteWorker {
             ON DELETE CASCADE
         );
 
-        CREATE INDEX IF NOT EXISTS idx_queued_prompts_session ON queued_prompts(session_id);
         CREATE INDEX IF NOT EXISTS idx_queued_prompts_status ON queued_prompts(status);
         CREATE INDEX IF NOT EXISTS idx_queued_prompts_session_status ON queued_prompts(session_id, status);
         CREATE INDEX IF NOT EXISTS idx_queued_prompts_created ON queued_prompts(created_at);
@@ -2079,7 +2068,6 @@ class PGLiteWorker {
 
       await this.db.exec(`
         CREATE INDEX IF NOT EXISTS idx_ai_sessions_agent_role ON ai_sessions(agent_role);
-        CREATE INDEX IF NOT EXISTS idx_ai_sessions_created_by ON ai_sessions(created_by_session_id);
         CREATE INDEX IF NOT EXISTS idx_ai_sessions_created_by_workspace ON ai_sessions(created_by_session_id, workspace_id) WHERE created_by_session_id IS NOT NULL;
       `);
 
@@ -3265,6 +3253,49 @@ class PGLiteWorker {
       console.log('[PGLite Worker] personal pages fields migration applied');
     } catch (error) {
       console.error('[PGLite Worker] Failed to apply the personal pages fields migration:', error);
+      throw error;
+    }
+
+    // Migration: tray snippet index, redundant indexes dropped (schema version 53).
+    // Mirror of SQLite migration 0053_index_hygiene.sql -- keep in sync.
+    // The DDL above no longer creates the dropped indexes; the DROPs clear them
+    // from databases created before. Every statement is IF [NOT] EXISTS, so
+    // rerunning it every launch is safe. The two tracker composites are
+    // re-asserted because they replace idx_tracker_workspace.
+    try {
+      await this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_ai_agent_messages_latest_assistant_text
+          ON ai_agent_messages(session_id, id DESC)
+          WHERE message_kind = 'assistant' AND searchable_text IS NOT NULL AND searchable_text <> '';
+        CREATE INDEX IF NOT EXISTS idx_tracker_workspace_sync_id ON tracker_items(workspace, sync_id);
+        CREATE INDEX IF NOT EXISTS idx_tracker_kanban_sort ON tracker_items(workspace, status, kanban_sort_order);
+        DROP INDEX IF EXISTS idx_session_files_session;
+        DROP INDEX IF EXISTS idx_session_files_workspace;
+        DROP INDEX IF EXISTS idx_session_files_type;
+        DROP INDEX IF EXISTS idx_queued_prompts_session;
+        DROP INDEX IF EXISTS idx_tracker_workspace;
+        DROP INDEX IF EXISTS idx_ai_sessions_created_by;
+        DROP INDEX IF EXISTS idx_history_file_content_hash;
+      `);
+      console.log('[PGLite Worker] index hygiene migration applied');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to apply the index hygiene migration:', error);
+      throw error;
+    }
+
+    // Migration: project file sync disk stamp (schema version 54).
+    // Mirror of SQLite migration 0054_project_file_sync_disk_stamp.sql -- keep in sync.
+    // Columns only, IF NOT EXISTS, so rerunning it every launch is safe. Runs
+    // after the CREATE TABLE above, which this block follows in createSchemas.
+    try {
+      await this.db.exec(`
+        ALTER TABLE project_file_sync_baseline ADD COLUMN IF NOT EXISTS disk_hash TEXT;
+        ALTER TABLE project_file_sync_baseline ADD COLUMN IF NOT EXISTS disk_size BIGINT;
+        ALTER TABLE project_file_sync_baseline ADD COLUMN IF NOT EXISTS disk_mtime BIGINT;
+      `);
+      console.log('[PGLite Worker] project file sync disk stamp migration applied');
+    } catch (error) {
+      console.error('[PGLite Worker] Failed to apply the project file sync disk stamp migration:', error);
       throw error;
     }
 

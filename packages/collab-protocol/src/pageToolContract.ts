@@ -168,8 +168,12 @@ const ORG_INVITE_ROLE = {
   description: "Team role. Default 'member'.",
 } as const;
 
-/** The project roles an invitation or invite link can grant; the server's `project_access` roles. */
-export const TEAM_PROJECT_ROLES = ['project-admin', 'project-editor', 'project-viewer'] as const;
+/**
+ * The project roles an invitation or invite link can grant; the server's
+ * `project_access` roles. `project-commenter` sits between viewer and editor:
+ * it reads the project's pages and writes comment threads, never page bodies.
+ */
+export const TEAM_PROJECT_ROLES = ['project-admin', 'project-editor', 'project-commenter', 'project-viewer'] as const;
 export type TeamProjectRole = (typeof TEAM_PROJECT_ROLES)[number];
 /** What an invitation with a project grants when no role is named. */
 export const DEFAULT_INVITE_PROJECT_ROLE: TeamProjectRole = 'project-editor';
@@ -177,7 +181,7 @@ export const DEFAULT_INVITE_PROJECT_ROLE: TeamProjectRole = 'project-editor';
 const INVITE_PROJECT_ROLE = {
   type: 'string',
   enum: [...TEAM_PROJECT_ROLES],
-  description: "Role on `projectId`. Default 'project-editor' when projectId is given; 'editor' and 'viewer' are accepted for project-editor and project-viewer.",
+  description: "Role on `projectId`. Default 'project-editor' when projectId is given; 'editor', 'commenter' and 'viewer' are accepted for project-editor, project-commenter and project-viewer. A commenter reads and comments on pages but never edits page bodies.",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -220,7 +224,7 @@ export const PAGE_TOOL_CONTRACT: readonly PageToolContract[] = [
     availability: 'remoteOnly',
     readOnly: false,
     description:
-      `Import a local wiki into the bound team project in batches: pages, typed pages and their types in one call. Editors and above. Upserts by (project, source.wikiId, localId): a re-run updates the pages it already created and an interrupted move resumes, never duplicates. A parentLocalId may name a page imported in an earlier batch. Types are ensured before typed pages. At most ${PAGES_IMPORT_MAX_PAGES} pages and ${PAGES_IMPORT_MAX_BODY_BYTES} bytes of bodies per call; send parents before children. Bodies are stored verbatim (decision marks included); to rewrite links, call again with the rewritten bodies for the same localIds. A body a person has edited since the import wrote it is not overwritten (error body_edited). An editorPage (drawing, spreadsheet, data model, ...) is registered with its documentType, fileExtension and editorId and an empty room; the move client writes its content into the room itself with a pages_import_token credential. Returns idMap (localId to nodeId, id, issueKey, link, uri), created, updated and per-page errors.`,
+      `Import a local wiki into the bound team project in batches: pages, typed pages and their types in one call. Editors and above. Upserts by (project, source.wikiId, localId): a re-run updates the pages it already created and an interrupted move resumes, never duplicates. A parentLocalId may name a page imported in an earlier batch. Types are ensured before typed pages. At most ${PAGES_IMPORT_MAX_PAGES} pages and ${PAGES_IMPORT_MAX_BODY_BYTES} bytes of bodies per call; send parents before children. Bodies are stored verbatim (decision marks included); to rewrite links, call again with the rewritten bodies for the same localIds. A body a person has edited since the import wrote it is not overwritten (error body_edited). An editorPage (drawing, spreadsheet, data model, ...) is registered with its documentType, fileExtension and editorId and an empty room; the move client writes its content into the room itself with a pages_import_token credential. homeLocalId names the local Home, which is written into the project's Home page rather than a second page. typePlacements put types in the page tree once their parents are imported; a type the team already placed stays where it is. Returns idMap (localId to nodeId, id, issueKey, link, uri), created, updated and per-page errors.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -252,6 +256,7 @@ export const PAGE_TOOL_CONTRACT: readonly PageToolContract[] = [
               order: { type: 'number', description: 'Sort order among its siblings.' },
               kind: { type: 'string', enum: [...PAGES_IMPORT_PAGE_KINDS] },
               typeId: { type: 'string', description: 'The type, for a typed page.' },
+              underType: { type: 'boolean', description: 'A typed page that sits under its type (a table row) rather than under parentLocalId.' },
               documentType: { type: 'string', description: "The editor page's document type (e.g. 'excalidraw'), for an editorPage." },
               fileExtension: { type: 'string', description: "The editor page's file extension with its leading dot (e.g. '.excalidraw'), for an editorPage." },
               editorId: { type: 'string', description: "The extension id of the editor that opens it (e.g. 'com.nimbalyst.excalidraw'), for an editorPage." },
@@ -259,6 +264,20 @@ export const PAGE_TOOL_CONTRACT: readonly PageToolContract[] = [
               body: { type: 'string', description: 'Markdown body, verbatim. Empty for an editorPage.' },
             },
             required: ['localId', 'parentLocalId', 'title', 'kind', 'body'],
+          },
+        },
+        homeLocalId: { type: 'string', description: "The local Home's localId, sent with every batch: that page is the project's Home page." },
+        typePlacements: {
+          type: 'array',
+          description: `Where types sit in the page tree (at most ${PAGES_IMPORT_MAX_TYPES}); each parentLocalId must already be imported.`,
+          items: {
+            type: 'object',
+            properties: {
+              typeId: { type: 'string' },
+              parentLocalId: { type: ['string', 'null'], description: 'Parent localId, or null for the top of the wiki.' },
+              order: { type: 'number', description: 'Sort order among its siblings.' },
+            },
+            required: ['typeId', 'parentLocalId'],
           },
         },
       },

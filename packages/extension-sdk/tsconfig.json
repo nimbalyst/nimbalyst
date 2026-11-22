@@ -6,6 +6,7 @@
     "declaration": true,
     "declarationMap": true,
     "outDir": "dist",
+    "rootDir": "src",
     // Incremental emit keeps unchanged sources from being rewritten, so the pre-push
     // SDK build doesn't churn dist/ and full-reload every open Electron window.
     "incremental": true,
@@ -16,7 +17,6 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "types": ["node"],
-    "baseUrl": ".",
     "paths": {
       "@nimbalyst/extension-sdk": ["./src/index.ts"],
       "@nimbalyst/extension-sdk/*": ["./src/*"]

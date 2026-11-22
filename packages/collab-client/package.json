@@ -94,7 +94,7 @@
     "./trackers-ui/page.css": "./src/trackers-ui/page/TrackerPageView.css"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../scripts/tsc-native.mjs --noEmit"
   },
   "dependencies": {
     "@floating-ui/react": "^0.27.19",
@@ -125,7 +125,7 @@
     "@revolist/revogrid": "4.21.4",
     "@types/react": "^19.2.17",
     "react": "^19.2.7",
-    "typescript": "^5.0.0",
-    "yjs": "13.6.32"
+    "typescript": "^6.0.3",
+    "yjs": "13.6.33"
   }
 }
