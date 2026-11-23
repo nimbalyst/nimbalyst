@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
+import { createRoot } from 'react-dom/client';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { TeamRecoverySection } from '../TeamRecoverySection';
@@ -81,4 +82,30 @@ it('sends the passphrase only to bundle commands and releases main-process state
   expect(recovery).toHaveBeenLastCalledWith('org', 'release');
   view.unmount();
   expect(recovery.mock.calls.filter(call => call[1] === 'release')).toHaveLength(1);
+});
+
+it('opens on a click that lands before the mount effects flush', async () => {
+  // CI #1674: a status reply resolved outside act commits the button and wakes
+  // findByRole before passive effects run; the click must not be undone by them.
+  const overview = { orgId: 'org', diagnostics: null, counts: { projects: 1, items: 0, documents: 0, attachments: 0 }, blockers: [], notices: [], ready: false, saved: false, artifactName: null, operation: null, independentClient: false, identityAssignments: [] };
+  const recovery = vi.fn(async (..._args: unknown[]) => ({ success: true, overview }));
+  Object.assign(window, { electronAPI: { team: { recovery } } });
+  const actEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+  const container = document.body.appendChild(document.createElement('div'));
+  const root = createRoot(container);
+  try {
+    const committed = new Promise<void>(resolve => {
+      const observer = new MutationObserver(() => { observer.disconnect(); resolve(); });
+      observer.observe(container, { childList: true, subtree: true });
+    });
+    root.render(<TeamRecoverySection orgId="org" />);
+    await committed;
+    (container.querySelector('button') as HTMLButtonElement).click();
+    await waitFor(() => expect(container.textContent).toContain('1 projects'));
+  } finally {
+    root.unmount();
+    container.remove();
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = actEnvironment;
+  }
 });

@@ -12,9 +12,15 @@ export function TeamRecoverySection({ orgId }: { orgId: string }) {
   const [reviewed, setReviewed] = useState(false);
   const generation = useRef(0);
   const opened = useRef(false);
+  const stateOrgId = useRef(orgId);
   useEffect(() => {
-    generation.current++;
-    setOpen(false); setOverview(null); setBusy(null); setError(null); setPassword(''); setReviewed(false);
+    // Reset only when the organization changes. Resetting on mount would undo a
+    // click that lands before this effect runs and drop that click's response.
+    // The previous organization's cleanup below already invalidated its requests.
+    if (stateOrgId.current !== orgId) {
+      stateOrgId.current = orgId;
+      setOpen(false); setOverview(null); setBusy(null); setError(null); setPassword(''); setReviewed(false);
+    }
     return () => {
       generation.current++;
       // Main holds this organization's decrypted recovery content between steps.

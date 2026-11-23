@@ -768,6 +768,26 @@ describe('marks whose thread was deleted elsewhere', () => {
     ).toBe('Alpha beta gamma.');
   });
 
+  it('are unwrapped soon after the grace period when the sweep wakes a moment early', () => {
+    // Node timers can fire ~1ms before Date.now() says the delay elapsed. That
+    // sweep must not wait a whole extra grace period (CI flake, Nov 2026).
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const server = serverDocWith(['Alpha beta gamma.'], { quote: 'beta', id: 'deleted-thread' });
+      const client = mountClient(server, { read: true, comment: true });
+      panes.push(client.pane);
+      unmounts.push(client.unmount);
+      act(() => { vi.advanceTimersByTime(300); });
+      vi.setSystemTime(Date.now() - 1);
+      act(() => { vi.advanceTimersByTime(ORPHAN_MARK_GRACE_MS); });
+      act(() => { vi.advanceTimersByTime(100); });
+      client.editor.read(() => {});
+      expect(collectMarkIds(client.editor).has('deleted-thread')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('are left alone by a commenter, who never writes the body', async () => {
     const server = serverDocWith(['Alpha beta gamma.'], { quote: 'beta', id: 'deleted-thread' });
     const client = mountClient(server, { read: true, comment: true, editBody: false });

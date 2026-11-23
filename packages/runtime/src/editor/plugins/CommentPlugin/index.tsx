@@ -555,7 +555,7 @@ export default function CommentsPlugin({
       }
       const missingSince = markMissingSinceRef.current;
       const now = Date.now();
-      let waiting = false;
+      let nextDueIn: number | null = null;
       for (const id of Array.from(markNodeMapRef.current.keys())) {
         if (threadIds.has(id)) {
           missingSince.delete(id);
@@ -568,12 +568,16 @@ export default function CommentsPlugin({
           continue;
         }
         if (since === undefined) missingSince.set(id, now);
-        waiting = true;
+        const dueIn = ORPHAN_MARK_GRACE_MS - (now - (since ?? now));
+        nextDueIn = nextDueIn === null ? dueIn : Math.min(nextDueIn, dueIn);
       }
       for (const id of Array.from(missingSince.keys())) {
         if (!markNodeMapRef.current.has(id)) missingSince.delete(id);
       }
-      if (waiting) timer = setTimeout(sweep, ORPHAN_MARK_GRACE_MS);
+      // Wake at the earliest deadline, not a full grace period later: a timer
+      // can fire a millisecond before Date.now() reaches it, and waiting another
+      // whole period then would double the delay.
+      if (nextDueIn !== null) timer = setTimeout(sweep, Math.max(nextDueIn, 0) + 10);
     };
     timer = setTimeout(sweep, REANCHOR_DEBOUNCE_MS);
     return () => {
