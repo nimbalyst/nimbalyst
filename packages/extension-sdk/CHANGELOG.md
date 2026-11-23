@@ -8,6 +8,7 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 
 | SDK version | Minimum Nimbalyst app version |
 | --- | --- |
+| 0.8.0 | 0.84.2 |
 | 0.7.2 | 0.79.0 |
 | 0.7.1 | 0.79.0 |
 | 0.7.0 | 0.79.0 |
@@ -23,11 +24,23 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-23
+
+Requires Nimbalyst 0.84.2. The project fields below take effect from the next app release after 0.84.3; on earlier apps `host.workspacePath` is undefined and an unnamed call still uses the on-screen project.
+
 ### Added
 
+- `EditorHost.workspacePath`: the local project the editor's tab is open in. For a shared document `workspaceId` is a collaboration scope key, not a path.
+- `filesystem.findFiles(pattern, rootDir)` searches a given project, and `filesystem.listProjectPaths()` lists the projects this window runs background work for, each project in exactly one window.
 - `ctx.services.terminals.createCommandTerminal()` lets a backend module run a command in a terminal tab Nimbalyst owns and follow its output, read its log as plain text, stop its process group, and reveal the tab. Requires the new `terminals` permission.
 - Manifest field `requiresDeveloperMode` hides an extension's panels and keeps its backend modules stopped while Developer Mode is off.
 - Gutter badge tones `success` and `error`, in `host.setGutterBadge` and `ctx.services.panels.setGutterBadge`. Bottom-placement panels now show their gutter badge.
+
+### Changed
+
+- `services.ai.sendPrompt` requires `workspacePath`, the project the session runs in. The app refuses a call without one, or with a project the window does not have open.
+- `callBackendTool` must name its project. Inside an AI tool handler it defaults to the calling session's project; elsewhere pass `host.workspacePath`.
+- Inside an AI tool handler, relative paths in `services.filesystem` resolve against the calling session's project.
 
 ## [0.7.2] - 2026-11-10
 
