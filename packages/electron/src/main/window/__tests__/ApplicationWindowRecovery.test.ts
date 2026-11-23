@@ -1,20 +1,28 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const allWindows = vi.hoisted(() => ({ list: [] as unknown[] }));
 vi.mock('electron', async () => {
     const { EventEmitter } = await import('node:events');
-    return { app: Object.assign(new EventEmitter(), { isReady: vi.fn(() => true), quit: vi.fn() }) };
+    return {
+        app: Object.assign(new EventEmitter(), { isReady: vi.fn(() => true), quit: vi.fn(), isPackaged: false, focus: vi.fn() }),
+        // Every live window, helpers included, as Electron reports them.
+        BrowserWindow: { getAllWindows: () => allWindows.list },
+    };
 });
 vi.mock('../../utils/store', () => ({ getAttachedFolders: () => [] }));
-vi.mock('../../utils/logger', () => ({ logger: { main: { info: vi.fn() } } }));
+vi.mock('../../utils/logger', () => ({ logger: { main: { info: vi.fn(), error: vi.fn() } } }));
 
+import { tmpdir } from 'node:os';
 import { app, type BrowserWindow } from 'electron';
+import { logger } from '../../utils/logger';
 import { windows } from '../windowState';
 import { beginStartupActivation, finishStartupWindowCreation, resetStartupActivationForTests } from '../StartupActivation';
 import {
     initializeApplicationWindowRecovery,
     recoverAfterProjectWindowClosed,
 } from '../ApplicationWindowRecovery';
+import { handleSecondInstance } from '../secondInstanceActivation';
 
 function windowStub() {
     return {
@@ -40,6 +48,7 @@ describe('application window recovery (#1609)', () => {
         vi.useFakeTimers();
         vi.clearAllMocks();
         windows.clear();
+        allWindows.list = [];
         resetStartupActivationForTests();
         quitting = false;
         preferred = manager = null;
@@ -186,5 +195,67 @@ describe('application window recovery (#1609)', () => {
         } finally {
             Object.defineProperty(process, 'platform', original);
         }
+    });
+
+    describe('relaunch while running (second-instance, #1189)', () => {
+        // A dev argv: [electron, appPath, ...user args].
+        const bareLaunch = ['/usr/bin/electron', '/app'];
+        const handlers = { handleDeepLink: vi.fn(), openLaunchTarget: vi.fn(() => true) };
+        let captureHelper: ReturnType<typeof windowStub>;
+        beforeEach(() => {
+            // The hidden offscreen capture window (?mode=capture) is a live
+            // BrowserWindow but never a registered project window.
+            captureHelper = windowStub();
+            allWindows.list = [captureHelper];
+        });
+        const relaunch = (argv = bareLaunch) => handleSecondInstance(argv, '/home/user', handlers);
+
+        it('opens the Project Manager when only the hidden capture window is alive', () => {
+            relaunch();
+            expect(createManager).toHaveBeenCalledOnce();
+            expect(captureHelper.focus).not.toHaveBeenCalled();
+            expect(captureHelper.show).not.toHaveBeenCalled();
+        });
+
+        it('shows and focuses a hidden project window instead of the helper', () => {
+            const hiddenProject = windowStub();
+            windows.set(1, hiddenProject as unknown as BrowserWindow);
+            allWindows.list = [captureHelper, hiddenProject];
+            relaunch();
+            expect(hiddenProject.show).toHaveBeenCalledOnce();
+            expect(hiddenProject.focus).toHaveBeenCalledOnce();
+            expect(captureHelper.focus).not.toHaveBeenCalled();
+            expect(createManager).not.toHaveBeenCalled();
+        });
+
+        it('does nothing, and does not throw, while startup activation is pending', () => {
+            beginStartupActivation();
+            expect(() => relaunch()).not.toThrow();
+            expect(createManager).not.toHaveBeenCalled();
+            expect(captureHelper.focus).not.toHaveBeenCalled();
+            expect(captureHelper.show).not.toHaveBeenCalled();
+        });
+
+        it('skips the fallback when the launch target was opened', () => {
+            const folder = tmpdir();
+            relaunch([...bareLaunch, folder]);
+            expect(handlers.openLaunchTarget).toHaveBeenCalledWith({ kind: 'directory', path: folder });
+            expect(createManager).not.toHaveBeenCalled();
+            expect(captureHelper.focus).not.toHaveBeenCalled();
+        });
+
+        it('forwards a deep link and still brings an app window back', () => {
+            relaunch([...bareLaunch, 'nimbalyst://open?x=1']);
+            expect(handlers.handleDeepLink).toHaveBeenCalledWith('nimbalyst://open?x=1');
+            expect(handlers.openLaunchTarget).not.toHaveBeenCalled();
+            expect(createManager).toHaveBeenCalledOnce();
+        });
+
+        it('logs instead of throwing when window recovery is not initialized', () => {
+            dispose();
+            expect(() => relaunch()).not.toThrow();
+            expect(logger.main.error).toHaveBeenCalledOnce();
+            expect(createManager).not.toHaveBeenCalled();
+        });
     });
 });
