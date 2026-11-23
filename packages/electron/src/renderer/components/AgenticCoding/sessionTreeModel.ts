@@ -30,6 +30,24 @@ export function treeIndent(depth: number) {
   return { level: Math.min(Math.max(0, depth), 3), rail: depth > 3 };
 }
 
+/** Project matches and their ancestor paths without including unrelated siblings. */
+export function matchingSessionPaths<T extends TreeSession>(rows: readonly T[], matches: (row: T) => boolean) {
+  const byId = new Map(rows.map(row => [row.id, row]));
+  const visible = new Map<string, T>();
+  let matchCount = 0;
+  for (const row of rows) {
+    if (!matches(row)) continue;
+    matchCount++;
+    let current: T | undefined = row;
+    while (current && !visible.has(current.id)) {
+      visible.set(current.id, current);
+      const parent: T | undefined = current.parentSessionId ? byId.get(current.parentSessionId) : undefined;
+      current = parent && (parent.worktreeId ?? null) === (current.worktreeId ?? null) ? parent : undefined;
+    }
+  }
+  return { roots: buildSessionTree([...visible.values()]), matchCount };
+}
+
 /** Missing parents become visible roots; corrupt cycles are cut without losing rows. */
 export function buildSessionTree<T extends TreeSession>(rows: readonly T[]): SessionTreeNode<T>[] {
   const byId = new Map(rows.map((row) => [row.id, row]));
