@@ -201,18 +201,32 @@ export function shouldSyncMessageForSessionRoom(
     return false;
   }
 
-  // Codex ACP shares the 'openai-codex' prefix, so check it first. Its parser
-  // returns [] for usage_update session updates (only caches context locally)
-  // and for permission previews (the canonical args arrive via a tool_call).
-  if (source.startsWith('openai-codex-acp')) {
+  // Codex ACP and Gemini ACP share the ACP raw envelope format. Their parsers
+  // return [] for metadata updates (usage_update, available_commands_update,
+  // config_option_update, session_info_update) and permission previews.
+  if (source.startsWith('openai-codex-acp') || source.startsWith('antigravity-gemini-agent')) {
     if (
       content
-      && (content.includes('"usage_update"') || content.includes('"session/request_permission_preview"'))
+      && (
+        content.includes('"usage_update"')
+        || content.includes('"available_commands_update"')
+        || content.includes('"config_option_update"')
+        || content.includes('"session_info_update"')
+        || content.includes('"session/request_permission_preview"')
+      )
     ) {
       try {
         const parsed = JSON.parse(content) as { type?: string; update?: { sessionUpdate?: string } };
         if (parsed?.type === 'session/request_permission_preview') return false;
-        if (parsed?.update?.sessionUpdate === 'usage_update') return false;
+        const kind = parsed?.update?.sessionUpdate;
+        if (
+          kind === 'usage_update'
+          || kind === 'available_commands_update'
+          || kind === 'config_option_update'
+          || kind === 'session_info_update'
+        ) {
+          return false;
+        }
       } catch {
         // Unparseable -- let it through.
       }

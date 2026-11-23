@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { McpConfigService, McpConfigServiceDeps } from '../McpConfigService';
+import { AGY_MCP_TOOL_ALLOWLIST } from '../../providers/GeminiAntigravityProvider';
 import {
   MCP_FIRST_PARTY_TOPOLOGY,
   MCP_CORE,
@@ -272,6 +273,44 @@ describe('getMcpServersConfig consolidated topology', () => {
     });
 
     expect(config[MCP_HOST].url).toContain('hostExcludeSettings=1');
+  });
+
+  it('toolAllowlist appends tools= to listed servers and drops the rest', async () => {
+    const service = new McpConfigService({
+      ...baseDeps(),
+      extensionMcpServerNamesLoader: () => ['excalidraw'],
+      extensionDevServerPort: 4567,
+      mcpConfigLoader: async () => ({ mine: { type: 'sse', url: 'http://x/mcp' } }),
+    });
+    const config = await service.getMcpServersConfig({
+      sessionId: 'session123',
+      workspacePath: '/test/workspace',
+      toolAllowlist: { [MCP_CORE]: ['AskUserQuestion'], [MCP_HOST]: ['spawn_session', 'send_prompt'] },
+    });
+
+    expect(config[MCP_CORE].url).toContain('&tools=AskUserQuestion');
+    expect(new URL(config[MCP_HOST].url).searchParams.get('tools')).toBe('spawn_session,send_prompt');
+    expect(config[MCP_TRACKERS]).toBeUndefined();
+    expect(config[MCP_SITUATIONAL]).toBeUndefined();
+    expect(config['nimbalyst-excalidraw']).toBeUndefined();
+    expect(config['nimbalyst-extension-dev']).toBeUndefined();
+    expect(config.mine).toBeDefined();
+  });
+
+  it('agy allowlist names only tools the matching server owns', () => {
+    for (const [server, tools] of Object.entries(AGY_MCP_TOOL_ALLOWLIST)) {
+      for (const tool of tools) {
+        expect(FIRST_PARTY_TOOL_TO_SERVER.get(tool), `${server}/${tool}`).toBe(server);
+      }
+    }
+  });
+
+  it('leaves URLs without tools= when no allowlist is given', async () => {
+    const config = await new McpConfigService(baseDeps()).getMcpServersConfig({
+      sessionId: 'session123',
+      workspacePath: '/test/workspace',
+    });
+    expect(config[MCP_HOST].url).not.toContain('tools=');
   });
 
   it('retires the ad-hoc per-feature servers (settings / session-context / meta-agent / session-naming)', async () => {

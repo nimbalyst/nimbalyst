@@ -14,10 +14,17 @@ import { describe, expect, it } from 'vitest';
 
 import { GeminiAntigravityRawParser } from '../parsers/GeminiAntigravityRawParser';
 import { selectRawParser } from '../processDescriptor';
+import { projectRawMessagesToViewMessages } from '../projectRawMessages';
 import type { RawMessage } from '../TranscriptTransformer';
 import type { ParseContext } from '../parsers/IRawMessageParser';
 
-const CONTEXT = {} as ParseContext;
+const CONTEXT: ParseContext = {
+  sessionId: 's1',
+  hasToolCall: () => false,
+  hasSubagent: () => false,
+  findByProviderToolCallId: async () => null,
+  findActiveToolCallByRawProviderId: async () => null,
+};
 const AT = new Date('2026-08-26T12:00:00.000Z');
 
 function raw(overrides: Partial<RawMessage>): RawMessage {
@@ -166,5 +173,115 @@ describe('GeminiAntigravityRawParser', () => {
       CONTEXT,
     );
     expect(out).toEqual([]);
+  });
+
+  describe('ACP rows from agy acp', () => {
+    it('emits agent_thought_chunk as collapsed thinking (empty text, populated thinking)', async () => {
+      const p = new GeminiAntigravityRawParser();
+      const out = await p.parseMessage(
+        raw({
+          content: JSON.stringify({
+            type: 'session/update',
+            sessionId: 'acp-1',
+            update: {
+              sessionUpdate: 'agent_thought_chunk',
+              content: { type: 'text', text: 'Checking search results...' },
+            },
+          }),
+        }),
+        CONTEXT,
+      );
+
+      expect(out).toEqual([
+        {
+          type: 'assistant_message',
+          text: '',
+          thinking: 'Checking search results...',
+          createdAt: AT,
+        },
+      ]);
+    });
+
+    it('coalesces consecutive agent_thought_chunk rows into a single collapsed thinking block', async () => {
+      const view = await projectRawMessagesToViewMessages(
+        [
+          raw({
+            id: 1,
+            direction: 'input',
+            content: 'Search the web',
+          }),
+          raw({
+            id: 2,
+            content: JSON.stringify({
+              type: 'session/update',
+              sessionId: 'acp-1',
+              update: {
+                sessionUpdate: 'agent_thought_chunk',
+                content: { type: 'text', text: 'Part 1. ' },
+              },
+            }),
+          }),
+          raw({
+            id: 3,
+            content: JSON.stringify({
+              type: 'session/update',
+              sessionId: 'acp-1',
+              update: {
+                sessionUpdate: 'agent_thought_chunk',
+                content: { type: 'text', text: 'Part 2.' },
+              },
+            }),
+          }),
+          raw({
+            id: 4,
+            content: JSON.stringify({
+              type: 'session/update',
+              sessionId: 'acp-1',
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: 'Final answer.' },
+              },
+            }),
+          }),
+        ],
+        'antigravity-gemini-agent',
+      );
+
+      const thinking = view.filter((m) => m.type === 'assistant_message' && m.thinking);
+      expect(thinking).toHaveLength(1);
+      expect(thinking[0].thinking).toBe('Part 1. Part 2.');
+
+      const replies = view.filter((m) => m.type === 'assistant_message' && m.text);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].text).toBe('Final answer.');
+    });
+
+    it('maps search_web ACP tool calls to WebSearch', async () => {
+      const p = new GeminiAntigravityRawParser();
+      const out = await p.parseMessage(
+        raw({
+          content: JSON.stringify({
+            type: 'session/update',
+            sessionId: 'acp-1',
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId: 'call_1',
+              name: 'search_web',
+              kind: 'search',
+              title: '"node lts" on Web',
+              rawInput: { query: 'node lts' },
+            },
+          }),
+        }),
+        CONTEXT,
+      );
+
+      expect(out).toHaveLength(1);
+      expect(out[0]).toMatchObject({
+        type: 'tool_call_started',
+        toolName: 'WebSearch',
+        providerToolCallId: 'call_1',
+      });
+    });
   });
 });

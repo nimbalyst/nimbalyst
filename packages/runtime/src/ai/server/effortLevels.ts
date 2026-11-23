@@ -57,12 +57,22 @@ const CODEX_EFFORT_CEILINGS: Readonly<Record<string, EffortLevel>> = {
  * sending a level codex will reject.
  */
 const CODEX_DEFAULT_EFFORT_CEILING: EffortLevel = 'xhigh';
+/** Antigravity Gemini models top out at xhigh (some models clamp lower via ACP configOptions). */
+const GEMINI_DEFAULT_EFFORT_CEILING: EffortLevel = 'xhigh';
+const GEMINI_HIGH_ONLY_MODELS = new Set([
+  'gemini-4-argon',
+  'gemini-3.8-flash',
+]);
 /** Claude's effort slider tops out at max; ultra is Codex-only. */
 const DEFAULT_EFFORT_CEILING: EffortLevel = 'max';
 
 function stripProviderPrefix(modelId: string): string {
   const separator = modelId.indexOf(':');
   return (separator === -1 ? modelId : modelId.slice(separator + 1)).trim().toLowerCase();
+}
+
+function stripEffortSuffix(bareModelId: string): string {
+  return bareModelId.replace(/-(?:low|medium|high|xhigh)$/, '');
 }
 
 /** Highest effort a Codex model accepts. Takes a bare or provider-prefixed id. */
@@ -75,7 +85,9 @@ export function resolveCodexEffortCeiling(modelId?: string): EffortLevel {
 
 /**
  * Highest effort a model accepts, across providers. Codex ids (prefixed or
- * bare) use the catalog ceilings; everything else is Claude, which stops at max.
+ * bare) use the catalog ceilings; Antigravity Gemini models cap at xhigh (or
+ * high for models that do not offer xhigh); everything else is Claude, which
+ * stops at max.
  */
 export function resolveEffortCeiling(modelId?: string): EffortLevel {
   if (!modelId) {
@@ -84,6 +96,10 @@ export function resolveEffortCeiling(modelId?: string): EffortLevel {
   const raw = stripProviderPrefix(modelId);
   if (modelId.toLowerCase().startsWith('openai-codex') || raw in CODEX_EFFORT_CEILINGS) {
     return resolveCodexEffortCeiling(modelId);
+  }
+  if (modelId.toLowerCase().startsWith('antigravity-gemini-agent:') || raw.startsWith('gemini-')) {
+    const base = stripEffortSuffix(raw);
+    return GEMINI_HIGH_ONLY_MODELS.has(base) ? 'high' : GEMINI_DEFAULT_EFFORT_CEILING;
   }
   return DEFAULT_EFFORT_CEILING;
 }

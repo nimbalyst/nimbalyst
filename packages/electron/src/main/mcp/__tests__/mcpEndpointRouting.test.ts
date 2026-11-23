@@ -6,6 +6,8 @@ import {
   selectFirstPartyToolsForEndpoint,
   selectExtensionToolsForEndpoint,
   applyCoreAlwaysLoadMeta,
+  parseToolAllowlist,
+  filterToolsByAllowlist,
 } from '../mcpEndpointRouting';
 import {
   MCP_CORE,
@@ -156,6 +158,18 @@ describe('mcpEndpointRouting', () => {
       ]) {
         expect(metaByName.get(deferred)).toBeUndefined();
       }
+    });
+
+    it('parses and applies the tools= allowlist', () => {
+      expect(parseToolAllowlist(undefined)).toBeUndefined();
+      expect(parseToolAllowlist('')).toBeUndefined();
+      expect(parseToolAllowlist(['a'])).toBeUndefined();
+      const allow = parseToolAllowlist('tracker_list, tracker_get,');
+      expect([...allow!]).toEqual(['tracker_list', 'tracker_get']);
+
+      const tools = ['tracker_list', 'tracker_create', 'tracker_get'].map((name) => ({ name }));
+      expect(filterToolsByAllowlist(tools, allow).map((t) => t.name)).toEqual(['tracker_list', 'tracker_get']);
+      expect(filterToolsByAllowlist(tools, undefined)).toBe(tools);
     });
 
     it('leaves non-core endpoints untouched', () => {

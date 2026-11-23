@@ -116,9 +116,21 @@ export class McpConfigService {
    * @returns Merged MCP server configuration object
    */
   async getMcpServersConfig(
-    options: { sessionId?: string; workspacePath?: string; profile?: 'standard' | 'meta-agent' }
+    options: {
+      sessionId?: string;
+      workspacePath?: string;
+      profile?: 'standard' | 'meta-agent';
+      /**
+       * Per-server tool allowlist (key = config key, e.g. `nimbalyst-host`).
+       * When set, only the listed Nimbalyst servers are passed, each with
+       * `&tools=a,b,c` so the server lists/serves just those tools. Servers
+       * not listed (other first-party ones, extensions) are omitted. User and
+       * workspace MCP servers are untouched.
+       */
+      toolAllowlist?: Record<string, readonly string[]>;
+    }
   ): Promise<Record<string, any>> {
-    const { sessionId, workspacePath, profile = 'standard' } = options;
+    const { sessionId, workspacePath, profile = 'standard', toolAllowlist } = options;
     const config: any = {};
     const isMetaAgent = profile === 'meta-agent';
 
@@ -141,8 +153,15 @@ export class McpConfigService {
       const wsParam = `workspacePath=${encodeURIComponent(workspacePath)}`;
       const sessParam = sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : '';
       const query = `?${wsParam}${sessParam}`;
-      const endpointUrl = (endpointPath: string) =>
-        `http://127.0.0.1:${port}${endpointPath}${query}`;
+      const endpointUrl = (endpointPath: string, key?: string) => {
+        const tools = key ? toolAllowlist?.[key] : undefined;
+        return (
+          `http://127.0.0.1:${port}${endpointPath}${query}` +
+          (tools ? `&tools=${encodeURIComponent(tools.join(','))}` : '')
+        );
+      };
+      // With an allowlist, only servers named in it are passed.
+      const allowed = (key: string) => !toolAllowlist || key in toolAllowlist;
 
       // nimbalyst (core) — universal agent↔host glue. Eagerness is per-TOOL,
       // not server-level: /mcp/core ListTools marks CORE_ALWAYS_LOAD_TOOLS with
@@ -157,14 +176,16 @@ export class McpConfigService {
       // its 300s non-stdio idle default. The keepalive in
       // interactivePromptKeepalive.ts is the primary defence; this is the belt
       // for clients that don't honour progress notifications.
-      config[MCP_CORE] = {
-        type: 'sse',
-        transport: 'sse',
-        url: endpointUrl('/mcp/core'),
-        tool_timeout_sec: INTERACTIVE_TOOL_TIMEOUT_SEC,
-        timeout: INTERACTIVE_TOOL_TIMEOUT_SEC * 1000,
-        ...(authHeaders ? { headers: { ...authHeaders } } : {}),
-      };
+      if (allowed(MCP_CORE)) {
+        config[MCP_CORE] = {
+          type: 'sse',
+          transport: 'sse',
+          url: endpointUrl('/mcp/core', MCP_CORE),
+          tool_timeout_sec: INTERACTIVE_TOOL_TIMEOUT_SEC,
+          timeout: INTERACTIVE_TOOL_TIMEOUT_SEC * 1000,
+          ...(authHeaders ? { headers: { ...authHeaders } } : {}),
+        };
+      }
 
       // nimbalyst-trackers (deferred) — tracker CRUD on `/mcp/trackers`. Per-
       // project opt-out: when the workspace's `trackers.enabled` is off the
@@ -180,11 +201,11 @@ export class McpConfigService {
           return false;
         }
       })();
-      if (!trackersKilled) {
+      if (!trackersKilled && allowed(MCP_TRACKERS)) {
         config[MCP_TRACKERS] = {
           type: 'sse',
           transport: 'sse',
-          url: endpointUrl('/mcp/trackers'),
+          url: endpointUrl('/mcp/trackers', MCP_TRACKERS),
           ...(authHeaders ? { headers: { ...authHeaders } } : {}),
         };
       }
@@ -205,14 +226,16 @@ export class McpConfigService {
         }
       })();
       const excludeSettings = isMetaAgent || settingsKilled;
-      config[MCP_HOST] = {
-        type: 'sse',
-        transport: 'sse',
-        url:
-          endpointUrl('/mcp/host') +
-          (excludeSettings ? '&hostExcludeSettings=1' : ''),
-        ...(authHeaders ? { headers: { ...authHeaders } } : {}),
-      };
+      if (allowed(MCP_HOST)) {
+        config[MCP_HOST] = {
+          type: 'sse',
+          transport: 'sse',
+          url:
+            endpointUrl('/mcp/host', MCP_HOST) +
+            (excludeSettings ? '&hostExcludeSettings=1' : ''),
+          ...(authHeaders ? { headers: { ...authHeaders } } : {}),
+        };
+      }
 
       // nimbalyst-situational (deferred) — voice + collab-doc + feedback tools on
       // `/mcp/situational` (MCP consolidation Phase 6). Deferred, so it never
@@ -220,14 +243,17 @@ export class McpConfigService {
       // calls for them (voice mode, an open collab doc, filing feedback) and
       // ToolSearch surfaces them on intent. Replaces the situational slice of the
       // retired legacy monolith.
-      config[MCP_SITUATIONAL] = {
-        type: 'sse',
-        transport: 'sse',
-        url: endpointUrl('/mcp/situational'),
-        ...(authHeaders ? { headers: { ...authHeaders } } : {}),
-      };
+      if (allowed(MCP_SITUATIONAL)) {
+        config[MCP_SITUATIONAL] = {
+          type: 'sse',
+          transport: 'sse',
+          url: endpointUrl('/mcp/situational', MCP_SITUATIONAL),
+          ...(authHeaders ? { headers: { ...authHeaders } } : {}),
+        };
+      }
 
-      if (this.deps.extensionMcpServerNamesLoader) {
+      // Extension servers have no allowlist key, so an allowlist drops them.
+      if (!toolAllowlist && this.deps.extensionMcpServerNamesLoader) {
         let extensionShortNames: string[] = [];
         try {
           extensionShortNames =
@@ -255,7 +281,7 @@ export class McpConfigService {
     // connects to the unified endpoints now.
 
     // Include extension dev MCP server if it's started (provides build, install, reload tools)
-    if (!isMetaAgent && this.deps.extensionDevServerPort !== null) {
+    if (!isMetaAgent && !toolAllowlist && this.deps.extensionDevServerPort !== null) {
       const params = workspacePath ? `?workspacePath=${encodeURIComponent(workspacePath)}` : '';
       config['nimbalyst-extension-dev'] = {
         type: 'sse',

@@ -36,7 +36,8 @@ it.each([undefined, '/fixture/bin'])('does not mistake inherited API keys for CL
   await refreshHeadlessAgentAvailability(enhancedPath);
   expect(getCachedHeadlessAgentAvailability('cursor-agent').signedIn).toBe(false);
   expect(getCachedHeadlessAgentAvailability('grok-build').signedIn).toBe(false);
-  expect(environments).toHaveLength(2);
+  expect(getCachedHeadlessAgentAvailability('antigravity-gemini-agent').signedIn).toBe(false);
+  expect(environments).toHaveLength(3);
   for (const env of environments) {
     expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(env.HOME).toBe(process.env.HOME);
@@ -135,30 +136,36 @@ describe('resolveProviderEnabled for detected-default providers', () => {
     expect(resolveProviderEnabled('opencode', undefined)).toBe(false);
   });
 
-  describe('gemini, whose sign-in cannot be probed', () => {
-    const APP = '/Applications/Antigravity.app/Contents/Resources/bin/language_server';
+  describe('gemini (agy CLI)', () => {
+    const AGY = '/Users/fixture/.local/bin/agy';
 
-    it('reports signed in on presence alone', () => {
-      // Not an assumption that the user IS signed in — a statement about what
-      // is knowable. Antigravity's credential lives in the macOS keychain, so
-      // the alternatives are a keychain prompt or spawning a ~120MB language
-      // server on every model-list read. A signed-out user gets one clear
-      // error on their first turn instead.
-      expect(decideAvailability('antigravity-gemini-agent', { executablePath: APP }))
-        .toEqual({ installed: true, signedIn: true, executablePath: APP });
+    it('reports installed and signed in when agy models succeeds', () => {
+      expect(decideAvailability('antigravity-gemini-agent', {
+        executablePath: AGY,
+        authOutput: 'gemini-4-neon-high\tGemini 4 Neon (High)\n',
+      })).toEqual({ installed: true, signedIn: true, executablePath: AGY });
     });
 
-    it('is unavailable when Antigravity is not installed', () => {
+    it('reports signed out when agy models prints an auth error or fails', () => {
+      expect(decideAvailability('antigravity-gemini-agent', {
+        executablePath: AGY,
+        authOutput: 'Not logged in. Run `agy acp --login`.',
+      })).toEqual({ installed: true, signedIn: false, executablePath: AGY });
+
+      expect(decideAvailability('antigravity-gemini-agent', {
+        executablePath: AGY,
+        authFailed: true,
+      })).toEqual({ installed: true, signedIn: false, executablePath: AGY });
+    });
+
+    it('is unavailable when agy is not installed', () => {
       expect(decideAvailability('antigravity-gemini-agent', {}))
         .toEqual({ installed: false, signedIn: false });
     });
 
     it('still lets an explicit choice win on every launch', () => {
-      // The same second-launch property as the CLI agents. Detection here is
-      // even more eager (presence alone), so it matters more that it can never
-      // overwrite a user who turned Gemini off.
       __resetHeadlessAgentAvailabilityForTests({
-        'antigravity-gemini-agent': { installed: true, signedIn: true, executablePath: APP },
+        'antigravity-gemini-agent': { installed: true, signedIn: true, executablePath: AGY },
       });
       expect(resolveProviderEnabled('antigravity-gemini-agent', undefined)).toBe(true);
       for (const launch of [1, 2, 3]) {

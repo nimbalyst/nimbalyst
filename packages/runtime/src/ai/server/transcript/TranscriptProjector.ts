@@ -218,14 +218,23 @@ function coalesceAdjacentAssistantMessages(
       previous.type === 'assistant_message' &&
       message.type === 'assistant_message' &&
       previous.subagentId === message.subagentId &&
-      previous.mode === message.mode &&
-      // Don't fuse a thinking-only message into a regular text message --
-      // the renderer needs them as distinct UI blocks.
-      previous.thinking === undefined &&
-      message.thinking === undefined
+      previous.mode === message.mode
     ) {
-      previous.text = `${previous.text ?? ''}${message.text ?? ''}`;
-      continue;
+      if (previous.thinking === undefined && message.thinking === undefined) {
+        previous.text = `${previous.text ?? ''}${message.text ?? ''}`;
+        continue;
+      }
+      if (
+        !previous.text &&
+        !message.text &&
+        previous.thinking !== undefined &&
+        message.thinking !== undefined &&
+        !previous.progressUpdate &&
+        !message.progressUpdate
+      ) {
+        previous.thinking = `${previous.thinking}${message.thinking}`;
+        continue;
+      }
     }
 
     coalesced.push(message);

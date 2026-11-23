@@ -367,9 +367,10 @@ export function providerPayloadSlots(chunk: unknown, source: string): PayloadSlo
     collectCodexSlots(chunk, out);
     collectHeadlessAgentSlots(chunk, out);
   } else if (source.startsWith('antigravity-gemini-agent') || source.startsWith('gemini-antigravity')) {
-    // Both spellings: the second is what rows written while Gemini shipped as
-    // an extension carry (`gemini-antigravity/antigravity-server`).
+    // Handles both legacy Connect-RPC tool rows (`{name, args, result}`) and
+    // ACP `session/update` tool_call_update rows (`update.rawOutput`).
     collectGeminiSlots(chunk, out);
+    collectCodexSlots(chunk, out);
   }
 
   return out;

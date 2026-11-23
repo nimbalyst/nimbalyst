@@ -121,6 +121,24 @@ export function applyCoreAlwaysLoadMeta<T extends NamedToolSchema>(
   );
 }
 
+/**
+ * Parse the `tools=a,b,c` endpoint query into an allowlist. Absent or empty
+ * means "no restriction" so existing clients keep their full surface.
+ */
+export function parseToolAllowlist(raw: unknown): ReadonlySet<string> | undefined {
+  if (typeof raw !== "string") return undefined;
+  const names = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return names.length > 0 ? new Set(names) : undefined;
+}
+
+/** Keep only allowlisted tools; no allowlist keeps everything. */
+export function filterToolsByAllowlist<T extends NamedToolSchema>(
+  tools: T[],
+  allowlist: ReadonlySet<string> | undefined,
+): T[] {
+  return allowlist ? tools.filter((tool) => allowlist.has(tool.name)) : tools;
+}
+
 interface ExtensionScopedTool {
   extensionId: string;
 }

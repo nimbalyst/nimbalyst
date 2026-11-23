@@ -305,6 +305,12 @@ export function supportsEffortLevel(modelId?: string): boolean {
   const parsed = ModelIdentifier.tryParse(modelId);
   if (parsed?.provider === 'openai-codex' || parsed?.provider === 'openai-codex-acp') return true;
   if (modelId.startsWith('openai-codex:') || modelId.startsWith('openai-codex-acp:')) return true;
+  // Antigravity Gemini models support reasoning effort via ACP thought_level
+  // (excluding orchestrator aliases which have fixed depth).
+  if (parsed?.provider === 'antigravity-gemini-agent' || modelId.startsWith('antigravity-gemini-agent:')) {
+    const bare = (parsed ? parsed.model : modelId.slice('antigravity-gemini-agent:'.length)).toLowerCase();
+    return !bare.includes('orchestrator');
+  }
   return false;
 }
 

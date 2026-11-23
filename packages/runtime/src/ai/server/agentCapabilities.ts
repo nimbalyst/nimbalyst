@@ -178,17 +178,13 @@ export const BUILTIN_AGENT_CAPABILITIES: Readonly<Record<AIProviderType, AgentCa
     contextReporting: 'token-counts',
   },
 
-  // Antigravity's `GetModelResponse` returns `{ response }` and nothing else --
-  // no input/output counts, no context fill, no denominator. Measured against
-  // the live server, not inferred from a manifest. The account-level quota RPC
-  // reports a remaining *fraction* per model, which is a rate-limit signal
-  // rather than a context measurement, so it belongs in the usage chip and not
-  // here. There is likewise no command catalog and no compaction call.
+  // Antigravity CLI (`agy acp`) emits `usage_update` with both `used` and
+  // `size` (e.g. 1,048,576) plus per-turn token counts on PromptResponse.usage.
   'antigravity-gemini-agent': {
     slashCommands: false,
     skills: false,
     compaction: 'unsupported',
-    contextReporting: 'none',
+    contextReporting: 'context-window',
   },
 });
 

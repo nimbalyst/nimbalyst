@@ -133,6 +133,8 @@ import {
   selectFirstPartyToolsForEndpoint,
   selectExtensionToolsForEndpoint,
   applyCoreAlwaysLoadMeta,
+  parseToolAllowlist,
+  filterToolsByAllowlist,
 } from "./mcpEndpointRouting";
 
 // Re-export functions that don't need transport state
@@ -403,7 +405,10 @@ function createSharedMcpServer(
   // (set for the meta-agent profile and when the settings kill-switch is on)
   // while still serving session-context + meta-agent. Session-context and
   // meta-agent are unaffected.
-  excludeHostSettings: boolean = false
+  excludeHostSettings: boolean = false,
+  // `tools=a,b,c` query: ListTools serves only these and CallTool rejects the
+  // rest. Used by providers whose harness has a tool-schema budget (agy).
+  toolAllowlist?: ReadonlySet<string>
 ): Server {
   // Name the server after the endpoint it serves so multi-endpoint logs are
   // distinguishable. The SDK namespaces tools by the client's config-key, not
@@ -456,7 +461,9 @@ function createSharedMcpServer(
         description: tool.description,
         inputSchema: tool.inputSchema,
       }));
-      return { tools: dedupeAndWarn(allTools, serverName) };
+      return {
+        tools: filterToolsByAllowlist(dedupeAndWarn(allTools, serverName), toolAllowlist),
+      };
     }
 
     // update_session_meta carries a dynamic description (workspace tag list);
@@ -504,7 +511,9 @@ function createSharedMcpServer(
       allTools = [];
     }
 
-    return { tools: dedupeAndWarn(allTools, serverName) };
+    return {
+      tools: filterToolsByAllowlist(dedupeAndWarn(allTools, serverName), toolAllowlist),
+    };
   });
 
   // Register tool execution handler. Tracker schema lookups are process-global
@@ -521,6 +530,13 @@ function createSharedMcpServer(
 
     // Strip MCP server prefix if present
     const toolName = name.replace(/^mcp__nimbalyst__/, "");
+
+    if (toolAllowlist && !toolAllowlist.has(toolName)) {
+      return {
+        content: [{ type: "text", text: `Tool not available in this session: ${toolName}` }],
+        isError: true,
+      };
+    }
 
     try {
       switch (toolName) {
@@ -985,7 +1001,8 @@ async function tryCreateServer(port: number): Promise<any> {
             workspacePath,
             sessionId,
             mcpEndpoint ?? { kind: "legacy" },
-            parsedUrl.query.hostExcludeSettings === "1"
+            parsedUrl.query.hostExcludeSettings === "1",
+            parseToolAllowlist(parsedUrl.query.tools)
           );
 
           // Create SSE transport. The message path must match this endpoint so
@@ -1134,7 +1151,8 @@ async function tryCreateServer(port: number): Promise<any> {
               workspacePath,
               nimbalystSessionId,
               mcpEndpoint ?? { kind: "legacy" },
-              parsedUrl.query.hostExcludeSettings === "1"
+              parsedUrl.query.hostExcludeSettings === "1",
+              parseToolAllowlist(parsedUrl.query.tools)
             );
             if (workspacePath) {
               if (!serversByWorkspace.has(workspacePath)) {

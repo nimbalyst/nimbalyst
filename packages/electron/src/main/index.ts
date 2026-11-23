@@ -246,7 +246,6 @@ import {configureCodexShellTracking} from './services/ai/codexShellTrackingHost'
 import {configureClaudeShellTracking, registerClaudeShellSession, releaseClaudeShellSession} from './services/ai/claudeShellTrackingHost';
 import {setShellWindowLifecycle} from './services/ai/HooklessAgentFileWatcher';
 import { createGrokAskUserQuestionHandler } from './services/ai/grokAskUserQuestionHandler';
-import { executeGeminiTool } from './services/ai/geminiToolExecutor';
 import { sessionFileTracker } from './services/SessionFileTracker';
 import {
   refreshHeadlessAgentAvailability,
@@ -2110,6 +2109,9 @@ app.whenReady().then(async () => {
     GrokBuildProvider.setMCPConfigLoader(
         (workspacePath?: string) => loadEnabledMcpServersFor(MCP_PROVIDER_IDS.GROK, 'Grok', workspacePath),
     );
+    GeminiAntigravityProvider.setMCPConfigLoader(
+        (workspacePath?: string) => loadEnabledMcpServersFor(MCP_PROVIDER_IDS.GEMINI, 'Gemini', workspacePath),
+    );
     CursorAgentProvider.setMCPConfigLoader(
         (workspacePath?: string) => syncHeadlessAgentMcpConfig('cursor-agent', MCP_PROVIDER_IDS.CURSOR, 'Cursor', workspacePath),
     );
@@ -2188,6 +2190,10 @@ app.whenReady().then(async () => {
         const settingsManager = ClaudeSettingsManager.getInstance();
         return settingsManager.getUserLevelEnv();
     });
+    GeminiAntigravityProvider.setClaudeSettingsEnvLoader(async () => {
+        const settingsManager = ClaudeSettingsManager.getInstance();
+        return settingsManager.getUserLevelEnv();
+    });
 
     // Inject shell environment loader to pass the user's full login shell env vars
     // (AWS credentials, NODE_EXTRA_CA_CERTS, etc.) to the Claude Code subprocess.
@@ -2199,6 +2205,7 @@ app.whenReady().then(async () => {
     CopilotCLIProvider.setShellEnvironmentLoader(() => getShellEnvironment());
     GrokBuildProvider.setShellEnvironmentLoader(() => getShellEnvironment());
     CursorAgentProvider.setShellEnvironmentLoader(() => getShellEnvironment());
+    GeminiAntigravityProvider.setShellEnvironmentLoader(() => getShellEnvironment());
 
     // Inject enhanced PATH loader so agents can access system tools
     // (docker, homebrew, nvm, etc.) that are missing from Electron's GUI PATH.
@@ -2212,31 +2219,7 @@ app.whenReady().then(async () => {
     CopilotCLIProvider.setEnhancedPathLoader(() => getEnhancedPath());
     GrokBuildProvider.setEnhancedPathLoader(() => getEnhancedPath());
     CursorAgentProvider.setEnhancedPathLoader(() => getEnhancedPath());
-
-    // Gemini executes its tools in this process. The provider ships in the
-    // runtime package, which cannot import from main, so the executor is
-    // injected rather than imported.
-    GeminiAntigravityProvider.setToolExecutor(executeGeminiTool);
-    // The Antigravity language server enforces a supported-build floor against
-    // --override_ide_version and rejects anything below it. Reading the value
-    // from settings means a user hit by a vendor-side bump can raise it without
-    // waiting for a Nimbalyst release; the baked-in default is what works today.
-    GeminiAntigravityProvider.setServerConfigLoader(() => {
-      const settings = (getAiSettingsStore().get('providerSettings', {}) as Record<string, {
-        overrideIdeVersion?: unknown;
-        spawnPortCandidates?: unknown;
-      }>)['antigravity-gemini-agent'] ?? {};
-      return {
-        overrideIdeVersion: typeof settings.overrideIdeVersion === 'string'
-          ? settings.overrideIdeVersion
-          : undefined,
-        spawnPortCandidates: Array.isArray(settings.spawnPortCandidates)
-          ? settings.spawnPortCandidates.filter(
-            (port): port is number => typeof port === 'number' && Number.isFinite(port) && port > 0,
-          )
-          : undefined,
-      };
-    });
+    GeminiAntigravityProvider.setEnhancedPathLoader(() => getEnhancedPath());
 
     // Grok, Cursor and Gemini default to on when their tool is present and
     // usable. Deliberately fire-and-forget: subprocess spawns must not sit on
@@ -2498,6 +2481,7 @@ app.whenReady().then(async () => {
       OpenAICodexACPProvider.setSecurityLogger(securityLogger);
       GrokBuildProvider.setSecurityLogger(securityLogger);
       CursorAgentProvider.setSecurityLogger(securityLogger);
+      GeminiAntigravityProvider.setSecurityLogger(securityLogger);
     }
 
     ClaudeCodeProvider.setClaudeSettingsPatternSaver(patternSaver);
@@ -2526,6 +2510,10 @@ app.whenReady().then(async () => {
     GrokBuildProvider.setPermissionPatternChecker(patternChecker);
     GrokBuildProvider.setTrustChecker(trustChecker);
 
+    GeminiAntigravityProvider.setPermissionPatternSaver(patternSaver);
+    GeminiAntigravityProvider.setPermissionPatternChecker(patternChecker);
+    GeminiAntigravityProvider.setTrustChecker(trustChecker);
+
     // Grok's native `ask_user_question` tool reaches the user through the
     // ordinary AskUserQuestion widget. Without a handler the ACP request
     // returns `cancelled` and Grok answers itself, which is the bug that
@@ -2536,64 +2524,68 @@ app.whenReady().then(async () => {
     // ACP transport uses the same trust check plus per-tool permission events.
     CursorAgentProvider.setTrustChecker(trustChecker);
 
-    // ACP exposes pre/post file-write hooks. Wire them so Codex ACP edits
-    // produce the same FilesEditedSidebar entries and pre-edit baselines as
-    // Claude Code edits, even when Codex routes the write through
+    // ACP exposes pre/post file-write hooks. Wire them so Codex ACP and Gemini
+    // ACP edits produce the same FilesEditedSidebar entries and pre-edit
+    // baselines as Claude Code edits, even when the agent routes writes through
     // fs/write_text_file (which doesn't always emit a session/tool_call).
-    OpenAICodexACPProvider.setOnBeforeFileWrite(async (filePath, sessionId) => {
-      if (!sessionId) return;
-      try {
-        const session = await AISessionsRepository.get(sessionId);
-        const workspacePath = session?.workspacePath;
-        if (!workspacePath) return;
+    const createAcpBeforeFileWriteHook = (label: string, idPrefix: string) =>
+      async (filePath: string, sessionId: string | undefined) => {
+        if (!sessionId) return;
+        try {
+          const session = await AISessionsRepository.get(sessionId);
+          const workspacePath = session?.workspacePath;
+          if (!workspacePath) return;
 
-        const beforeContent = (await readFileContentOrNull(filePath)) ?? '';
-        const toolUseId = `codex-acp-write-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const tagId = `ai-edit-pending-${sessionId}-${toolUseId}`;
+          const beforeContent = (await readFileContentOrNull(filePath)) ?? '';
+          const toolUseId = `${idPrefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const tagId = `ai-edit-pending-${sessionId}-${toolUseId}`;
 
-        await historyManager.createTag(
-          workspacePath,
-          filePath,
-          tagId,
-          beforeContent,
-          sessionId,
-          toolUseId,
-        );
+          await historyManager.createTag(
+            workspacePath,
+            filePath,
+            tagId,
+            beforeContent,
+            sessionId,
+            toolUseId,
+          );
 
-        await sessionFileTracker.trackToolExecution(
-          sessionId,
-          workspacePath,
-          'Write',
-          { path: filePath },
-          undefined,
-          toolUseId,
-          findWindowByWorkspace(workspacePath),
-        );
-      } catch (error) {
-        const errorStr = String(error);
-        if (!errorStr.includes('unique') && !errorStr.includes('UNIQUE') && !errorStr.includes('duplicate')) {
-          logger.ai.error('[CodexACP] onBeforeFileWrite hook failed:', error);
+          await sessionFileTracker.trackToolExecution(
+            sessionId,
+            workspacePath,
+            'Write',
+            { path: filePath },
+            undefined,
+            toolUseId,
+            findWindowByWorkspace(workspacePath),
+          );
+        } catch (error) {
+          const errorStr = String(error);
+          if (!errorStr.includes('unique') && !errorStr.includes('UNIQUE') && !errorStr.includes('duplicate')) {
+            logger.ai.error(`[${label}] onBeforeFileWrite hook failed:`, error);
+          }
         }
-      }
-    });
+      };
 
-    OpenAICodexACPProvider.setOnTurnFilesEdited(async (filePaths, sessionId) => {
-      if (!sessionId || filePaths.size === 0) return;
-      try {
-        const session = await AISessionsRepository.get(sessionId);
-        const workspacePath = session?.workspacePath;
-        if (!workspacePath) return;
-        // The turn-end snapshot pass is handled by the watcher pipeline; the
-        // hook just emits a renderer notification so the FilesEditedSidebar
-        // refreshes after a multi-file turn completes.
-        const window = findWindowByWorkspace(workspacePath);
-        if (window && !window.isDestroyed()) {
-          window.webContents.send('session-files:updated', sessionId);
+    const createAcpTurnFilesEditedHook = (label: string) =>
+      async (filePaths: Set<string>, sessionId: string | undefined) => {
+        if (!sessionId || filePaths.size === 0) return;
+        try {
+          const session = await AISessionsRepository.get(sessionId);
+          const workspacePath = session?.workspacePath;
+          if (!workspacePath) return;
+          const window = findWindowByWorkspace(workspacePath);
+          if (window && !window.isDestroyed()) {
+            window.webContents.send('session-files:updated', sessionId);
+          }
+        } catch (error) {
+          logger.ai.error(`[${label}] onTurnFilesEdited hook failed:`, error);
         }
-      } catch (error) {
-        logger.ai.error('[CodexACP] onTurnFilesEdited hook failed:', error);
-      }
-    });
+      };
+
+    OpenAICodexACPProvider.setOnBeforeFileWrite(createAcpBeforeFileWriteHook('CodexACP', 'codex-acp-write'));
+    OpenAICodexACPProvider.setOnTurnFilesEdited(createAcpTurnFilesEditedHook('CodexACP'));
+    GeminiAntigravityProvider.setOnBeforeFileWrite(createAcpBeforeFileWriteHook('GeminiACP', 'gemini-acp-write'));
+    GeminiAntigravityProvider.setOnTurnFilesEdited(createAcpTurnFilesEditedHook('GeminiACP'));
 
     // Inject image compressor
     // Compresses images to fit within Claude API 5MB base64 limit

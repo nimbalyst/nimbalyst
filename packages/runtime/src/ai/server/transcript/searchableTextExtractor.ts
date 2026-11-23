@@ -389,6 +389,41 @@ function extractGeminiOutput(
   if (metadata?.role === 'tool') {
     return { searchableText: null, messageKind: 'tool' };
   }
+  if (metadata?.role !== 'assistant') {
+    const parsed = safeJsonParse(content);
+    if (parsed && typeof parsed === 'object') {
+      const env = parsed as {
+        type?: unknown;
+        update?: {
+          sessionUpdate?: unknown;
+          content?: { type?: unknown; text?: unknown; uri?: unknown };
+        };
+      };
+      if (env.type === 'session/request_permission' || env.type === 'session/request_permission_preview') {
+        return { searchableText: null, messageKind: 'tool' };
+      }
+      if (env.type === 'nimbalyst_tool_use' || env.type === 'nimbalyst_tool_result') {
+        return { searchableText: null, messageKind: 'tool' };
+      }
+      if (env.type === 'session/update' && env.update && typeof env.update === 'object') {
+        const kind = env.update.sessionUpdate;
+        if (kind === 'agent_message_chunk') {
+          const c = env.update.content;
+          const text = c?.type === 'text' && typeof c.text === 'string'
+            ? c.text
+            : (c?.type === 'resource_link' && typeof c.uri === 'string' ? c.uri : null);
+          return { searchableText: nonEmpty(text), messageKind: 'assistant' };
+        }
+        if (kind === 'agent_thought_chunk') {
+          return { searchableText: null, messageKind: 'assistant' };
+        }
+        if (kind === 'tool_call' || kind === 'tool_call_update') {
+          return { searchableText: null, messageKind: 'tool' };
+        }
+        return { searchableText: null, messageKind: 'meta' };
+      }
+    }
+  }
   const trimmed = content.trim();
   if (trimmed.length === 0) return { searchableText: null, messageKind: 'meta' };
   return { searchableText: nonEmpty(content), messageKind: 'assistant' };

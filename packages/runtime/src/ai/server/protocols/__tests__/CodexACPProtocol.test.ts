@@ -11,6 +11,10 @@ function fixturePath(): string {
   return fileURLToPath(new URL('./fixtures/mockCodexAcpAgent.mjs', import.meta.url));
 }
 
+function agyFixturePath(): string {
+  return fileURLToPath(new URL('./fixtures/mockAgyAcpAgent.mjs', import.meta.url));
+}
+
 function auditRows(auditPath: string): Array<{ method: string; params: Record<string, string | null> }> {
   return fs.readFileSync(auditPath, 'utf8')
     .split('\n')
@@ -180,6 +184,69 @@ describe('CodexACPProtocol', () => {
       protocol.destroy();
     }
   });
+
+  it('supports generalized platform, custom permission modes, apiKeyEnvVar: null, and model/effort configOptions', async () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-acp-protocol-'));
+    const auditPath = path.join(workspacePath, 'audit.ndjson');
+    const protocol = new CodexACPProtocol('should-not-be-injected', {
+      platform: 'antigravity-gemini-acp',
+      agentLabel: 'Antigravity ACP',
+      logPrefix: 'GeminiACPProtocol',
+      apiKeyEnvVar: null,
+      command: process.execPath,
+      args: [agyFixturePath()],
+      env: { AGY_ACP_TEST_AUDIT_PATH: auditPath },
+      mapPermissionMode: (mode) => (mode === 'bypass-all' ? 'auto' : mode === 'allow-all' ? 'accept-edits' : 'default'),
+      applyModel: true,
+    });
+
+    try {
+      expect(protocol.platform).toBe('antigravity-gemini-acp');
+
+      // Request gemini-4-argon with effort 'xhigh' -- argon only offers low/medium/high,
+      // so the protocol must clamp to 'high' without failing on -32602.
+      const session = await protocol.createSession({
+        workspacePath,
+        model: 'gemini-4-argon',
+        permissionMode: 'allow-all',
+        raw: { effortLevel: 'xhigh' },
+      });
+
+      expect(session.platform).toBe('antigravity-gemini-acp');
+      expect(session.appliedModel).toBe('gemini-4-argon-high');
+
+      const events: any[] = [];
+      for await (const event of protocol.sendMessage(session, { content: 'check lts' })) {
+        events.push(event);
+      }
+
+      expect(events.some((e) => e.type === 'reasoning' && e.content === 'First I will search ')).toBe(true);
+      expect(events.some((e) => e.type === 'tool_call' && e.toolCall?.name === 'WebSearch')).toBe(true);
+      const text = events.filter((e) => e.type === 'text').map((e) => e.content).join('');
+      expect(text).toBe('Answer from gemini-4-argon (high): Node.js 24 LTS.');
+
+      const complete = events.find((e) => e.type === 'complete');
+      expect(complete?.contextFillTokens).toBe(12500);
+      expect(complete?.contextWindow).toBe(1048576);
+      expect(complete?.usage).toMatchObject({
+        input_tokens: 12000,
+        output_tokens: 500,
+        cache_read_input_tokens: 1000,
+      });
+
+      const rows = auditRows(auditPath);
+      expect(rows.find((r) => r.method === 'process:env')?.params).toEqual({
+        OPENAI_API_KEY: null,
+        ANTHROPIC_API_KEY: null,
+        GEMINI_API_KEY: null,
+      });
+      expect(rows.some((r) => r.method === 'session/set_config_option' && r.params.configId === 'mode' && r.params.value === 'accept-edits')).toBe(true);
+      expect(rows.some((r) => r.method === 'session/set_config_option' && r.params.configId === 'model' && r.params.value === 'gemini-4-argon')).toBe(true);
+    } finally {
+      protocol.destroy();
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+    }
+  }, 15000);
 });
 
 describe('appendBoundedTail', () => {

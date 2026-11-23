@@ -34,7 +34,6 @@ import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { AntigravityServerManager } from '@nimbalyst/runtime/ai/server/providers/geminiAntigravity/AntigravityServerManager';
 import { scrubProviderApiKeys } from '@nimbalyst/runtime/ai/server/providerApiKeyScrub';
 
 export type HeadlessAgentId = 'grok-build' | 'cursor-agent' | 'antigravity-gemini-agent';
@@ -46,6 +45,8 @@ interface CliProbeSpec {
   kind: 'cli';
   executableName: string;
   homeRelativeInstallPaths: readonly string[];
+  /** Optional platform-specific absolute install paths checked before PATH. */
+  extraInstallPaths?: () => readonly string[];
   /** Argv for a cheap command that fails, or says so, when signed out. */
   authArgs: readonly string[];
   /**
@@ -61,17 +62,7 @@ interface CliProbeSpec {
   looksSignedOut: RegExp;
 }
 
-/**
- * A vendor application at a fixed absolute path, with no probeable sign-in.
- * Presence of the binary is the whole signal. See the module header.
- */
-interface VendorAppProbeSpec {
-  kind: 'vendor-app';
-  /** Candidate absolute paths, resolved per platform at probe time. */
-  resolvePath: () => string;
-}
-
-type AgentProbeSpec = CliProbeSpec | VendorAppProbeSpec;
+type AgentProbeSpec = CliProbeSpec;
 
 const PROBE_SPECS: Readonly<Record<HeadlessAgentId, AgentProbeSpec>> = Object.freeze({
   'grok-build': {
@@ -89,8 +80,18 @@ const PROBE_SPECS: Readonly<Record<HeadlessAgentId, AgentProbeSpec>> = Object.fr
     looksSignedOut: /not logged in|unauthorized|please (?:sign|log) in/i,
   },
   'antigravity-gemini-agent': {
-    kind: 'vendor-app' as const,
-    resolvePath: () => AntigravityServerManager.binaryPath(),
+    kind: 'cli' as const,
+    executableName: 'agy',
+    homeRelativeInstallPaths: ['.agy/bin/agy', '.local/bin/agy'],
+    extraInstallPaths: () => {
+      if (process.platform === 'win32') {
+        const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+        return [path.join(localAppData, 'agy', 'bin', 'agy.exe')];
+      }
+      return ['/opt/homebrew/bin/agy', '/usr/local/bin/agy'];
+    },
+    authArgs: ['models'],
+    looksSignedOut: /not authenticated|not logged in|not signed in|unauthenticated|unauthorized|login required|please (?:sign|log) in/i,
   },
 });
 
@@ -116,12 +117,6 @@ export function decideAvailability(
     return { installed: false, signedIn: false };
   }
   const spec = PROBE_SPECS[agent];
-  if (spec.kind === 'vendor-app') {
-    // Presence is the only signal available without a keychain prompt or a
-    // server spawn. Reporting `signedIn: true` here is a statement about what
-    // can be known, not a claim to have checked.
-    return { installed: true, signedIn: true, executablePath: facts.executablePath };
-  }
   if (facts.authFailed) {
     // The CLI is there but would not run. Treat as unusable rather than
     // guessing; a provider that errors on first use is worse than one absent.
@@ -136,22 +131,29 @@ export function decideAvailability(
 }
 
 function findExecutable(spec: AgentProbeSpec, pathValue: string | undefined): string | undefined {
-  if (spec.kind === 'vendor-app') {
-    try {
-      const resolved = spec.resolvePath();
-      return fs.existsSync(resolved) ? resolved : undefined;
-    } catch {
-      return undefined;
-    }
-  }
   const home = os.homedir();
+  const exeName = process.platform === 'win32' && !spec.executableName.endsWith('.exe')
+    ? `${spec.executableName}.exe`
+    : spec.executableName;
   const candidates: string[] = [];
+  if (spec.extraInstallPaths) {
+    candidates.push(...spec.extraInstallPaths());
+  }
   for (const relative of spec.homeRelativeInstallPaths) {
-    candidates.push(path.join(home, ...relative.split('/')));
+    const joined = path.join(home, ...relative.split('/'));
+    candidates.push(joined);
+    if (process.platform === 'win32' && !joined.endsWith('.exe')) {
+      candidates.push(`${joined}.exe`);
+    }
   }
   for (const entry of (pathValue ?? '').split(path.delimiter)) {
     const trimmed = entry.trim().replace(/^"(.*)"$/, '$1');
-    if (trimmed) candidates.push(path.join(trimmed, spec.executableName));
+    if (trimmed) {
+      candidates.push(path.join(trimmed, exeName));
+      if (exeName !== spec.executableName) {
+        candidates.push(path.join(trimmed, spec.executableName));
+      }
+    }
   }
   for (const candidate of candidates) {
     try {
@@ -246,10 +248,6 @@ export function refreshHeadlessAgentAvailability(
       const executablePath = findExecutable(spec, enhancedPath || process.env.PATH);
       if (!executablePath) {
         next[agent] = decideAvailability(agent, {});
-        return;
-      }
-      if (spec.kind === 'vendor-app') {
-        next[agent] = decideAvailability(agent, { executablePath });
         return;
       }
       try {

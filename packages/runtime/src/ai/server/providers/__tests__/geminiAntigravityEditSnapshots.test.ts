@@ -1,204 +1,82 @@
 // @vitest-environment node
 /**
- * Guards the file-tracking half of the Gemini provider.
+ * Guards the file-tracking half of the Gemini ACP provider.
  *
- * The failure this exists to catch is silent by construction: if the provider
- * stops emitting `pre_edit_snapshot` / `post_edit_snapshot`, the agent still
- * edits files correctly, the transcript still looks right, and only the Files
- * Edited sidebar and the diff view go empty — with no error logged anywhere.
- * That exact bug shipped in the first draft of `CursorAgentProvider`. There is
- * no runtime signal for it, so this test is the signal.
- *
- * The declared fidelity is asserted alongside, because the two are one
- * decision: `'structured'` switches the filesystem watcher OFF, and Gemini has
- * no delete or move tool, so a future change to `'structured'` here would make
- * every `rm` inside `run_command` invisible. See `providerFileTracking.ts`.
+ * Gemini now runs over `agy acp` via the shared `CodexACPProtocol`, so file
+ * tracking uses the ACP `onBeforeFileWrite` / `onTurnFilesEdited` hooks plus
+ * `PROVIDER_EDIT_TOOL_NAMES` pre-edit baselines, while keeping the watcher on
+ * (`'tool-args'`) so shell-driven deletes and renames stay visible.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  GeminiAntigravityProvider,
-  type GeminiToolExecutorArgs,
-} from '../GeminiAntigravityProvider';
-import { AntigravityServerManager } from '../geminiAntigravity/AntigravityServerManager';
+import { CodexACPProtocol } from '../../protocols/CodexACPProtocol';
 import {
   BUILTIN_FILE_CHANGE_FIDELITY,
   PROVIDER_EDIT_TOOL_NAMES,
   attributionModeForFileChangeFidelity,
 } from '../../providerFileTracking';
-import type { StreamChunk } from '../../types';
 
-async function collect(stream: AsyncIterableIterator<StreamChunk>): Promise<StreamChunk[]> {
-  const out: StreamChunk[] = [];
-  for await (const chunk of stream) out.push(chunk);
-  return out;
+function codexFixturePath(): string {
+  return fileURLToPath(new URL('../../protocols/__tests__/fixtures/mockCodexAcpAgent.mjs', import.meta.url));
 }
-
-const WRITE_TOOL = [{ type: 'function' as const, function: { name: 'write_file' } }];
 
 describe('gemini file-tracking declaration', () => {
   it('declares tool-args so the watcher keeps attributing shell-driven changes', () => {
-    // Gemini's toolset is read_file / list_files / search_files / write_file /
-    // run_command: no delete, no move. Switching attribution off would drop
-    // every removal and every build-step side effect.
     expect(BUILTIN_FILE_CHANGE_FIDELITY['antigravity-gemini-agent']).toBe('tool-args');
     expect(attributionModeForFileChangeFidelity('tool-args')).toBe('fuzzy');
   });
 
-  it('names no edit tool, because its baseline comes from the write path instead', () => {
-    // A name here would make MessageStreamingHandler write a disk-read tag for
-    // the same toolUseId the authoritative snapshot uses, and the loser of that
-    // race is silently discarded as a duplicate.
-    expect(PROVIDER_EDIT_TOOL_NAMES['antigravity-gemini-agent']).toEqual([]);
+  it('lists ACP edit tools so pre-edit baselines are captured before edits land', () => {
+    expect(PROVIDER_EDIT_TOOL_NAMES['antigravity-gemini-agent']).toEqual(
+      expect.arrayContaining(['Edit', 'Write', 'ApplyPatch', 'edit_file', 'write_file']),
+    );
   });
 });
 
-describe('GeminiAntigravityProvider edit snapshots', () => {
-  let getModelResponse: import('vitest').MockInstance<
-    AntigravityServerManager['getModelResponse']
-  >;
-  let provider: GeminiAntigravityProvider;
-
-  beforeEach(async () => {
-    getModelResponse = vi.spyOn(AntigravityServerManager.prototype, 'getModelResponse');
-    provider = new GeminiAntigravityProvider();
-    await provider.initialize({});
-  });
+describe('Gemini ACP write hooks', () => {
+  const cleanups: Array<() => void> = [];
 
   afterEach(() => {
-    GeminiAntigravityProvider.setToolExecutor(null);
-    provider.destroy();
-    vi.restoreAllMocks();
+    while (cleanups.length > 0) cleanups.pop()?.();
   });
 
-  function mockWriteTurn(fileWrite: {
-    absPath: string;
-    beforeContent: string | null;
-    afterContent: string;
-  }): void {
-    getModelResponse
-      .mockResolvedValueOnce(
-        JSON.stringify({
-          tool_call: {
-            name: 'write_file',
-            arguments: { path: 'src/a.ts', content: fileWrite.afterContent },
-          },
-        }),
-      )
-      .mockResolvedValueOnce('saved');
-    GeminiAntigravityProvider.setToolExecutor(
-      async (_args: GeminiToolExecutorArgs) => ({ text: 'Wrote src/a.ts.', fileWrite }),
-    );
-  }
+  it('invokes onBeforeFileWrite and onTurnFilesEdited with the Nimbalyst session id', async () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'gemini-acp-write-hooks-'));
+    const beforeWrites: Array<{ filePath: string; sessionId: string | undefined }> = [];
+    const turnEdits: Array<{ files: string[]; sessionId: string | undefined }> = [];
 
-  it('emits an authoritative pre-edit snapshot carrying the content from before the write', async () => {
-    mockWriteTurn({
-      absPath: '/ws/src/a.ts',
-      beforeContent: 'export const a = 1;\n',
-      afterContent: 'export const a = 2;\n',
+    const protocol = new CodexACPProtocol('', {
+      platform: 'antigravity-gemini-acp',
+      apiKeyEnvVar: null,
+      command: process.execPath,
+      args: [codexFixturePath()],
+      onPermissionRequest: async () => ({ decision: 'allow', scope: 'once' }),
+      onBeforeFileWrite: vi.fn(async (filePath, sessionId) => {
+        beforeWrites.push({ filePath, sessionId });
+      }),
+      onTurnFilesEdited: vi.fn(async (filePaths, sessionId) => {
+        turnEdits.push({ files: [...filePaths], sessionId });
+      }),
+    });
+    cleanups.push(() => {
+      protocol.destroy();
+      fs.rmSync(workspacePath, { recursive: true, force: true });
     });
 
-    const chunks = await collect(
-      provider.sendMessage('edit it', undefined, 'w1', undefined, '/ws', undefined, WRITE_TOOL),
-    );
+    const session = await protocol.createSession({ workspacePath });
+    for await (const _event of protocol.sendMessage(session, {
+      content: 'edit target',
+      sessionId: 'nimbalyst-session-42',
+    })) {
+      // consume
+    }
 
-    const pre = chunks.find((c) => c.type === 'pre_edit_snapshot');
-    expect(pre?.preEditSnapshot?.entries).toEqual([
-      { path: '/ws/src/a.ts', content: 'export const a = 1;\n', kind: 'update' },
-    ]);
-    // Authoritative: the content was read inside the write path, so the host
-    // must NOT override it with a (staler) FileSnapshotCache lookup.
-    expect(pre?.preEditSnapshot?.authoritative).toBe(true);
-  });
-
-  it('emits a post-edit snapshot carrying the content the write produced', async () => {
-    mockWriteTurn({
-      absPath: '/ws/src/a.ts',
-      beforeContent: 'export const a = 1;\n',
-      afterContent: 'export const a = 2;\n',
-    });
-
-    const chunks = await collect(
-      provider.sendMessage('edit it', undefined, 'w2', undefined, '/ws', undefined, WRITE_TOOL),
-    );
-
-    const post = chunks.find((c) => c.type === 'post_edit_snapshot');
-    expect(post?.postEditSnapshot?.entries).toEqual([
-      { path: '/ws/src/a.ts', content: 'export const a = 2;\n', kind: 'update' },
-    ]);
-  });
-
-  it('reports a new file as an add with an empty baseline, not a missing one', async () => {
-    // `null` before-content means the file did not exist. An empty-string
-    // baseline is the CORRECT answer for a create — the whole file is an
-    // addition — and `kind: 'add'` is what stops the host looking for a
-    // baseline that was never there.
-    mockWriteTurn({
-      absPath: '/ws/src/new.ts',
-      beforeContent: null,
-      afterContent: 'export const b = 1;\n',
-    });
-
-    const chunks = await collect(
-      provider.sendMessage('create it', undefined, 'w3', undefined, '/ws', undefined, WRITE_TOOL),
-    );
-
-    expect(chunks.find((c) => c.type === 'pre_edit_snapshot')?.preEditSnapshot?.entries).toEqual([
-      { path: '/ws/src/new.ts', content: '', kind: 'add' },
-    ]);
-    expect(chunks.find((c) => c.type === 'post_edit_snapshot')?.postEditSnapshot?.entries).toEqual([
-      { path: '/ws/src/new.ts', content: 'export const b = 1;\n', kind: 'add' },
-    ]);
-  });
-
-  it('ties both snapshots to the same toolUseId as the tool call, and emits them before it completes', async () => {
-    mockWriteTurn({
-      absPath: '/ws/src/a.ts',
-      beforeContent: 'old\n',
-      afterContent: 'new\n',
-    });
-
-    const chunks = await collect(
-      provider.sendMessage('edit it', undefined, 'w4', undefined, '/ws', undefined, WRITE_TOOL),
-    );
-
-    const announce = chunks.findIndex(
-      (c) => c.type === 'tool_call' && c.toolCall?.result === undefined,
-    );
-    const preIdx = chunks.findIndex((c) => c.type === 'pre_edit_snapshot');
-    const postIdx = chunks.findIndex((c) => c.type === 'post_edit_snapshot');
-    const resultIdx = chunks.findIndex(
-      (c) => c.type === 'tool_call' && c.toolCall?.result !== undefined,
-    );
-
-    // Ordering matters: the result chunk closes the attribution window, so a
-    // snapshot arriving after it would tag a call the host has stopped
-    // associating with this file.
-    expect(announce).toBeLessThan(preIdx);
-    expect(preIdx).toBeLessThan(postIdx);
-    expect(postIdx).toBeLessThan(resultIdx);
-
-    const toolUseId = chunks[announce].toolCall?.id;
-    expect(toolUseId).toBeTruthy();
-    expect(chunks[preIdx].preEditSnapshot?.toolUseId).toBe(toolUseId);
-    expect(chunks[postIdx].postEditSnapshot?.toolUseId).toBe(toolUseId);
-  });
-
-  it('emits no snapshots for a tool that wrote nothing', async () => {
-    getModelResponse
-      .mockResolvedValueOnce(
-        JSON.stringify({ tool_call: { name: 'read_file', arguments: { path: 'src/a.ts' } } }),
-      )
-      .mockResolvedValueOnce('done');
-    GeminiAntigravityProvider.setToolExecutor(async () => ({ text: 'contents' }));
-
-    const chunks = await collect(
-      provider.sendMessage('read it', undefined, 'r1', undefined, '/ws', undefined, [
-        { type: 'function', function: { name: 'read_file' } },
-      ]),
-    );
-
-    expect(chunks.some((c) => c.type === 'pre_edit_snapshot')).toBe(false);
-    expect(chunks.some((c) => c.type === 'post_edit_snapshot')).toBe(false);
-  });
+    const expectedPath = path.join(workspacePath, 'acp-target.txt');
+    expect(beforeWrites).toEqual([{ filePath: expectedPath, sessionId: 'nimbalyst-session-42' }]);
+    expect(turnEdits).toEqual([{ files: [expectedPath], sessionId: 'nimbalyst-session-42' }]);
+  }, 15000);
 });

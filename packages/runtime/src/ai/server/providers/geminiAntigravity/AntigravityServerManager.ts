@@ -189,12 +189,47 @@ export class AntigravityServerManager {
    * Return the live endpoint if the server is already running, else null.
    *
    * Read-only: this MUST NOT spawn the server or trigger discovery. It only
-   * reflects whatever endpoint ensureRunning() previously established. Used by
-   * the host's usage poller so opening the usage chip never fires up the
-   * language server.
+   * reflects whatever endpoint ensureRunning() or registerExternalEndpoint()
+   * previously established. Used by the host's usage poller so opening the
+   * usage chip never fires up the language server.
    */
   currentEndpoint(): AntigravityEndpoint | null {
     return this.endpoint;
+  }
+
+  /**
+   * Register an externally managed language server endpoint (e.g., the
+   * embedded HTTPS server started by `agy acp`). Read-only consumers such as
+   * `GeminiUsageService` can query `currentEndpoint()` and
+   * `AntigravityUsageMeter` against it without spawning a standalone hub.
+   */
+  registerExternalEndpoint(ep: { httpsPort: number; csrf?: string }): void {
+    if (!Number.isInteger(ep.httpsPort) || ep.httpsPort <= 0 || ep.httpsPort > 65_535) {
+      return;
+    }
+    this.endpoint = {
+      httpsPort: ep.httpsPort,
+      csrf: ep.csrf ?? '',
+      owned: false,
+    };
+    this.enumCache.clear();
+  }
+
+  /**
+   * Clear a previously registered external endpoint when its owning process
+   * exits. When `httpsPort` is provided, only clears if that port is still the
+   * active external endpoint so an idle provider teardown cannot clobber a
+   * newer live server.
+   */
+  clearExternalEndpoint(httpsPort?: number): void {
+    if (!this.endpoint || this.endpoint.owned) {
+      return;
+    }
+    if (httpsPort !== undefined && this.endpoint.httpsPort !== httpsPort) {
+      return;
+    }
+    this.endpoint = null;
+    this.enumCache.clear();
   }
 
   /** Stop the server if we own it. No-op when attached to the IDE's hub. */
@@ -241,6 +276,13 @@ export class AntigravityServerManager {
         if (err) reject(err);
         else resolve(value as T);
       };
+      const headers: Record<string, string | number> = {
+        'Content-Type': 'application/json',
+        'Content-Length': payload.length,
+      };
+      if (ep.csrf) {
+        headers['x-codeium-csrf-token'] = ep.csrf;
+      }
       const req = https.request(
         {
           host: '127.0.0.1',
@@ -249,11 +291,7 @@ export class AntigravityServerManager {
           method: 'POST',
           // The server uses a self-signed cert on localhost.
           rejectUnauthorized: false,
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': payload.length,
-            'x-codeium-csrf-token': ep.csrf,
-          },
+          headers,
           timeout: timeoutMs,
         },
         (res) => {
@@ -693,6 +731,39 @@ function parseLsofListenerPorts(output: string): number[] {
     if (Number.isInteger(port) && port > 0 && port <= 65_535) ports.add(port);
   }
   return [...ports].sort((a, b) => a - b);
+}
+
+const AGY_HTTPS_PORT_LOG_RE = /Language server listening on random port at (\d+) for HTTPS\b/g;
+
+/**
+ * Extract the embedded language server's HTTPS (gRPC) port from an `agy acp`
+ * `--cli_log_file` log. Returns the last valid port in the log so appended or
+ * restarted logs resolve to the newest listener, or null if not yet logged.
+ */
+export function parseAgyHttpsPortFromLog(logContent: string): number | null {
+  let latestPort: number | null = null;
+  AGY_HTTPS_PORT_LOG_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = AGY_HTTPS_PORT_LOG_RE.exec(logContent)) !== null) {
+    const port = Number(match[1]);
+    if (Number.isInteger(port) && port > 0 && port <= 65_535) {
+      latestPort = port;
+    }
+  }
+  return latestPort;
+}
+
+/**
+ * Read an `agy acp` CLI log file and extract its embedded HTTPS language server
+ * port. Returns null if the file does not exist yet or contains no port line.
+ */
+export async function readAgyHttpsPortFromLogFile(logPath: string): Promise<number | null> {
+  try {
+    const content = await fs.promises.readFile(logPath, 'utf8');
+    return parseAgyHttpsPortFromLog(content);
+  } catch {
+    return null;
+  }
 }
 
 function delay(ms: number): Promise<void> {

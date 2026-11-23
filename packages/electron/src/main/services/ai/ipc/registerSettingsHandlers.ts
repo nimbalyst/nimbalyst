@@ -265,7 +265,7 @@ export function registerSettingsHandlers(ctx: AIServiceContext): void {
           apiKey = 'not-required';
           break;
         case 'antigravity-gemini-agent':
-          // Antigravity app login only; no API key to test.
+          // Antigravity CLI (`agy`) login only; no API key to test.
           apiKey = 'not-required';
           break;
         case 'lmstudio':
@@ -277,12 +277,7 @@ export function registerSettingsHandlers(ctx: AIServiceContext): void {
       }
     }
 
-    // Gemini's connectivity probe is the presence of the Antigravity install.
-    // Deliberately NOT a live turn: the alternative is spawning a ~120MB
-    // language server from a settings button, and a signed-out user would
-    // still pass an install check either way -- sign-in cannot be read
-    // without a keychain prompt (see headlessAgentAvailability.ts). So the
-    // check answers exactly what it can, and says so when it fails.
+    // Gemini's connectivity probe checks that the `agy` CLI is installed.
     if (provider === 'antigravity-gemini-agent') {
       return GeminiAntigravityProvider.isInstalled()
         ? { success: true, provider }

@@ -1,540 +1,869 @@
 /**
- * Gemini agent provider, backed by the Antigravity language server.
+ * Gemini agent provider (`antigravity-gemini-agent`), backed by the Antigravity
+ * CLI's ACP stdio server (`agy acp`).
  *
- * Not a `HeadlessCliAgentProvider` subclass. That base assumes one process per
- * turn streaming NDJSON on stdout; Antigravity is a long-lived local server
- * addressed over Connect-RPC, whose single relevant call --
- * `GetModelResponse({prompt, model}) -> {response}` -- is stateless, buffered,
- * and has no function-calling surface. `AntigravityToolLoopProtocol` supplies
- * the tool loop the transport lacks; this class is the host-facing half.
+ * Reuses the shared `CodexACPProtocol` stdio ACP client (parameterized with
+ * `agy` command/args, platform id, permission-mode mapping, and model/effort
+ * application) instead of maintaining a separate ACP transport or the legacy
+ * Connect-RPC tool loop.
  *
- * Three consequences of that transport, each declared rather than assumed:
- *
- *   - **No provider session id.** The server keeps nothing between calls, so
- *     the whole conversation is re-rendered into one flat prompt per turn from
- *     the host's own message history. `getProviderSessionData` has nothing to
- *     return, and resuming a session is just re-seeding the loop.
- *   - **No usage numbers.** The response envelope carries only `response`.
- *     `contextReporting: 'none'` in `agentCapabilities.ts` follows from that --
- *     a percentage drawn from a token count we do not have would be a lying 0%
- *     (#914). Quota lives on a separate account-level RPC; see
- *     `AntigravityUsageMeter`.
- *   - **`'tool-args'` file fidelity, not `'structured'`.** Nimbalyst performs
- *     Gemini's writes itself, so an exact pre-edit baseline is free and this
- *     provider emits authoritative pre/post edit snapshots. It still stops
- *     short of `'structured'` because the toolset has no delete and no move:
- *     every removal is an opaque `rm` inside `run_command`. Declaring
- *     `'structured'` would switch the filesystem watcher off and make those
- *     removals vanish from the Files Edited sidebar. Same reasoning as
- *     `grok-build`, whose toolset is identical in this respect.
- *
- * Auth rides the user's existing Antigravity login. Nimbalyst stores no key for
- * it and reads no environment variable. That login is NOT on disk under
- * `~/.gemini` (which holds only onboarding state and config) -- on macOS it is
- * in the keychain, service `gemini`, account `antigravity`. Which is why
- * detection can answer "installed" but not "signed in"; see
- * `headlessAgentAvailability.ts`.
+ * Provider id `antigravity-gemini-agent` is kept unchanged so existing sessions,
+ * settings, and icons continue working without migration.
  */
 
+import { randomUUID } from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { BaseAgentProvider } from './BaseAgentProvider';
-import { appendSessionDirective } from '../../prompt';
+import { buildUserMessageAddition } from './documentContextUtils';
+import { describeUnusableWorkspacePath } from './workspacePreconditions';
+import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
+import { AIToolCall, AIToolResult } from '../../types';
 import {
-  AntigravityServerManager,
-  AntigravityVersionGateError,
-} from './geminiAntigravity/AntigravityServerManager';
-import { AntigravityToolLoopProtocol } from './geminiAntigravity/AntigravityToolLoopProtocol';
+  ProviderConfig,
+  DocumentContext,
+  StreamChunk,
+  ProviderCapabilities,
+  AIModel,
+  AIProviderType,
+  ModelIdentifier,
+  ChatAttachment,
+} from '../types';
+import { CodexACPProtocol, type ACPToolPermissionRequest } from '../protocols/CodexACPProtocol';
+import { ProtocolEvent } from '../protocols/ProtocolInterface';
+import { ToolPermissionService } from '../permissions/ToolPermissionService';
+import { generateToolPattern } from '../permissions/toolPermissionHelpers';
+import { handleToolPermissionFallback } from './claudeCode/toolAuthorization';
+import {
+  PermissionMode,
+  TrustChecker,
+  PermissionPatternSaver,
+  PermissionPatternChecker,
+  SecurityLogger,
+} from './ProviderPermissionMixin';
+import { McpConfigService } from '../services/McpConfigService';
+import { MCP_CORE, MCP_HOST, MCP_TRACKERS, MCP_SITUATIONAL } from '../services/mcpTopology';
+import {
+  getMcpConfigService,
+  isInternalMcpServerEnabled,
+  areTrackerToolsEnabled,
+  resolveTrackersWorkspacePath,
+} from '../services/mcpServerConfig';
+import { MCPServerConfig } from '../../../types/MCPServerConfig';
+import { safeJSONSerialize } from '../../../utils/serialization';
+import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
+import { TranscriptMigrationRepository } from '../../../storage/repositories/TranscriptMigrationRepository';
 import {
   DEFAULT_GEMINI_MODEL_KEY,
   bareGeminiModelKey,
-  discoverGeminiModels,
+  discoverAgyModels,
+  resolveAgyBinaryPath,
 } from './geminiAntigravity/geminiAntigravityModels';
-import type { ProviderSessionData } from './ProviderSessionManager';
-import type {
-  AgentToolDefinition,
-  AIModel,
-  AIProviderType,
-  ChatAttachment,
-  DocumentContext,
-  Message,
-  ProviderConfig,
-  StreamChunk,
-  ToolHandler,
-} from '../types';
+import {
+  AntigravityServerManager,
+  readAgyHttpsPortFromLogFile,
+} from './geminiAntigravity/AntigravityServerManager';
 
 export const GEMINI_ANTIGRAVITY_PROVIDER: AIProviderType = 'antigravity-gemini-agent';
 
+// agy loads MCP tool schemas only up to a fixed token budget (~57KB of tool
+// JSON on our PC) and silently drops the largest tools past it, so pass only
+// the Nimbalyst tools Gemini needs. Keep the total <= 45KB. The budget is
+// shared with skills, plugins and workspace rules, so the share left for MCP
+// differs per environment (some users get cut off near 16KB), and ACP
+// mcpServers are forced eager (can't be made lazy or disabled):
+// https://github.com/google-antigravity/antigravity-cli/issues/1530
+export const AGY_MCP_TOOL_ALLOWLIST: Record<string, readonly string[]> = {
+  [MCP_CORE]: [
+    'PromptForUserInput',
+    'developer_git_commit_proposal',
+    'display_to_user',
+    'update_session_meta',
+    'AskUserQuestion',
+    'capture_editor_screenshot',
+    'get_session_edited_files',
+  ],
+  [MCP_HOST]: [
+    'spawn_session',
+    'send_prompt',
+    'update_session_board',
+    'list_spawned_sessions',
+    'get_session_status',
+    'get_session_result',
+    'get_session_summary',
+    'get_workstream_overview',
+    'list_recent_sessions',
+    'schedule_wakeup',
+    'notify_user',
+    'respond_to_prompt',
+    'list_queued_prompts',
+    'consume_session_inbox',
+    'get_workstream_edited_files',
+    'list_worktrees',
+  ],
+  [MCP_TRACKERS]: [
+    'tracker_list',
+    'tracker_get',
+    'tracker_create',
+    'tracker_update',
+    'tracker_add_comment',
+    'tracker_link_session',
+    'tracker_list_types',
+    'work_radar',
+    'tracker_get_by_urn',
+    'tracker_link_file',
+  ],
+  [MCP_SITUATIONAL]: ['searchPages', 'readCollabDoc'],
+};
+
+const AGY_FILE_TOOLS = new Set(['Edit', 'Write', 'ApplyPatch', 'Read', 'Glob', 'Grep', 'LS', 'NotebookEdit', 'WebSearch', 'WebFetch']);
+
 /**
- * Outcome of a host-executed tool call.
- *
- * `text` is what the model sees. `fileWrite` is present only when the call
- * actually wrote a file, and carries the content read immediately before the
- * write -- the baseline no watcher or snapshot cache can beat, because nothing
- * ran between the read and the write.
+ * Map Nimbalyst workspace permission modes to Antigravity ACP (`agy acp`)
+ * session modes (`default`, `accept-edits`, `auto`, `plan`).
  */
-export interface GeminiToolExecutionResult {
-  text: string;
-  fileWrite?: {
-    absPath: string;
-    /** `null` when the file did not exist -- a create, not an update. */
-    beforeContent: string | null;
-    afterContent: string;
-  };
+export function mapAgyPermissionMode(permissionMode: string): string {
+  if (permissionMode === 'bypass-all') {
+    return 'auto';
+  }
+  if (permissionMode === 'allow-all') {
+    return 'accept-edits';
+  }
+  return 'default';
 }
 
-export interface GeminiToolExecutorArgs {
-  sessionId: string;
-  workspacePath?: string;
-  name: string;
-  args: Record<string, unknown>;
-}
-
-export type GeminiToolExecutor = (args: GeminiToolExecutorArgs) => Promise<GeminiToolExecutionResult>;
-
-/** Server tuning the Electron main process reads out of settings. */
-export interface GeminiServerConfig {
-  overrideIdeVersion?: string;
-  spawnPortCandidates?: number[];
-}
-
-interface SessionState {
-  sessionId: string;
-  workspacePath?: string;
-  modelKey: string;
-  toolLoop: AntigravityToolLoopProtocol;
-  abortController: AbortController | null;
-}
-
-// run_command tuning. The command runs in this process with the session's
-// workspace as cwd, bounded by a hard timeout and output caps.
-const RUN_COMMAND_TIMEOUT_MS = 120_000;
-const RUN_COMMAND_MAX_BUFFER = 4 * 1024 * 1024;
-const RUN_COMMAND_MAX_OUTPUT = 48_000;
-
-function clampCommandOutput(text: string): string {
-  return text.length <= RUN_COMMAND_MAX_OUTPUT
-    ? text
-    : `${text.slice(0, RUN_COMMAND_MAX_OUTPUT)}\n\n[output truncated at ${RUN_COMMAND_MAX_OUTPUT} characters]`;
+interface GeminiAntigravityProviderDeps {
+  protocol?: CodexACPProtocol;
+  permissionService?: ToolPermissionService;
+  acpLogFilePath?: string;
 }
 
 export class GeminiAntigravityProvider extends BaseAgentProvider {
-  private static toolExecutor: GeminiToolExecutor | null = null;
-  private static serverConfigLoader: (() => GeminiServerConfig) | null = null;
+  static readonly DEFAULT_MODEL = `${GEMINI_ANTIGRAVITY_PROVIDER}:${DEFAULT_GEMINI_MODEL_KEY}`;
 
-  private readonly sessionStates = new Map<string, SessionState>();
-  private readonly server: AntigravityServerManager;
+  static readonly NOT_INSTALLED_MESSAGE =
+    'The Antigravity CLI (`agy`) is not installed. Install it from https://antigravity.google, '
+    + 'run `agy acp --login` to sign in, then try again — Nimbalyst uses that login and stores no key of its own.';
 
-  constructor(deps?: { server?: AntigravityServerManager }) {
+  static readonly NOT_SIGNED_IN_MESSAGE =
+    'Antigravity CLI (`agy`) is installed but not signed in. Run `agy acp --login` '
+    + 'in your terminal to sign in to your Google account, then try again.';
+
+  private readonly protocol: CodexACPProtocol;
+  private readonly permissionService: ToolPermissionService | null;
+  private readonly mcpConfigService: McpConfigService;
+
+  private _initData: {
+    model: string;
+    mcpServerCount: number;
+    isResumedSession: boolean;
+    permissionMode: string | null;
+  } | null = null;
+
+  private readonly activeTurnContext = new Map<string, {
+    nimbalystSessionId?: string;
+    workspacePath: string;
+    permissionsPath: string;
+    signal: AbortSignal;
+  }>();
+  private acpLogFilePath: string | null = null;
+  private registeredEndpointPort: number | null = null;
+
+  private static mcpConfigLoader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null = null;
+  private static claudeSettingsEnvLoader: (() => Promise<Record<string, string>>) | null = null;
+  private static shellEnvironmentLoader: (() => Record<string, string> | null) | null = null;
+  private static enhancedPathLoader: (() => string) | null = null;
+  private static agyPathLoader: (() => string | null) | null = null;
+  private static onBeforeFileWrite: ((filePath: string, sessionId: string | undefined) => Promise<void>) | null = null;
+  private static onTurnFilesEdited: ((filePaths: Set<string>, sessionId: string | undefined) => Promise<void>) | null = null;
+
+  constructor(deps?: GeminiAntigravityProviderDeps) {
     super();
-    this.server = deps?.server ?? AntigravityServerManager.shared();
+
+    if (deps?.protocol) {
+      this.protocol = deps.protocol;
+      this.acpLogFilePath = deps.acpLogFilePath ?? null;
+    } else {
+      this.protocol = new CodexACPProtocol('', {
+        platform: 'antigravity-gemini-acp',
+        agentLabel: 'Antigravity ACP',
+        logPrefix: 'GeminiACPProtocol',
+        apiKeyEnvVar: null,
+        commandResolver: () => GeminiAntigravityProvider.resolveCommand(),
+        args: ['acp'],
+        argsResolver: () => this.prepareAcpArgs(),
+        envLoader: () => GeminiAntigravityProvider.buildChildEnv(),
+        mapPermissionMode: mapAgyPermissionMode,
+        applyModel: true,
+        onBeforeFileWrite: GeminiAntigravityProvider.onBeforeFileWrite ?? undefined,
+        onTurnFilesEdited: GeminiAntigravityProvider.onTurnFilesEdited ?? undefined,
+        onPermissionRequest: (request) => this.handleProtocolPermissionRequest(request),
+        onProcessExit: () => this.clearAcpEndpointAndLog(),
+      });
+    }
+
+    if (deps?.permissionService) {
+      this.permissionService = deps.permissionService;
+    } else if (
+      BaseAgentProvider.trustChecker
+      && BaseAgentProvider.permissionPatternSaver
+      && BaseAgentProvider.permissionPatternChecker
+    ) {
+      this.permissionService = new ToolPermissionService({
+        trustChecker: BaseAgentProvider.trustChecker as TrustChecker,
+        patternSaver: BaseAgentProvider.permissionPatternSaver as PermissionPatternSaver,
+        patternChecker: BaseAgentProvider.permissionPatternChecker as PermissionPatternChecker,
+        securityLogger: BaseAgentProvider.securityLogger ?? undefined,
+        emit: this.emit.bind(this),
+      });
+    } else {
+      this.permissionService = null;
+    }
+
+    this.mcpConfigService = getMcpConfigService({
+      mcpConfigLoader: GeminiAntigravityProvider.mcpConfigLoader,
+      claudeSettingsEnvLoader: GeminiAntigravityProvider.claudeSettingsEnvLoader,
+      shellEnvironmentLoader: GeminiAntigravityProvider.shellEnvironmentLoader,
+    });
   }
 
   getProviderName(): AIProviderType {
     return GEMINI_ANTIGRAVITY_PROVIDER;
   }
 
+  getName(): string {
+    return GEMINI_ANTIGRAVITY_PROVIDER;
+  }
+
+  getDisplayName(): string {
+    return 'Gemini';
+  }
+
+  getDescription(): string {
+    return 'Google Gemini agent over the Antigravity CLI ACP server';
+  }
+
+  getCapabilities(): ProviderCapabilities {
+    return {
+      streaming: true,
+      tools: true,
+      mcpSupport: true,
+      edits: true,
+      resumeSession: true,
+      supportsFileTools: true,
+    };
+  }
+
+  getProviderSessionData(sessionId: string): {
+    providerSessionId?: string;
+    geminiAcpSessionId?: string;
+  } {
+    const { providerSessionId } = this.sessions.getProviderSessionData(sessionId);
+    return {
+      providerSessionId,
+      geminiAcpSessionId: providerSessionId,
+    };
+  }
+
+  getInitData(): typeof this._initData {
+    return this._initData;
+  }
+
+  // ---- Static injection setters --------------------------------------------
+
+  public static setTrustChecker(checker: TrustChecker | null): void {
+    BaseAgentProvider.setTrustChecker(checker);
+  }
+  public static setPermissionPatternSaver(saver: PermissionPatternSaver | null): void {
+    BaseAgentProvider.setPermissionPatternSaver(saver);
+  }
+  public static setPermissionPatternChecker(checker: PermissionPatternChecker | null): void {
+    BaseAgentProvider.setPermissionPatternChecker(checker);
+  }
+  public static setSecurityLogger(logger: SecurityLogger | null): void {
+    BaseAgentProvider.setSecurityLogger(logger);
+  }
+  public static setMCPConfigLoader(loader: ((workspacePath?: string) => Promise<Record<string, MCPServerConfig>>) | null): void {
+    GeminiAntigravityProvider.mcpConfigLoader = loader;
+  }
+  public static setClaudeSettingsEnvLoader(loader: (() => Promise<Record<string, string>>) | null): void {
+    GeminiAntigravityProvider.claudeSettingsEnvLoader = loader;
+  }
+  public static setShellEnvironmentLoader(loader: (() => Record<string, string> | null) | null): void {
+    GeminiAntigravityProvider.shellEnvironmentLoader = loader;
+  }
+  public static setEnhancedPathLoader(loader: (() => string) | null): void {
+    GeminiAntigravityProvider.enhancedPathLoader = loader;
+  }
+  public static setAgyPathLoader(loader: (() => string | null) | null): void {
+    GeminiAntigravityProvider.agyPathLoader = loader;
+  }
+  public static setOnBeforeFileWrite(handler: ((filePath: string, sessionId: string | undefined) => Promise<void>) | null): void {
+    GeminiAntigravityProvider.onBeforeFileWrite = handler;
+  }
+  public static setOnTurnFilesEdited(handler: ((filePaths: Set<string>, sessionId: string | undefined) => Promise<void>) | null): void {
+    GeminiAntigravityProvider.onTurnFilesEdited = handler;
+  }
+
   async initialize(config: ProviderConfig): Promise<void> {
     this.config = config;
-    // Apply configuration but do NOT start the server: spawning is deferred to
-    // the first real turn, so opening settings or a model picker never fires up
-    // a ~120MB language server.
-    const serverConfig = GeminiAntigravityProvider.serverConfigLoader?.();
-    if (serverConfig) this.server.configure(serverConfig);
   }
 
-  /**
-   * Nothing to return: the language server holds no session state, so there is
-   * no provider-side id to persist alongside the Nimbalyst session row.
-   */
-  getProviderSessionData(_sessionId: string): ProviderSessionData | null {
-    return null;
+  /** True when the Antigravity CLI (`agy`) binary is present. */
+  static isInstalled(): boolean {
+    return GeminiAntigravityProvider.installPath() !== null;
   }
 
-  registerToolHandler(_handler: ToolHandler): void {
-    // Tools are executed through the injected `toolExecutor` (host-side, with
-    // the workspace jail the host owns), not through the runtime tool-handler
-    // surface. Kept so the class satisfies `AIProvider`.
+  /** Resolved path to the `agy` binary, or null if not found. */
+  static installPath(): string | null {
+    const explicit = GeminiAntigravityProvider.agyPathLoader?.();
+    if (explicit) return explicit;
+    return resolveAgyBinaryPath({
+      enhancedPath: GeminiAntigravityProvider.safeLoadEnhancedPath(),
+    });
   }
 
-  abort(): void {
-    for (const state of this.sessionStates.values()) {
-      state.abortController?.abort();
-      state.toolLoop.abort();
+  static getDefaultModel(): string {
+    return GeminiAntigravityProvider.DEFAULT_MODEL;
+  }
+
+  static async getModels(): Promise<AIModel[]> {
+    const models = await discoverAgyModels({
+      command: GeminiAntigravityProvider.installPath(),
+      env: GeminiAntigravityProvider.buildChildEnv(),
+    });
+    return models.map((m) => ({
+      id: ModelIdentifier.create(GEMINI_ANTIGRAVITY_PROVIDER, m.key).combined,
+      name: m.displayName,
+      provider: GEMINI_ANTIGRAVITY_PROVIDER,
+    }));
+  }
+
+  async handleToolCall(
+    toolCall: AIToolCall,
+    _options?: { sessionId?: string; workingDirectory?: string },
+  ): Promise<AIToolResult> {
+    if (!toolCall.name) {
+      return { success: false, error: 'Tool name is required' };
     }
-    super.abort();
+    try {
+      const result = await this.executeToolCall(toolCall.name, toolCall.arguments ?? {});
+      return { success: true, result };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Tool execution failed';
+      return {
+        success: false,
+        error: message,
+        result: (error as { toolResult?: unknown })?.toolResult,
+      };
+    }
   }
 
-  destroy(): void {
+  async cancelStream(_sessionId?: string): Promise<void> {
     this.abort();
-    this.sessionStates.clear();
-    super.destroy();
   }
 
   async *sendMessage(
     message: string,
     documentContext?: DocumentContext,
     sessionId?: string,
-    messages?: Message[],
+    _messages?: unknown[],
     workspacePath?: string,
-    _attachments?: ChatAttachment[],
-    tools?: AgentToolDefinition[],
-    systemPrompt?: string,
+    attachments?: ChatAttachment[],
   ): AsyncIterableIterator<StreamChunk> {
-    if (!sessionId) {
-      yield { type: 'error', error: 'Gemini requires a session id.' };
+    const unusableWorkspace = describeUnusableWorkspacePath(workspacePath);
+    if (unusableWorkspace || !workspacePath) {
+      yield { type: 'error', error: unusableWorkspace ?? 'No project folder is set for this session.' };
       return;
     }
 
-    // The host hands a tool-loop provider its whole system prompt (persona) and
-    // does not include the session directive; it is appended here, frozen.
-    const turnSystemPrompt = appendSessionDirective(systemPrompt ?? '', await this.getSessionDirective(sessionId));
+    const agentRole = await this.getAgentRole(sessionId);
+    const isMetaAgent = agentRole === 'meta-agent';
+    const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(sessionId) : 'default';
+    const sessionDirective = await this.getSessionDirective(sessionId);
+    const systemPrompt = this.buildSystemPrompt(
+      documentContext,
+      isMetaAgent,
+      workflowPreset,
+      sessionDirective,
+      this.isNamedOutOfBand(sessionId, documentContext),
+    );
+    const { userMessageAddition, messageWithContext } = buildUserMessageAddition(message, documentContext);
+    const unsupportedAttachmentHints = attachments?.filter(
+      (attachment) => attachment.type !== 'image' && attachment.type !== 'document',
+    );
+    const messageWithAttachmentHints = this.appendAttachmentHints(messageWithContext, unsupportedAttachmentHints);
 
-    const state = this.resolveSession(sessionId, workspacePath, documentContext);
+    if (sessionId && (systemPrompt || userMessageAddition || (attachments?.length ?? 0) > 0)) {
+      const attachmentSummaries =
+        attachments?.map((attachment) => ({
+          type: attachment.type,
+          filename: attachment.filename || (attachment.filepath ? path.basename(attachment.filepath) : 'unknown'),
+          mimeType: attachment.mimeType,
+          filepath: attachment.filepath,
+        })) ?? [];
+      this.emit('promptAdditions', {
+        sessionId,
+        systemPromptAddition: systemPrompt || null,
+        userMessageAddition,
+        attachments: attachmentSummaries,
+        timestamp: Date.now(),
+      });
+    }
+
+    if (sessionId) {
+      const metadataToLog: Record<string, unknown> = this.withPromptProvenanceMetadata(documentContext);
+      if (attachments && attachments.length > 0) {
+        metadataToLog.attachments = attachments;
+      }
+      if (documentContext?.mode) {
+        metadataToLog.mode = documentContext.mode;
+      }
+      await this.logAgentMessageBestEffort(
+        sessionId,
+        'input',
+        messageWithAttachmentHints,
+        Object.keys(metadataToLog).length > 0 ? { metadata: metadataToLog } : undefined,
+      );
+    }
+
+    const permissionsPath = documentContext?.permissionsPath || workspacePath;
+    const mcpConfigWorkspacePath = documentContext?.mcpConfigWorkspacePath || workspacePath;
     const abortController = new AbortController();
-    state.abortController = abortController;
     this.abortController = abortController;
 
-    // Re-seed the loop from the host's canonical history. The turn's own user
-    // message is appended by run(), so a trailing duplicate of it is dropped
-    // rather than sent twice.
-    if (messages && messages.length > 0) {
-      const prior = [...messages];
-      const last = prior[prior.length - 1];
-      if (last?.role === 'user' && typeof last.content === 'string'
-        && last.content.trim() === message.trim()) {
-        prior.pop();
-      }
-      state.toolLoop.seedHistory(prior);
-    }
-
-    await this.logAgentMessageBestEffort(sessionId, 'input', message, {
-      metadata: {
-        role: 'user',
-        timestamp: Date.now(),
-        model: state.modelKey,
-        documentContext,
-      },
-    });
-
-    let finalText = '';
-    let sawText = false;
-    let toolCallSeq = 0;
-    // The tool loop reports a call and its result as two separate steps keyed
-    // only by tool name, so the id minted on the call is held here until the
-    // matching result arrives. It becomes the chunk's `toolUseId`, which is
-    // what file attribution and pre-edit history tags correlate on.
-    const pendingCalls = new Map<string, { id: string; name: string; args: Record<string, unknown> }>();
+    let trackedAcpSessionId: string | null = null;
 
     try {
-      for await (const step of state.toolLoop.run(
-        message,
-        turnSystemPrompt,
-        (tools ?? []) as Array<{ type: 'function'; function: { name: string } }>,
-        (name, args) => this.executeTool(state, name, args),
-        undefined,
-        abortController.signal,
-      )) {
-        if (abortController.signal.aborted) break;
+      const permissionDecision = await this.requestTurnPermission(
+        workspacePath,
+        permissionsPath,
+      );
 
-        if (step.type === 'tool_call') {
-          const id = `agy-${Date.now()}-${toolCallSeq++}`;
-          pendingCalls.set(step.name, { id, name: step.name, args: step.args });
-          yield { type: 'tool_call', toolCall: { id, name: step.name, arguments: step.args } };
-        } else if (step.type === 'tool_result') {
-          const pending = pendingCalls.get(step.name);
-          if (!pending) {
-            // No id to attribute a write to. Drop any buffered snapshot rather
-            // than letting it ride along to the NEXT tool's id, which would
-            // pin one tool's file change onto an unrelated call in the diff
-            // view. Losing the snapshot degrades to watcher attribution;
-            // mis-attributing it is a wrong answer stated confidently.
-            this.pendingEditSnapshots.length = 0;
-            continue;
-          }
-          // Emit the edit snapshots BEFORE the terminal tool_call chunk. That
-          // chunk closes the attribution window, and a snapshot arriving after
-          // it would tag a file the host has stopped associating with the call.
-          for (const snapshot of this.drainEditSnapshots(pending.id)) {
-            yield snapshot;
-          }
-          await this.logAgentMessageBestEffort(
-            sessionId,
-            'output',
-            JSON.stringify({ name: step.name, result: step.result, args: pending.args }),
-            // `toolUseId` is what makes a reloaded transcript agree with the
-            // live one: without it the parser has to mint a synthetic id, and
-            // the reloaded tool card is a different event from the streamed
-            // one. Rows written before this existed have none, which is why
-            // `GeminiAntigravityRawParser` still has a synthetic fallback.
-            { metadata: { role: 'tool', timestamp: Date.now(), toolUseId: pending.id } },
-          );
-          yield {
-            type: 'tool_call',
-            toolCall: {
-              id: pending.id,
-              name: pending.name,
-              arguments: pending.args,
-              result: step.result,
-            },
-          };
-          pendingCalls.delete(step.name);
-        } else if (step.type === 'text') {
-          finalText = step.content;
-          sawText = true;
-          // Always surface something: an empty assistant turn would otherwise
-          // leave the transcript with no assistant message at all for the turn.
-          yield {
-            type: 'text',
-            content: finalText.trim().length === 0 ? '(model returned no text)' : finalText,
-          };
-        } else if (step.type === 'complete') {
-          const persisted = finalText.trim().length === 0
-            ? (sawText ? '(model returned no text)' : '(no model response)')
-            : finalText;
-          await this.logAgentMessageBestEffort(sessionId, 'output', persisted, {
-            metadata: { role: 'assistant', timestamp: Date.now(), model: state.modelKey },
-          });
-          yield { type: 'complete', content: persisted, isComplete: true };
-        }
-      }
-    } catch (error) {
-      if (abortController.signal.aborted) return;
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      if (/not found at |Install Antigravity/i.test(errorMessage)) {
-        yield { type: 'error', error: GeminiAntigravityProvider.NOT_INSTALLED_MESSAGE };
-      } else if (error instanceof AntigravityVersionGateError) {
-        // The server enforces a supported-build floor and Antigravity has
-        // raised it. The underlying message names the flag, which is no use to
-        // anyone; say what to actually do. Updating Antigravity is the fix, and
-        // the settings key is the escape hatch for someone who cannot wait for
-        // a Nimbalyst release.
-        yield { type: 'error', error: GeminiAntigravityProvider.VERSION_GATE_MESSAGE };
-      } else if (/not logged in|unauthorized|forbidden|HTTP 401|HTTP 403/i.test(errorMessage)) {
+      if (permissionDecision.decision !== 'allow') {
         yield {
           type: 'error',
-          error: GeminiAntigravityProvider.NOT_SIGNED_IN_MESSAGE,
-          isAuthError: true,
+          error: permissionDecision.reason || 'Gemini turn denied',
         };
-      } else {
-        yield { type: 'error', error: errorMessage };
+        return;
+      }
+
+      const existingSessionId = this.sessions.getSessionId(sessionId || '');
+      const mcpServers = await this.mcpConfigService.getMcpServersConfig({
+        sessionId,
+        workspacePath: mcpConfigWorkspacePath,
+        profile: isMetaAgent ? 'meta-agent' : 'standard',
+        toolAllowlist: AGY_MCP_TOOL_ALLOWLIST,
+      });
+
+      const resolvedModel = this.getConfiguredModel();
+      const effortLevel = this.config?.effortLevel;
+
+      const sessionOptions = {
+        workspacePath,
+        model: resolvedModel,
+        ...(permissionDecision.permissionMode ? { permissionMode: permissionDecision.permissionMode } : {}),
+        mcpServers,
+        ...(isMetaAgent ? { allowedTools: BaseAgentProvider.META_AGENT_ALLOWED_TOOLS } : {}),
+        raw: {
+          systemPrompt,
+          abortSignal: abortController.signal,
+          ...(effortLevel ? { effortLevel } : {}),
+        },
+      };
+
+      const isResumedSession = !!existingSessionId;
+      const session = isResumedSession
+        ? await this.protocol.resumeSession(existingSessionId, sessionOptions)
+        : await this.protocol.createSession(sessionOptions);
+
+      // `agy acp` starts its embedded HTTPS language server during session
+      // creation and logs its random port to `--cli_log_file`. Register it so
+      // `GeminiUsageService` can poll GetUserStatus without spawning a hub.
+      await this.syncAgyLanguageServerEndpoint();
+
+      trackedAcpSessionId = session.id;
+      this.activeTurnContext.set(session.id, {
+        nimbalystSessionId: sessionId,
+        workspacePath,
+        permissionsPath,
+        signal: abortController.signal,
+      });
+
+      this._initData = {
+        model: session.appliedModel ?? resolvedModel,
+        mcpServerCount: session.deliveredMcpServerCount ?? Object.keys(mcpServers).length,
+        isResumedSession,
+        permissionMode: permissionDecision.permissionMode ?? null,
+      };
+
+      const transcriptAdapter = new AgentProtocolTranscriptAdapter(null, sessionId ?? '');
+      transcriptAdapter.userMessage(
+        messageWithAttachmentHints,
+        documentContext?.mode === 'planning' ? 'planning' : 'agent',
+        attachments as any,
+      );
+
+      for await (const event of this.protocol.sendMessage(session, {
+        content: messageWithAttachmentHints,
+        attachments,
+        sessionId,
+        mode: documentContext?.mode || 'agent',
+        abortSignal: abortController.signal,
+        ...({ systemPrompt } as Record<string, unknown>),
+      } as any)) {
+        if (abortController.signal.aborted) {
+          throw new Error('Operation cancelled');
+        }
+
+        if (sessionId) {
+          try {
+            await this.storeRawEventIfPresent(event, sessionId);
+          } catch {
+            // DB unavailable during tests
+          }
+          await this.processTranscriptMessages(sessionId);
+        }
+
+        for (const item of transcriptAdapter.processEvent(event)) {
+          switch (item.kind) {
+            case 'text':
+              yield { type: 'text', content: item.text };
+              break;
+            case 'tool_call':
+              yield { type: 'tool_call', toolCall: item.toolCall };
+              break;
+            case 'complete':
+              yield {
+                type: 'complete',
+                content: item.event.content,
+                isComplete: true,
+                usage: item.event.usage,
+                ...(item.event.contextFillTokens !== undefined
+                  ? { contextFillTokens: item.event.contextFillTokens }
+                  : {}),
+                ...(item.event.contextWindow !== undefined
+                  ? { contextWindow: item.event.contextWindow }
+                  : {}),
+              };
+              break;
+            case 'error':
+              yield this.classifyErrorChunk(item.message);
+              break;
+            case 'raw_event':
+            case 'reasoning':
+            case 'unknown':
+              break;
+          }
+        }
+      }
+
+      if (this.registeredEndpointPort === null) {
+        await this.syncAgyLanguageServerEndpoint();
+      }
+
+      if (sessionId && session.id && session.id !== existingSessionId) {
+        this.sessions.captureSessionId(sessionId, session.id);
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const isAbort = abortController.signal.aborted || /abort|cancel/i.test(errorMessage);
+      if (!isAbort) {
+        yield this.classifyErrorChunk(errorMessage);
       }
     } finally {
-      state.abortController = null;
-      if (this.abortController === abortController) this.abortController = null;
-      this.pendingEditSnapshots.length = 0;
+      if (trackedAcpSessionId) {
+        this.activeTurnContext.delete(trackedAcpSessionId);
+      }
+      if (this.abortController === abortController) {
+        this.abortController = null;
+      }
     }
   }
 
-  // --- Tool execution ------------------------------------------------------
-
-  /**
-   * Edit snapshots produced by the current turn's writes, drained onto the
-   * stream when the write's tool result comes back. Buffered rather than
-   * yielded inline because the executor is a plain callback the tool loop
-   * awaits -- it has no channel back onto the generator.
-   */
-  private readonly pendingEditSnapshots: Array<{
-    beforeContent: string | null;
-    afterContent: string;
-    absPath: string;
-  }> = [];
-
-  private async executeTool(
-    state: SessionState,
-    name: string,
-    args: Record<string, unknown>,
-  ): Promise<string> {
-    if (name === 'run_command') {
-      return this.runCommand(state.workspacePath, args);
-    }
-    const executor = GeminiAntigravityProvider.toolExecutor;
-    if (!executor) {
-      return `Error: "${name}" cannot run -- no tool executor is installed for this provider.`;
-    }
-    const result = await executor({
-      sessionId: state.sessionId,
-      workspacePath: state.workspacePath,
-      name,
-      args,
-    });
-    if (result.fileWrite) this.pendingEditSnapshots.push(result.fileWrite);
-    return result.text;
+  resolveToolPermission(
+    requestId: string,
+    response: { decision: 'allow' | 'deny'; scope: 'once' | 'session' | 'always' | 'always-all' },
+    sessionId?: string,
+    respondedBy: 'desktop' | 'mobile' = 'desktop',
+  ): void {
+    this.permissionService?.resolvePermission(requestId, response);
+    super.resolveToolPermission(requestId, response, sessionId, respondedBy);
   }
 
-  /**
-   * Turn this turn's buffered writes into the pre/post snapshot chunks
-   * `MessageStreamingHandler` writes as local-history entries.
-   *
-   * `authoritative: true` is earned, not asserted: `beforeContent` was read
-   * inside the write path microseconds before the write, so a FileSnapshotCache
-   * lookup at this point can only be staler. A `null` before-content means the
-   * file did not exist, and an empty-string baseline is the correct one for a
-   * create -- unlike the `'structured'` providers, which must skip the entry
-   * because they cannot distinguish "no baseline recorded" from "empty file".
-   */
-  private *drainEditSnapshots(toolUseId: string): Generator<StreamChunk> {
-    if (this.pendingEditSnapshots.length === 0) return;
-    const writes = this.pendingEditSnapshots.splice(0, this.pendingEditSnapshots.length);
-    yield {
-      type: 'pre_edit_snapshot',
-      preEditSnapshot: {
-        toolUseId,
-        entries: writes.map((w) => ({
-          path: w.absPath,
-          content: w.beforeContent ?? '',
-          kind: w.beforeContent === null ? 'add' : 'update',
-        })),
-        authoritative: true,
-      },
-    };
-    yield {
-      type: 'post_edit_snapshot',
-      postEditSnapshot: {
-        toolUseId,
-        entries: writes.map((w) => ({
-          path: w.absPath,
-          content: w.afterContent,
-          kind: w.beforeContent === null ? 'add' : 'update',
-        })),
-      },
-    };
+  abort(): void {
+    this.permissionService?.rejectAllPending();
+    super.abort();
   }
 
-  /**
-   * Run a shell command in the session's workspace and return stdout/stderr/exit
-   * code as text for the model. Bounded by a timeout and output caps; cwd is
-   * pinned to the workspace so a bare relative path cannot escape it.
-   *
-   * Unlike the other tools this does not go through the host executor, because
-   * it needs nothing the host owns beyond a working directory. Note it runs
-   * from Nimbalyst's own process rather than the extension utility process it
-   * used to live in -- `exec` is async and the child is what dies on a bad
-   * command, so a runaway cannot block the event loop, but the timeout and the
-   * output caps are what keep it bounded and neither is optional.
-   */
-  private async runCommand(
-    workspacePath: string | undefined,
-    args: Record<string, unknown>,
-  ): Promise<string> {
-    const command = typeof args.command === 'string' ? args.command.trim() : '';
-    if (!command) return 'Error: run_command requires a non-empty "command" string.';
-    if (!workspacePath) {
-      return 'Error: run_command needs an open workspace; none is bound to this session.';
+  cleanupSession(sessionId: string): void {
+    this.sessions.deleteSession(sessionId);
+  }
+
+  destroy(): void {
+    this.permissionService?.clearSessionCache();
+    this.activeTurnContext.clear();
+    this.protocol.destroy();
+    this.clearAcpEndpointAndLog();
+    super.destroy();
+  }
+
+  private prepareAcpArgs(): string[] {
+    this.clearAcpEndpointAndLog();
+    const logPath = path.join(os.tmpdir(), `nimbalyst-agy-acp-${process.pid}-${randomUUID()}.log`);
+    this.acpLogFilePath = logPath;
+    return ['acp', '--cli_log_file', logPath];
+  }
+
+  private async syncAgyLanguageServerEndpoint(): Promise<void> {
+    if (!this.acpLogFilePath) {
+      return;
     }
-    const { exec } = await import('child_process');
-    const { promisify } = await import('util');
-    const execAsync = promisify(exec);
-    try {
-      const { stdout, stderr } = await execAsync(command, {
-        cwd: workspacePath,
-        timeout: RUN_COMMAND_TIMEOUT_MS,
-        maxBuffer: RUN_COMMAND_MAX_BUFFER,
-        windowsHide: true,
+    const port = await readAgyHttpsPortFromLogFile(this.acpLogFilePath);
+    if (port !== null && port !== this.registeredEndpointPort) {
+      this.registeredEndpointPort = port;
+      AntigravityServerManager.shared().registerExternalEndpoint({
+        httpsPort: port,
+        csrf: '',
       });
-      const body =
-        [stdout ? `stdout:\n${stdout}` : '', stderr ? `stderr:\n${stderr}` : '']
-          .filter(Boolean)
-          .join('\n\n') || '(no output)';
-      return clampCommandOutput(`$ ${command}\nexit code: 0\n\n${body}`);
-    } catch (err: unknown) {
-      const e = err as {
-        code?: number; killed?: boolean; signal?: string;
-        stdout?: string; stderr?: string; message?: string;
+    }
+  }
+
+  private clearAcpEndpointAndLog(): void {
+    if (this.registeredEndpointPort !== null) {
+      AntigravityServerManager.shared().clearExternalEndpoint(this.registeredEndpointPort);
+      this.registeredEndpointPort = null;
+    }
+    const logPath = this.acpLogFilePath;
+    this.acpLogFilePath = null;
+    if (logPath) {
+      fs.unlink(logPath, () => {
+        /* best-effort cleanup of temp agy acp log */
+      });
+    }
+  }
+
+  protected buildSystemPrompt(
+    documentContext?: DocumentContext,
+    isMetaAgent: boolean = false,
+    workflowPreset: MetaAgentWorkflowPreset = 'default',
+    sessionDirective?: string,
+    hasOutOfBandNaming: boolean = false,
+  ): string {
+    if (isMetaAgent) {
+      return buildMetaAgentSystemPrompt('codex', workflowPreset, {
+        provider: GEMINI_ANTIGRAVITY_PROVIDER,
+        model: this.config?.model ?? undefined,
+        sessionDirective,
+      });
+    }
+
+    const hasSessionNaming = isInternalMcpServerEnabled();
+    const worktreePath = documentContext?.worktreePath;
+    const isVoiceMode = (documentContext as any)?.isVoiceMode;
+    const voiceModeCodingAgentPrompt = (documentContext as any)?.voiceModeCodingAgentPrompt;
+
+    return buildClaudeCodeSystemPrompt({
+      hasSessionNaming,
+      hasOutOfBandNaming,
+      toolReferenceStyle: 'codex',
+      worktreePath,
+      sessionDirective,
+      isVoiceMode,
+      voiceModeCodingAgentPrompt,
+      enableAgentTeams: false,
+      trackersEnabled: areTrackerToolsEnabled(resolveTrackersWorkspacePath(documentContext)),
+    });
+  }
+
+  private getConfiguredModel(): string {
+    return bareGeminiModelKey(this.config?.model);
+  }
+
+  private classifyErrorChunk(errorMessage: string): StreamChunk {
+    if (/ENOENT|not found|not recognized|spawn agy/i.test(errorMessage)) {
+      return { type: 'error', error: GeminiAntigravityProvider.NOT_INSTALLED_MESSAGE };
+    }
+    if (/not logged in|not authenticated|not signed in|unauthenticated|unauthorized|forbidden|auth.*required|HTTP 401|HTTP 403/i.test(errorMessage)) {
+      return {
+        type: 'error',
+        error: GeminiAntigravityProvider.NOT_SIGNED_IN_MESSAGE,
+        isAuthError: true,
       };
-      if (e.killed && e.signal === 'SIGTERM') {
-        return clampCommandOutput(
-          `$ ${command}\n[command timed out after ${RUN_COMMAND_TIMEOUT_MS / 1000}s]`,
+    }
+    return { type: 'error', error: errorMessage };
+  }
+
+  private appendAttachmentHints(message: string, attachments?: ChatAttachment[]): string {
+    if (!attachments || attachments.length === 0) {
+      return message;
+    }
+    const attachmentList = attachments
+      .map((attachment) => {
+        const displayName =
+          attachment.filename
+          || (attachment.filepath ? path.basename(attachment.filepath) : attachment.id || 'attachment');
+        return `- ${displayName}${attachment.filepath ? ` (${attachment.filepath})` : ''}`;
+      })
+      .join('\n');
+
+    return `${message}\n\nAttached files:\n${attachmentList}`;
+  }
+
+  private async requestTurnPermission(
+    workspacePath: string,
+    permissionsPath: string,
+  ): Promise<{ decision: 'allow' | 'deny'; reason?: string; permissionMode?: PermissionMode }> {
+    const pathForTrust = permissionsPath || workspacePath;
+    if (pathForTrust && BaseAgentProvider.trustChecker) {
+      const trustStatus = BaseAgentProvider.trustChecker(pathForTrust);
+      if (!trustStatus.trusted) {
+        this.logSecurity('[GeminiAntigravityProvider] Workspace not trusted, denying Gemini turn', {
+          workspacePath: pathForTrust,
+        });
+        return {
+          decision: 'deny',
+          reason: 'Workspace is not trusted. Please trust this workspace to use Gemini.',
+        };
+      }
+      return { decision: 'allow', permissionMode: trustStatus.mode };
+    }
+    return { decision: 'allow' };
+  }
+
+  private async handleProtocolPermissionRequest(
+    request: ACPToolPermissionRequest,
+  ): Promise<{ decision: 'allow' | 'deny'; scope: 'once' | 'session' | 'always' | 'always-all' }> {
+    const ctx = this.activeTurnContext.get(request.sessionId);
+    const permissionsPath = ctx?.permissionsPath || ctx?.workspacePath;
+    const trust = permissionsPath ? BaseAgentProvider.trustChecker?.(permissionsPath) : null;
+
+    if (!trust) {
+      return { decision: 'allow', scope: 'once' };
+    }
+    if (!trust.trusted) {
+      return { decision: 'deny', scope: 'once' };
+    }
+    if (trust.mode === 'bypass-all') {
+      return { decision: 'allow', scope: 'once' };
+    }
+    if (trust.mode === 'allow-all' && AGY_FILE_TOOLS.has(request.toolName)) {
+      return { decision: 'allow', scope: 'once' };
+    }
+
+    const input = (
+      request.toolInput && typeof request.toolInput === 'object' && !Array.isArray(request.toolInput)
+        ? request.toolInput
+        : {}
+    ) as Record<string, unknown>;
+
+    if (permissionsPath) {
+      const pattern = generateToolPattern(request.toolName, input);
+      if (
+        BaseAgentProvider.permissionPatternChecker
+        && await BaseAgentProvider.permissionPatternChecker(permissionsPath, pattern)
+      ) {
+        this.permissions.sessionApprovedPatterns.add(pattern);
+        return { decision: 'allow', scope: 'always' };
+      }
+    }
+
+    if (!ctx?.nimbalystSessionId) {
+      return { decision: 'allow', scope: 'once' };
+    }
+
+    const authorization = await handleToolPermissionFallback(
+      {
+        permissions: this.permissions,
+        logSecurity: (msg, data) => this.logSecurity(msg, data),
+        logAgentMessage: (sid, content) =>
+          this.logAgentMessage(sid, this.getProviderName(), 'output', content),
+        emit: (event, payload) => this.emit(event, payload),
+        pollForPermissionResponse: (sid, reqId, signal) =>
+          this.pollForPermissionResponse(sid, reqId, signal),
+        savePattern: BaseAgentProvider.permissionPatternSaver ?? undefined,
+        logError: (msg, error) => console.error(msg, error),
+      },
+      {
+        toolName: request.toolName,
+        input,
+        options: { signal: ctx.signal, toolUseID: request.requestId },
+        sessionId: ctx.nimbalystSessionId,
+        workspacePath: permissionsPath,
+      },
+    );
+
+    return {
+      decision: authorization.behavior === 'allow' ? 'allow' : 'deny',
+      scope: 'once',
+    };
+  }
+
+  private async storeRawEventIfPresent(event: ProtocolEvent, sessionId: string): Promise<void> {
+    if (event.type !== 'raw_event' || !event.metadata?.rawEvent) {
+      return;
+    }
+
+    const { content } = safeJSONSerialize(event.metadata.rawEvent);
+    const rawEventType = this.getRawEventType(event.metadata.rawEvent);
+
+    await this.logAgentMessage(
+      sessionId,
+      this.getProviderName(),
+      'output',
+      content,
+      {
+        eventType: rawEventType,
+        geminiAcpProvider: true,
+      },
+      false,
+      undefined,
+      false,
+    );
+  }
+
+  private getRawEventType(rawEvent: unknown): string {
+    if (rawEvent && typeof rawEvent === 'object') {
+      const eventType = (rawEvent as Record<string, unknown>).type;
+      if (typeof eventType === 'string' && eventType.trim().length > 0) {
+        return eventType;
+      }
+    }
+    return 'unknown';
+  }
+
+  private async processTranscriptMessages(sessionId: string): Promise<void> {
+    try {
+      if (TranscriptMigrationRepository.hasService()) {
+        await TranscriptMigrationRepository.getService().processNewMessages(
+          sessionId,
+          this.getProviderName(),
         );
       }
-      const parts = [
-        `$ ${command}`,
-        `exit code: ${typeof e.code === 'number' ? e.code : 'unknown'}`,
-        e.stdout ? `stdout:\n${e.stdout}` : '',
-        e.stderr ? `stderr:\n${e.stderr}` : (e.message ? `error: ${e.message}` : ''),
-      ].filter(Boolean);
-      return clampCommandOutput(parts.join('\n\n'));
+    } catch {
+      // Best effort -- next chunk or end-of-turn ensureUpToDate catches up.
     }
   }
 
-  // --- Session state -------------------------------------------------------
+  private static resolveCommand(): string {
+    return GeminiAntigravityProvider.installPath() ?? (process.platform === 'win32' ? 'agy.exe' : 'agy');
+  }
 
-  private resolveSession(
-    sessionId: string,
-    workspacePath: string | undefined,
-    documentContext: DocumentContext | undefined,
-  ): SessionState {
-    const modelKey = bareGeminiModelKey(
-      this.config.model ?? (documentContext as { model?: string } | undefined)?.model,
-    );
-    const existing = this.sessionStates.get(sessionId);
-    if (existing) {
-      if (workspacePath) existing.workspacePath = workspacePath;
-      if (existing.modelKey !== modelKey) {
-        existing.modelKey = modelKey;
-        existing.toolLoop.setModelKey(modelKey);
-      }
-      return existing;
+  private static safeLoadEnhancedPath(): string | undefined {
+    try {
+      return GeminiAntigravityProvider.enhancedPathLoader?.() || undefined;
+    } catch {
+      return undefined;
     }
-    const state: SessionState = {
-      sessionId,
-      workspacePath,
-      modelKey,
-      toolLoop: new AntigravityToolLoopProtocol({ modelKey, server: this.server }),
-      abortController: null,
+  }
+
+  private static buildChildEnv(): Record<string, string> {
+    const shellEnv = GeminiAntigravityProvider.shellEnvironmentLoader?.() ?? {};
+    const enhancedPath = GeminiAntigravityProvider.safeLoadEnhancedPath();
+    return {
+      ...shellEnv,
+      ...(enhancedPath ? { PATH: enhancedPath } : {}),
     };
-    this.sessionStates.set(sessionId, state);
-    return state;
-  }
-
-  // --- Static injection (Electron main process, at startup) ----------------
-
-  static setToolExecutor(executor: GeminiToolExecutor | null): void {
-    GeminiAntigravityProvider.toolExecutor = executor;
-  }
-
-  static setServerConfigLoader(loader: (() => GeminiServerConfig) | null): void {
-    GeminiAntigravityProvider.serverConfigLoader = loader;
-  }
-
-  // --- Detection and catalog ----------------------------------------------
-
-  static readonly NOT_INSTALLED_MESSAGE =
-    'Antigravity is not installed. Install it from https://antigravity.google, '
-    + 'sign in once, then try again — Nimbalyst uses that login and stores no key of its own.';
-
-  static readonly NOT_SIGNED_IN_MESSAGE =
-    'Antigravity is installed but not signed in. Open Antigravity and sign in to '
-    + 'your Google account, then try again.';
-
-  static readonly VERSION_GATE_MESSAGE =
-    'Antigravity rejected this build as out of date. Update Antigravity to its '
-    + 'latest version and try again. (If you need to keep the current version, '
-    + 'set a newer `overrideIdeVersion` on the Gemini provider in ai-settings.)';
-
-  /** True when the Antigravity language server binary is present. */
-  static isInstalled(): boolean {
-    return AntigravityServerManager.isInstalled();
-  }
-
-  /** Path the install is expected at, for the settings panel to show. */
-  static installPath(): string {
-    return AntigravityServerManager.binaryPath();
-  }
-
-  static getDefaultModel(): string {
-    return `${GEMINI_ANTIGRAVITY_PROVIDER}:${DEFAULT_GEMINI_MODEL_KEY}`;
-  }
-
-  /**
-   * The model catalog, discovered from the language server when it is already
-   * running and falling back to a short seed list otherwise. See
-   * `geminiAntigravityModels.ts` for why discovery never spawns the server.
-   */
-  static async getModels(): Promise<AIModel[]> {
-    const models = await discoverGeminiModels(AntigravityServerManager.shared());
-    return models.map((m) => ({
-      id: `${GEMINI_ANTIGRAVITY_PROVIDER}:${m.key}`,
-      name: m.displayName,
-      provider: GEMINI_ANTIGRAVITY_PROVIDER,
-    }));
   }
 }

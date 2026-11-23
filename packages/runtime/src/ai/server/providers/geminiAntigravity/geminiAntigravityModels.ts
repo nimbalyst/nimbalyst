@@ -1,181 +1,269 @@
 /**
- * Model catalog for the `antigravity-gemini-agent` provider.
+ * Model catalog and CLI binary discovery for the `antigravity-gemini-agent`
+ * provider, backed by the Antigravity CLI (`agy`).
  *
- * The language server DOES enumerate models -- `GetAvailableModels` returns the
- * full catalog and `GetUserStatus.cascadeModelConfigData.clientModelConfigs`
- * returns the subset the signed-in account may actually use. When the extension
- * owned this provider its manifest hardcoded three model ids, and by the time
- * this moved in-tree that list was already stale: the live catalog carried a
- * Gemini 3.6 Flash family the picker never offered. That drift is exactly
- * NIM-1486, so discovery is the primary source and the seed list below is only
- * a fallback.
+ * Discovery runs `agy models`, which prints tab-separated `<modelId>\t<label>`
+ * lines for the signed-in account. Effort-suffixed variants (e.g.
+ * `gemini-4-neon-high`, `gemini-4-neon-xhigh`, `gemini-4-neon-medium`,
+ * `gemini-4-neon-low`) are grouped into a single base model entry
+ * (`gemini-4-neon`, "Gemini 4 Neon") while recording which effort tiers the
+ * model supports — the user selects reasoning depth in Nimbalyst's effort
+ * control rather than picking from four duplicate rows per model.
  *
- * Discovery never spawns the server. Enumerating models is a passive act (the
- * user opened a picker), and starting a ~120MB language server for it would be
- * a surprising side effect -- so when no endpoint is live the seed list is
- * returned and discovery fills in after the first real turn. Same posture as
- * `GrokBuildProvider.listModelIds()`, which falls back to its default when the
- * CLI cannot be reached.
- *
- * The catalog spans several vendors (Antigravity also fronts Anthropic and
- * OpenAI models). This is the *Gemini* provider, so only Google-served entries
- * are offered; surfacing the others here would put the same model behind two
- * unrelated Nimbalyst providers with different billing stories.
+ * Antigravity also fronts third-party models (Anthropic, OpenAI). This is the
+ * Gemini provider, so only `gemini-*` entries are surfaced here.
  */
 
-import type { AntigravityModelInfo, AntigravityServerManager } from './AntigravityServerManager';
+import { execFile } from 'child_process';
+import { existsSync } from 'fs';
+import os from 'os';
+import path from 'path';
+import type { EffortLevel } from '../../effortLevels';
+import { scrubProviderApiKeys } from '../../providerApiKeyScrub';
 
-/** `apiProvider` value the language server reports for Google-served models. */
-const GOOGLE_API_PROVIDER = 'API_PROVIDER_GOOGLE_GEMINI';
+const AGY_EFFORT_SUFFIXES = ['low', 'medium', 'high', 'xhigh'] as const;
+export type AgyEffortLevel = (typeof AGY_EFFORT_SUFFIXES)[number];
 
-/**
- * Oldest Flash generation still offered in the picker, as `[major, minor]`.
- *
- * The backend retires Flash generations well before the language server stops
- * listing them: `gemini-3-flash-agent` is still in `GetAvailableModels` (as
- * "Gemini 3.5 Flash (High)") on Antigravity 2.12.2, but a turn against it now
- * fails with "Gemini 3.5 Flash is no longer available. Please switch to Gemini
- * 3.7 Flash in the latest version of Antigravity." -- #1519. Entitlement does
- * not catch this either; the account is still entitled to a model the backend
- * refuses to serve. So the catalog alone cannot be trusted and the floor has
- * to be explicit.
- *
- * A floor rather than a fixed list so the next generation is picked up without
- * a code change: when 3.9 Flash lands, discovery offers it and only the
- * retired tiers stay hidden.
- */
-const MIN_FLASH_GENERATION: readonly [major: number, minor: number] = [3, 7];
+const AGY_EFFORT_SUFFIX_RE = /^(.+)-(low|medium|high|xhigh)$/i;
+const DISPLAY_EFFORT_SUFFIX_RE = /\s*\((?:Low|Medium|High|XHigh|Extra)\)\s*$/i;
 
-/**
- * Matches the Flash agent labels and nothing else.
- *
- * Anchored on both ends deliberately. The catalog also carries "Gemini 3.5
- * Flash Lite" and "Gemini 3.1 Flash Image", which are different products that
- * happen to share the prefix -- an unanchored match would drag them in.
- */
-const FLASH_LABEL = /^Gemini (\d+)(?:\.(\d+))? Flash(?: \((?:High|Medium|Low)\))?$/;
-
-/**
- * Generation of a Flash agent label as `[major, minor]`, or null when the
- * label is not a Flash agent at all.
- */
-function flashGeneration(displayName: string): [number, number] | null {
-  const match = FLASH_LABEL.exec(displayName);
-  if (!match) return null;
-  return [Number(match[1]), match[2] === undefined ? 0 : Number(match[2])];
+export interface AgyModelEntry {
+  /** Base model id without effort suffix (e.g. `gemini-4-neon`). */
+  key: string;
+  /** Human-readable model name without the trailing effort tag. */
+  displayName: string;
+  /** Effort tiers advertised by `agy` for this model (empty if fixed/unconfigurable). */
+  supportedEfforts: AgyEffortLevel[];
 }
 
-/**
- * True when `displayName` is a Flash agent at or above `MIN_FLASH_GENERATION`.
- *
- * Compared component-wise rather than as a decimal so a future "Gemini 3.10
- * Flash" sorts after 3.9 instead of before 3.2.
- */
-export function isOfferedFlashModel(displayName: string): boolean {
-  const generation = flashGeneration(displayName);
-  if (!generation) return false;
-  const [major, minor] = generation;
-  const [minMajor, minMinor] = MIN_FLASH_GENERATION;
-  return major !== minMajor ? major > minMajor : minor >= minMinor;
-}
+/** Fallback default model when `agy` has not been queried yet or cannot be reached. */
+export const DEFAULT_GEMINI_MODEL_KEY = 'gemini-4-neon';
 
-/**
- * Fallback catalog, used only until the language server has been reached once.
- *
- * Seeded with 3.7 rather than the newer 3.8 on purpose: this list is what a
- * user sees before discovery has run, so it has to be a generation every
- * entitled account can actually serve, and 3.7 Flash is the one the backend
- * itself names in the #1519 error. Discovery adds 3.8 as soon as the server is
- * reachable.
- */
-export const SEED_GEMINI_MODELS: ReadonlyArray<{ key: string; displayName: string }> =
-  Object.freeze([
-    { key: 'gemini-3.7-flash-high', displayName: 'Gemini 3.7 Flash (High)' },
-    { key: 'gemini-3.7-flash-low', displayName: 'Gemini 3.7 Flash (Low)' },
-    { key: 'gemini-3.7-flash-medium', displayName: 'Gemini 3.7 Flash (Medium)' },
-  ]);
+const DEFAULT_FALLBACK_ENTRY: AgyModelEntry = Object.freeze({
+  key: DEFAULT_GEMINI_MODEL_KEY,
+  displayName: 'Gemini 4 Neon',
+  supportedEfforts: ['low', 'medium', 'high', 'xhigh'] as AgyEffortLevel[],
+});
 
-/** Default model key for a new Gemini session. */
-export const DEFAULT_GEMINI_MODEL_KEY = 'gemini-3.7-flash-medium';
+const discoveredEffortsByModel = new Map<string, AgyEffortLevel[]>();
 
 /**
  * Strip the `antigravity-gemini-agent:` namespace off a stored model id.
- *
- * The host persists the namespaced form; the language server only knows the
- * bare key. Callers may hand us either.
+ * Callers may pass either the namespaced form or a bare key.
  */
 export function bareGeminiModelKey(raw: string | undefined | null): string {
   if (!raw) return DEFAULT_GEMINI_MODEL_KEY;
-  return raw.includes(':') ? raw.split(':').slice(1).join(':') : raw;
+  const trimmed = raw.trim();
+  if (!trimmed) return DEFAULT_GEMINI_MODEL_KEY;
+  return trimmed.includes(':') ? trimmed.split(':').slice(1).join(':') : trimmed;
 }
 
 /**
- * Google-served models the signed-in account may use, newest-looking first.
- *
- * `entitledEnums` is the set of model enums from `clientModelConfigs`. It is
- * the account's entitlement, not the build's catalog: a model present in
- * `GetAvailableModels` but absent here will fail at request time, so offering
- * it would only produce a confusing error after the user picked it. When the
- * entitlement set is empty (an older server that does not report it) the
- * catalog is used unfiltered rather than showing nothing.
- *
- * Also restricted to Flash agents at or above `MIN_FLASH_GENERATION`. Retired
- * tiers stay in the live catalog and stay entitled long after the backend
- * stops serving them, so neither signal can be relied on -- see #1519.
- *
- * Existing sessions are not rewritten. A session row that persisted a retired
- * key keeps resolving, because resolution reads the stored key and never
- * consults this list; such a session will keep failing at request time until
- * the user picks a current model.
+ * Split an effort-suffixed Antigravity model id (e.g. `gemini-4-neon-high`)
+ * into its base model id and effort level. Models without a trailing effort
+ * suffix return `{ baseModel, effort: undefined }`.
  */
-export function selectGeminiModels(
-  catalog: Map<string, AntigravityModelInfo>,
-  entitledEnums: ReadonlySet<string>,
-): Array<{ key: string; displayName: string }> {
-  const out: Array<{ key: string; displayName: string }> = [];
-  for (const info of catalog.values()) {
-    if (info.apiProvider !== GOOGLE_API_PROVIDER) continue;
-    if (entitledEnums.size > 0 && !entitledEnums.has(info.enum)) continue;
-    // An unlabelled entry is an internal/experimental slot (the server returns
-    // several with no displayName). Nothing useful to show the user.
-    if (!info.displayName) continue;
-    if (!isOfferedFlashModel(info.displayName)) continue;
-    out.push({ key: info.key, displayName: info.displayName });
+export function splitGeminiModelEffort(modelKey: string): {
+  baseModel: string;
+  effort?: AgyEffortLevel;
+} {
+  const match = AGY_EFFORT_SUFFIX_RE.exec(modelKey.trim());
+  if (!match) {
+    return { baseModel: modelKey.trim() };
   }
-  return out.sort((a, b) => a.displayName.localeCompare(b.displayName));
-}
-
-/** Read the account's entitled model enums out of a raw GetUserStatus payload. */
-export function entitledModelEnums(userStatus: unknown): Set<string> {
-  const enums = new Set<string>();
-  const configs = (userStatus as {
-    cascadeModelConfigData?: { clientModelConfigs?: Array<{ modelOrAlias?: { model?: unknown } }> };
-  } | null | undefined)?.cascadeModelConfigData?.clientModelConfigs;
-  if (!Array.isArray(configs)) return enums;
-  for (const config of configs) {
-    const name = config?.modelOrAlias?.model;
-    if (typeof name === 'string' && name) enums.add(name);
-  }
-  return enums;
+  return {
+    baseModel: match[1],
+    effort: match[2].toLowerCase() as AgyEffortLevel,
+  };
 }
 
 /**
- * Discover the model list, falling back to the seed when the server is not
- * already running or either RPC fails.
+ * Group raw ACP or `agy models` entries into unique Gemini base models,
+ * preserving the vendor's ordering and collecting each model's offered effort
+ * tiers. Non-Gemini vendor models (Claude, GPT) are excluded.
  */
-export async function discoverGeminiModels(
-  server: AntigravityServerManager,
-): Promise<Array<{ key: string; displayName: string }>> {
-  const endpoint = server.currentEndpoint();
-  if (!endpoint) return [...SEED_GEMINI_MODELS];
+export function groupAgyModels(
+  rawModels: ReadonlyArray<{ modelId: string; name?: string }>,
+): AgyModelEntry[] {
+  const byBase = new Map<string, AgyModelEntry>();
+
+  for (const item of rawModels) {
+    const rawId = item.modelId?.trim();
+    if (!rawId || !rawId.toLowerCase().startsWith('gemini-')) continue;
+
+    const { baseModel, effort } = splitGeminiModelEffort(rawId);
+    const rawName = (item.name ?? '').trim();
+    const cleanName = rawName
+      ? (effort ? rawName.replace(DISPLAY_EFFORT_SUFFIX_RE, '').trim() : rawName)
+      : baseModel;
+
+    let entry = byBase.get(baseModel);
+    if (!entry) {
+      entry = {
+        key: baseModel,
+        displayName: cleanName || baseModel,
+        supportedEfforts: [],
+      };
+      byBase.set(baseModel, entry);
+    }
+
+    if (effort && !entry.supportedEfforts.includes(effort)) {
+      entry.supportedEfforts.push(effort);
+    }
+  }
+
+  return Array.from(byBase.values());
+}
+
+/**
+ * Parse stdout from `agy models`:
+ *
+ * ```
+ * gemini-4-neon-high\tGemini 4 Neon (High)
+ * gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)
+ * gemini-pro-orchestrator-neon\tOrchestrator (Neon)
+ * ```
+ */
+export function parseAgyModelsOutput(output: string): AgyModelEntry[] {
+  const rawModels: Array<{ modelId: string; name: string }> = [];
+
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || /^fetching\b/i.test(line)) continue;
+
+    const tabIdx = line.indexOf('\t');
+    if (tabIdx > 0) {
+      const modelId = line.slice(0, tabIdx).trim();
+      const name = line.slice(tabIdx + 1).trim();
+      if (modelId && !/\s/.test(modelId)) {
+        rawModels.push({ modelId, name });
+      }
+      continue;
+    }
+
+    // Fallback: two or more spaces separating id and label.
+    const spaced = /^(\S+)\s{2,}(.+)$/.exec(line);
+    if (spaced) {
+      rawModels.push({ modelId: spaced[1], name: spaced[2].trim() });
+    }
+  }
+
+  return groupAgyModels(rawModels);
+}
+
+/**
+ * Record discovered model effort tiers in memory so effort clamping can reflect
+ * what the live `agy` CLI reported.
+ */
+export function recordDiscoveredAgyModels(entries: ReadonlyArray<AgyModelEntry>): void {
+  for (const entry of entries) {
+    discoveredEffortsByModel.set(entry.key.toLowerCase(), [...entry.supportedEfforts]);
+  }
+}
+
+/**
+ * Return the highest discovered effort tier for a Gemini model, if known.
+ */
+export function getDiscoveredGeminiEffortCeiling(modelKey: string): EffortLevel | undefined {
+  const { baseModel } = splitGeminiModelEffort(bareGeminiModelKey(modelKey));
+  const efforts = discoveredEffortsByModel.get(baseModel.toLowerCase());
+  if (!efforts || efforts.length === 0) return undefined;
+  const rank: Record<AgyEffortLevel, number> = { low: 0, medium: 1, high: 2, xhigh: 3 };
+  return [...efforts].sort((a, b) => rank[b] - rank[a])[0];
+}
+
+/**
+ * Resolve the `agy` CLI binary across standard install locations and PATH.
+ * Returns null when no executable is found.
+ */
+export function resolveAgyBinaryPath(options?: {
+  enhancedPath?: string | null;
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  homeDir?: string;
+  fileExists?: (candidate: string) => boolean;
+}): string | null {
+  const platform = options?.platform ?? process.platform;
+  const env = options?.env ?? process.env;
+  const home = options?.homeDir ?? os.homedir();
+  const check = options?.fileExists ?? existsSync;
+  const exeName = platform === 'win32' ? 'agy.exe' : 'agy';
+
+  const candidates: string[] = [];
+
+  if (platform === 'win32') {
+    const localAppData = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    candidates.push(
+      path.join(localAppData, 'agy', 'bin', exeName),
+      path.join(home, '.agy', 'bin', exeName),
+      path.join(home, '.local', 'bin', exeName),
+    );
+  } else {
+    candidates.push(
+      path.join(home, '.agy', 'bin', exeName),
+      path.join(home, '.local', 'bin', exeName),
+      '/opt/homebrew/bin/agy',
+      '/usr/local/bin/agy',
+    );
+  }
+
+  const searchPath = options?.enhancedPath || env.PATH || '';
+  const delimiter = platform === 'win32' ? ';' : ':';
+  for (const entry of searchPath.split(delimiter)) {
+    const trimmed = entry.trim().replace(/^"(.*)"$/, '$1');
+    if (trimmed) {
+      candidates.push(path.join(trimmed, exeName));
+    }
+  }
+
+  for (const candidate of candidates) {
+    try {
+      if (check(candidate)) return candidate;
+    } catch {
+      // Unreadable path -- keep searching.
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Discover Gemini models from the `agy models` CLI command, falling back to the
+ * default entry if `agy` is missing, signed out, or times out.
+ */
+export async function discoverAgyModels(options?: {
+  command?: string | null;
+  env?: Record<string, string>;
+  timeoutMs?: number;
+}): Promise<AgyModelEntry[]> {
+  const command = options?.command || resolveAgyBinaryPath({ enhancedPath: options?.env?.PATH }) || (process.platform === 'win32' ? 'agy.exe' : 'agy');
+  const env = scrubProviderApiKeys({ ...process.env, ...(options?.env ?? {}) });
+
   try {
-    const [catalog, userStatus] = await Promise.all([
-      server.getAvailableModels(endpoint),
-      server.getUserStatus(endpoint).catch(() => null),
-    ]);
-    const models = selectGeminiModels(catalog, entitledModelEnums(userStatus));
-    return models.length > 0 ? models : [...SEED_GEMINI_MODELS];
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile(
+        command,
+        ['models'],
+        {
+          timeout: options?.timeoutMs ?? 10_000,
+          encoding: 'utf8',
+          windowsHide: true,
+          env,
+        },
+        (error, out) => {
+          if (error) reject(error);
+          else resolve(out ?? '');
+        },
+      );
+    });
+    const models = parseAgyModelsOutput(stdout);
+    if (models.length > 0) {
+      recordDiscoveredAgyModels(models);
+      return models;
+    }
   } catch {
-    return [...SEED_GEMINI_MODELS];
+    // CLI missing, signed out, or unreachable -- fall back to default entry.
   }
+
+  return [DEFAULT_FALLBACK_ENTRY];
 }

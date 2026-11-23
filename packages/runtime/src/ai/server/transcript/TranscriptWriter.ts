@@ -89,6 +89,13 @@ export class TranscriptWriter {
     },
   ): Promise<TranscriptEvent> {
     const mode = options?.mode ?? 'agent';
+    const isThinkingOnlyChunk =
+      text === '' &&
+      options?.thinking !== undefined &&
+      !options?.progressUpdate &&
+      options?.thinkingSignature === undefined &&
+      options?.model === undefined;
+
     const hasExtras =
       options?.thinking !== undefined ||
       options?.thinkingSignature !== undefined ||
@@ -100,15 +107,39 @@ export class TranscriptWriter {
     // emit one chunk per token; without this we'd persist thousands of
     // single-token events per session.
     //
-    // Skip coalescing when the new chunk carries thinking/model metadata --
-    // those need to land on their own event so the renderer can place them
-    // in the correct part of the turn.
+    // Thinking-only chunks without signatures/progressUpdate/model also
+    // coalesce with an immediately preceding thinking-only row so streaming
+    // `agent_thought_chunk` deltas render as a single collapsed thinking block.
+    if (isThinkingOnlyChunk) {
+      const last = await this.loadLastEvent(sessionId);
+      if (
+        last &&
+        last.eventType === 'assistant_message' &&
+        last.subagentId === null &&
+        last.mode === mode &&
+        !last.searchableText &&
+        last.thinking !== undefined &&
+        !last.progressUpdate &&
+        !last.hasThinkingSignature &&
+        !last.hasModel
+      ) {
+        const mergedThinking = last.thinking + options.thinking;
+        await this.store.mergeEventPayload(last.id, { thinking: mergedThinking });
+        last.thinking = mergedThinking;
+        const refreshed = await this.store.getEventById(last.id);
+        return refreshed ?? this.toTranscriptEvent(sessionId, last);
+      }
+    }
+
     const last = hasExtras ? null : await this.loadLastEvent(sessionId);
     if (
       last &&
       last.eventType === 'assistant_message' &&
       last.subagentId === null &&
-      last.mode === mode
+      last.mode === mode &&
+      last.thinking === undefined &&
+      !last.hasThinkingSignature &&
+      !last.hasModel
     ) {
       const mergedText = (last.searchableText ?? '') + text;
       await this.store.updateEventText(last.id, mergedText);
@@ -447,12 +478,23 @@ export class TranscriptWriter {
     // Refresh the coalesce-anchor for this session so the next call sees
     // whatever we just wrote (including non-assistant events that should
     // break the assistant_message coalesce chain).
+    const payloadObj = event.payload as {
+      mode?: 'agent' | 'planning' | 'auto';
+      thinking?: string;
+      progressUpdate?: boolean;
+      thinkingSignature?: string;
+      model?: string;
+    };
     this.lastEventBySession.set(sessionId, {
       id: event.id,
       eventType: event.eventType,
       searchableText: event.searchableText,
-      mode: (event.payload as { mode?: 'agent' | 'planning' })?.mode,
+      mode: payloadObj?.mode,
       subagentId: event.subagentId,
+      thinking: typeof payloadObj?.thinking === 'string' ? payloadObj.thinking : undefined,
+      progressUpdate: Boolean(payloadObj?.progressUpdate),
+      hasThinkingSignature: payloadObj?.thinkingSignature !== undefined,
+      hasModel: payloadObj?.model !== undefined,
     });
 
     return event;
@@ -465,13 +507,24 @@ export class TranscriptWriter {
 
     const tail = await this.store.getTailEvents(sessionId, 1);
     const event = tail[tail.length - 1] ?? null;
+    const payloadObj = event?.payload as {
+      mode?: 'agent' | 'planning' | 'auto';
+      thinking?: string;
+      progressUpdate?: boolean;
+      thinkingSignature?: string;
+      model?: string;
+    } | undefined;
     const state: LastEventState | null = event
       ? {
           id: event.id,
           eventType: event.eventType,
           searchableText: event.searchableText,
-          mode: (event.payload as { mode?: 'agent' | 'planning' })?.mode,
+          mode: payloadObj?.mode,
           subagentId: event.subagentId,
+          thinking: typeof payloadObj?.thinking === 'string' ? payloadObj.thinking : undefined,
+          progressUpdate: Boolean(payloadObj?.progressUpdate),
+          hasThinkingSignature: payloadObj?.thinkingSignature !== undefined,
+          hasModel: payloadObj?.model !== undefined,
         }
       : null;
     this.lastEventBySession.set(sessionId, state);
@@ -488,7 +541,10 @@ export class TranscriptWriter {
       eventType: state.eventType,
       searchableText: state.searchableText,
       searchable: true,
-      payload: { mode: state.mode } as Record<string, unknown>,
+      payload: {
+        mode: state.mode,
+        ...(state.thinking !== undefined ? { thinking: state.thinking } : {}),
+      } as Record<string, unknown>,
       parentEventId: null,
       subagentId: state.subagentId,
       provider: this.provider,
@@ -503,4 +559,8 @@ interface LastEventState {
   searchableText: string | null;
   mode: 'agent' | 'planning' | 'auto' | undefined;
   subagentId: string | null;
+  thinking?: string;
+  progressUpdate?: boolean;
+  hasThinkingSignature?: boolean;
+  hasModel?: boolean;
 }

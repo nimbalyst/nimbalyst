@@ -41,6 +41,8 @@ import type {
   ReadTextFileResponse,
   RequestPermissionRequest,
   RequestPermissionResponse,
+  SessionConfigOption,
+  SessionModelState,
   SessionNotification,
   SessionUpdate,
   ToolCallContent,
@@ -64,7 +66,7 @@ import { scrubProviderApiKeys } from '../providerApiKeyScrub';
 import { buildDocumentAttachmentPromptText } from '../providers/codex/documentAttachmentPrompt';
 import type { ToolPermissionScope } from '../providers/ProviderPermissionMixin';
 
-interface ACPToolPermissionRequest {
+export interface ACPToolPermissionRequest {
   requestId: string;
   sessionId: string;
   toolName: string;
@@ -87,17 +89,65 @@ export type OnBeforeFileWrite = (filePath: string, sessionId: string | undefined
  */
 export type OnTurnFilesEdited = (filePaths: Set<string>, sessionId: string | undefined) => Promise<void>;
 
-interface CodexACPProtocolDeps {
+export interface CodexACPProtocolDeps {
   spawnProcess?: typeof spawn;
+  /** Protocol platform identifier (defaults to `'codex-acp'`). */
+  platform?: string;
+  /** Human-readable agent label for error messages (defaults to `'Codex ACP'`). */
+  agentLabel?: string;
+  /** Prefix for console log/warn lines (defaults to `'CodexACPProtocol'`). */
+  logPrefix?: string;
+  /**
+   * Environment variable name to inject `apiKey` into after scrubbing ambient
+   * keys. Defaults to `'OPENAI_API_KEY'`. Pass `null` for providers that
+   * authenticate exclusively via their own CLI login and never take an API key.
+   */
+  apiKeyEnvVar?: string | null;
   command?: string;
+  /** Lazy command resolver invoked when spawning the subprocess (overrides default binary lookup). */
+  commandResolver?: () => string;
   args?: string[];
+  /** Optional dynamic argument resolver invoked each time the subprocess spawns (overrides `args`). */
+  argsResolver?: () => string[];
   env?: Record<string, string>;
+  /** Optional dynamic environment loader merged before API-key scrubbing. */
+  envLoader?: () => Record<string, string>;
+  /** Optional callback invoked when the spawned subprocess exits or is destroyed. */
+  onProcessExit?: () => void;
+  /**
+   * Map Nimbalyst workspace permission modes (`'ask'`, `'allow-all'`, `'bypass-all'`)
+   * to the agent's ACP mode id. Defaults to Codex ACP's `'full-access'` / `'auto'`.
+   */
+  mapPermissionMode?: (permissionMode: string) => string;
+  /**
+   * Apply `options.model` (and `options.raw.effortLevel`) to the ACP session via
+   * `session/set_config_option` (`model` + `thought_level`) or `session/set_model`.
+   * Defaults to `false` to preserve legacy Codex ACP behavior.
+   */
+  applyModel?: boolean;
   onPermissionRequest?: (
     request: ACPToolPermissionRequest
   ) => Promise<{ decision: 'allow' | 'deny'; scope: ToolPermissionScope }>;
   onBeforeFileWrite?: OnBeforeFileWrite;
   onTurnFilesEdited?: OnTurnFilesEdited;
 }
+
+interface SessionConfigState {
+  deliveredMcpServerCount: number;
+  models: SessionModelState | null;
+  configOptions: SessionConfigOption[] | null;
+}
+
+const EFFORT_RANK_ORDER: Record<string, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  xhigh: 3,
+  max: 4,
+  ultra: 5,
+};
+
+const INLINE_EFFORT_SUFFIX_RE = /^(.+)-(low|medium|high|xhigh)$/i;
 
 interface ActiveTurnState {
   /** ACP session id (used for activeTurns keying and ACP-side correlation). */
@@ -203,13 +253,22 @@ class AsyncEventQueue<T> {
 }
 
 export class CodexACPProtocol implements AgentProtocol {
-  readonly platform = 'codex-acp';
+  readonly platform: string;
 
   private apiKey: string;
   private readonly spawnProcess;
-  private readonly command: string;
+  private readonly agentLabel: string;
+  private readonly logPrefix: string;
+  private readonly apiKeyEnvVar: string | null;
+  private readonly explicitCommand?: string;
+  private readonly commandResolver?: () => string;
   private readonly args: string[];
+  private readonly argsResolver?: () => string[];
   private readonly extraEnv: Record<string, string>;
+  private readonly envLoader?: () => Record<string, string>;
+  private readonly onProcessExit?: () => void;
+  private readonly mapPermissionMode: (permissionMode: string) => string;
+  private readonly applyModel: boolean;
   private readonly onPermissionRequest?: CodexACPProtocolDeps['onPermissionRequest'];
   private readonly onBeforeFileWrite?: OnBeforeFileWrite;
   private readonly onTurnFilesEdited?: OnTurnFilesEdited;
@@ -219,18 +278,37 @@ export class CodexACPProtocol implements AgentProtocol {
   private initializationPromise: Promise<void> | null = null;
   private readonly activeTurns = new Map<string, ActiveTurnState>();
   private readonly sessionTools = new Map<string, Map<string, SessionToolState>>();
+  private readonly sessionConfigs = new Map<string, SessionConfigState>();
   private readonly knownSessionIds = new Set<string>();
   private processExitError: Error | null = null;
 
   constructor(apiKey: string, deps?: CodexACPProtocolDeps) {
     this.apiKey = apiKey;
+    this.platform = deps?.platform ?? 'codex-acp';
+    this.agentLabel = deps?.agentLabel ?? 'Codex ACP';
+    this.logPrefix = deps?.logPrefix ?? 'CodexACPProtocol';
+    this.apiKeyEnvVar = deps?.apiKeyEnvVar === undefined ? 'OPENAI_API_KEY' : deps.apiKeyEnvVar;
     this.spawnProcess = deps?.spawnProcess ?? spawn;
-    this.command = deps?.command || process.env.NIMBALYST_CODEX_ACP_COMMAND || CodexACPProtocol.resolveCodexAcpBinary() || 'codex-acp';
-    this.args = deps?.args ?? CodexACPProtocol.parseArgs(process.env.NIMBALYST_CODEX_ACP_ARGS);
+    this.commandResolver = deps?.commandResolver;
+    this.explicitCommand = deps?.command;
+    const isDefaultCodex = this.platform === 'codex-acp';
+    this.args = deps?.args ?? (isDefaultCodex ? CodexACPProtocol.parseArgs(process.env.NIMBALYST_CODEX_ACP_ARGS) : []);
+    this.argsResolver = deps?.argsResolver;
     this.extraEnv = deps?.env ?? {};
+    this.envLoader = deps?.envLoader;
+    this.onProcessExit = deps?.onProcessExit;
+    this.mapPermissionMode = deps?.mapPermissionMode ?? CodexACPProtocol.defaultCodexPermissionMode;
+    this.applyModel = deps?.applyModel ?? false;
     this.onPermissionRequest = deps?.onPermissionRequest;
     this.onBeforeFileWrite = deps?.onBeforeFileWrite;
     this.onTurnFilesEdited = deps?.onTurnFilesEdited;
+  }
+
+  private static defaultCodexPermissionMode(permissionMode: string): string {
+    if (permissionMode === 'allow-all' || permissionMode === 'bypass-all') {
+      return 'full-access';
+    }
+    return 'auto';
   }
 
   setApiKey(apiKey: string): void {
@@ -239,27 +317,53 @@ export class CodexACPProtocol implements AgentProtocol {
 
   /** Useful for diagnostics: returns the binary path the protocol will spawn. */
   getResolvedCommand(): string {
-    return this.command;
+    if (this.explicitCommand) {
+      return this.explicitCommand;
+    }
+    if (this.commandResolver) {
+      return this.commandResolver();
+    }
+    if (this.platform === 'codex-acp') {
+      return process.env.NIMBALYST_CODEX_ACP_COMMAND || CodexACPProtocol.resolveCodexAcpBinary() || 'codex-acp';
+    }
+    return 'codex-acp';
   }
 
   async createSession(options: SessionOptions): Promise<ProtocolSession> {
     const connection = await this.getConnection();
+    const convertedMcpServers = this.convertMcpServers(options.mcpServers);
     let result;
     try {
-      const convertedMcpServers = this.convertMcpServers(options.mcpServers);
       result = await connection.newSession({
         cwd: options.workspacePath,
         mcpServers: convertedMcpServers,
       });
     } catch (error) {
       const detail = this.formatError(error);
-      console.error('[CodexACPProtocol] newSession failed:', detail);
+      console.error(`[${this.logPrefix}] newSession failed:`, detail);
       throw new Error(`Failed to create ACP session: ${detail}`);
     }
+
+    const configState: SessionConfigState = {
+      deliveredMcpServerCount: convertedMcpServers.length,
+      models: result.models ?? null,
+      configOptions: result.configOptions ?? null,
+    };
+    this.sessionConfigs.set(result.sessionId, configState);
 
     if (options.permissionMode) {
       await this.setSessionModeIfNeeded(connection, result.sessionId, options.permissionMode);
     }
+
+    const appliedModel = this.applyModel
+      ? await this.applySessionModelAndEffort(
+          connection,
+          result.sessionId,
+          options.model,
+          this.extractEffortLevel(options),
+          configState,
+        )
+      : undefined;
 
     this.knownSessionIds.add(result.sessionId);
     this.sessionTools.set(result.sessionId, new Map());
@@ -267,9 +371,12 @@ export class CodexACPProtocol implements AgentProtocol {
     return {
       id: result.sessionId,
       platform: this.platform,
+      deliveredMcpServerCount: configState.deliveredMcpServerCount,
+      ...(appliedModel ? { appliedModel } : {}),
       raw: {
         workspacePath: options.workspacePath,
         options,
+        ...(configState.models ? { models: configState.models } : {}),
       },
     };
   }
@@ -279,11 +386,17 @@ export class CodexACPProtocol implements AgentProtocol {
 
     if (!this.knownSessionIds.has(sessionId)) {
       let resumed = false;
+      const convertedMcpServers = this.convertMcpServers(options.mcpServers);
       try {
-        await connection.loadSession({
+        const loadResult = await connection.loadSession({
           sessionId,
           cwd: options.workspacePath,
-          mcpServers: this.convertMcpServers(options.mcpServers),
+          mcpServers: convertedMcpServers,
+        });
+        this.sessionConfigs.set(sessionId, {
+          deliveredMcpServerCount: convertedMcpServers.length,
+          models: loadResult?.models ?? null,
+          configOptions: loadResult?.configOptions ?? null,
         });
         resumed = true;
       } catch {
@@ -299,6 +412,23 @@ export class CodexACPProtocol implements AgentProtocol {
       await this.setSessionModeIfNeeded(connection, sessionId, options.permissionMode);
     }
 
+    const configState = this.sessionConfigs.get(sessionId) ?? {
+      deliveredMcpServerCount: this.convertMcpServers(options.mcpServers).length,
+      models: null,
+      configOptions: null,
+    };
+    this.sessionConfigs.set(sessionId, configState);
+
+    const appliedModel = this.applyModel
+      ? await this.applySessionModelAndEffort(
+          connection,
+          sessionId,
+          options.model,
+          this.extractEffortLevel(options),
+          configState,
+        )
+      : undefined;
+
     this.knownSessionIds.add(sessionId);
     if (!this.sessionTools.has(sessionId)) {
       this.sessionTools.set(sessionId, new Map());
@@ -307,9 +437,12 @@ export class CodexACPProtocol implements AgentProtocol {
     return {
       id: sessionId,
       platform: this.platform,
+      deliveredMcpServerCount: configState.deliveredMcpServerCount,
+      ...(appliedModel ? { appliedModel } : {}),
       raw: {
         workspacePath: options.workspacePath,
         options,
+        ...(configState.models ? { models: configState.models } : {}),
       },
     };
   }
@@ -336,9 +469,10 @@ export class CodexACPProtocol implements AgentProtocol {
       this.sessionTools.set(session.id, new Map());
     }
 
-    const abortSignal = session.raw?.options && typeof session.raw.options === 'object'
-      ? (session.raw.options as { abortSignal?: AbortSignal }).abortSignal
-      : undefined;
+    const abortSignal = message.abortSignal
+      ?? (session.raw?.options && typeof session.raw.options === 'object'
+        ? (session.raw.options as { abortSignal?: AbortSignal }).abortSignal
+        : undefined);
 
     const abortHandler = () => {
       void this.cancelPrompt(session.id);
@@ -402,6 +536,7 @@ export class CodexACPProtocol implements AgentProtocol {
   cleanupSession(session: ProtocolSession): void {
     this.activeTurns.delete(session.id);
     this.sessionTools.delete(session.id);
+    this.sessionConfigs.delete(session.id);
     this.knownSessionIds.delete(session.id);
   }
 
@@ -411,12 +546,17 @@ export class CodexACPProtocol implements AgentProtocol {
     }
     this.activeTurns.clear();
     this.sessionTools.clear();
+    this.sessionConfigs.clear();
     this.knownSessionIds.clear();
 
+    const hadChild = this.childProcess !== null;
     this.childProcess?.kill();
     this.childProcess = null;
     this.connection = null;
     this.initializationPromise = null;
+    if (hadChild) {
+      this.onProcessExit?.();
+    }
   }
 
   private async getConnection(): Promise<ACPClientConnection> {
@@ -430,7 +570,7 @@ export class CodexACPProtocol implements AgentProtocol {
     await this.initializationPromise;
 
     if (!this.connection) {
-      throw new Error('Failed to initialize Codex ACP connection');
+      throw new Error(`Failed to initialize ${this.agentLabel} connection`);
     }
 
     return this.connection;
@@ -438,29 +578,29 @@ export class CodexACPProtocol implements AgentProtocol {
 
   private async initializeConnection(): Promise<void> {
     this.processExitError = null;
+    const command = this.getResolvedCommand();
+    const spawnArgs = this.argsResolver ? this.argsResolver() : this.args;
+    const dynamicEnv = this.envLoader?.() ?? {};
     // Scrub after the final merge, never before: a key deleted upstream is
     // merely absent, and absence cannot mask the `...process.env` spread above.
-    const env = scrubProviderApiKeys({ ...process.env, ...this.extraEnv });
-    // OPENAI_API_KEY is re-applied here, deliberately, after the scrub removed
-    // it. Codex needs a key to authenticate, and this one is not ambient: it is
-    // the key the user explicitly configured in Nimbalyst settings, handed to
-    // the constructor. The distinction is the whole point of the scrub -- a
-    // configured key authenticates, one that merely happens to sit in the
-    // user's shell never does. Do not fold this back into the merge above.
-    if (this.apiKey) {
-      env.OPENAI_API_KEY = this.apiKey;
+    const env = scrubProviderApiKeys({ ...process.env, ...dynamicEnv, ...this.extraEnv });
+    // Re-apply an explicitly configured provider API key after scrubbing ambient
+    // shell keys. Providers that rely solely on CLI login pass `apiKeyEnvVar: null`.
+    if (this.apiKey && this.apiKeyEnvVar) {
+      env[this.apiKeyEnvVar] = this.apiKey;
     }
 
-    const child = this.spawnProcess(this.command, this.args, {
+    const child = this.spawnProcess(command, spawnArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
       cwd: process.cwd(),
+      windowsHide: true,
     });
 
     this.childProcess = child;
 
     // Bounded rolling buffer of recent stderr. The previous unbounded
-    // `Buffer[]` accumulated for the lifetime of the Codex child process,
+    // `Buffer[]` accumulated for the lifetime of the child process,
     // which leaked hundreds of MB over long sessions and crashed the main
     // process with a V8 fatal abort (issue #119).
     let stderrTail: Buffer = Buffer.alloc(0);
@@ -468,7 +608,7 @@ export class CodexACPProtocol implements AgentProtocol {
       stderrTail = appendBoundedTail(stderrTail, chunk, STDERR_TAIL_LIMIT_BYTES);
       const text = chunk.toString('utf-8').trim();
       if (text) {
-        console.log(`[CodexACPProtocol:stderr] ${text}`);
+        console.log(`[${this.logPrefix}:stderr] ${text}`);
       }
     });
 
@@ -479,13 +619,14 @@ export class CodexACPProtocol implements AgentProtocol {
       const stderr = stderrTail.toString('utf-8').trim();
       const exitReason =
         code !== null
-          ? `Codex ACP process exited with code ${code}`
-          : `Codex ACP process exited with signal ${signal ?? 'unknown'}`;
+          ? `${this.agentLabel} process exited with code ${code}`
+          : `${this.agentLabel} process exited with signal ${signal ?? 'unknown'}`;
       const message = stderr ? `${exitReason}\nstderr: ${stderr}` : exitReason;
       this.processExitError = new Error(message);
       this.childProcess = null;
       this.connection = null;
       this.initializationPromise = null;
+      this.onProcessExit?.();
     });
 
     const stream = ndJsonStream(
@@ -526,7 +667,7 @@ export class CodexACPProtocol implements AgentProtocol {
     } catch (error) {
       this.destroy();
       throw new Error(
-        `Failed to initialize Codex ACP agent "${this.command}": ${this.formatError(
+        `Failed to initialize ${this.agentLabel} agent "${command}": ${this.formatError(
           this.processExitError ?? error,
         )}`,
       );
@@ -534,6 +675,13 @@ export class CodexACPProtocol implements AgentProtocol {
   }
 
   private handleSessionUpdate(params: SessionNotification): void {
+    if (params.update.sessionUpdate === 'config_option_update') {
+      const cfg = this.sessionConfigs.get(params.sessionId);
+      if (cfg && Array.isArray(params.update.configOptions)) {
+        cfg.configOptions = params.update.configOptions;
+      }
+    }
+
     const turn = this.activeTurns.get(params.sessionId);
     if (!turn) {
       return;
@@ -696,7 +844,12 @@ export class CodexACPProtocol implements AgentProtocol {
       case 'agent_thought_chunk':
         return this.mapContentChunk('reasoning', update.content);
       case 'tool_call': {
-        const toolName = this.deriveToolName(update.title, update.kind);
+        const rawName = (update as { name?: unknown }).name;
+        const toolName = this.deriveToolName(
+          update.title,
+          update.kind,
+          typeof rawName === 'string' ? rawName : undefined,
+        );
         const toolState = this.createOrUpdateToolState(sessionId, update.toolCallId, {
           name: toolName,
           title: update.title,
@@ -886,7 +1039,12 @@ export class CodexACPProtocol implements AgentProtocol {
     return nextState;
   }
 
-  private deriveToolName(title: string, kind?: string | null): string {
+  private deriveToolName(title: string, kind?: string | null, rawName?: string): string {
+    const normalizedRaw = rawName?.trim().toLowerCase();
+    if (normalizedRaw === 'search_web' || normalizedRaw === 'web_search') {
+      return 'WebSearch';
+    }
+
     const cleaned = title.trim().replace(/^Tool:\s*/i, '');
 
     const match = /^([A-Za-z0-9_-]+)[./]([A-Za-z0-9_-]+)/.exec(cleaned);
@@ -906,6 +1064,10 @@ export class CodexACPProtocol implements AgentProtocol {
         }
       }
       return `mcp__${serverName}__${toolName}`;
+    }
+
+    if (kind === 'search' && /\bon Web$/i.test(cleaned)) {
+      return 'WebSearch';
     }
 
     switch (kind) {
@@ -993,6 +1155,12 @@ export class CodexACPProtocol implements AgentProtocol {
       input_tokens: usage.inputTokens,
       output_tokens: usage.outputTokens,
       total_tokens: usage.totalTokens,
+      ...(typeof usage.cachedReadTokens === 'number'
+        ? { cache_read_input_tokens: usage.cachedReadTokens }
+        : {}),
+      ...(typeof usage.cachedWriteTokens === 'number'
+        ? { cache_creation_input_tokens: usage.cachedWriteTokens }
+        : {}),
     };
   }
 
@@ -1065,36 +1233,193 @@ export class CodexACPProtocol implements AgentProtocol {
     sessionId: string,
     permissionMode: string
   ): Promise<void> {
-    // Map Nimbalyst permission modes to Codex ACP approval presets.
-    // Codex exposes approval as a config option (id: "mode") rather than
-    // a standard ACP session mode.
-    //
-    // Codex modes: "read-only" (model refuses writes), "auto" (asks for risky
-    // ops via requestPermission callback), "full-access" (no approval needed).
-    let modeValue: string;
-    if (permissionMode === 'allow-all' || permissionMode === 'bypass-all') {
-      modeValue = 'full-access';
-    } else {
-      // "ask" and any other mode → "auto" so Codex fires requestPermission
-      modeValue = 'auto';
-    }
+    const modeValue = this.mapPermissionMode(permissionMode);
 
     try {
-      await connection.setSessionConfigOption({
+      const response = await connection.setSessionConfigOption({
         sessionId,
         configId: 'mode',
         value: modeValue,
       });
+      const cfg = this.sessionConfigs.get(sessionId);
+      if (cfg && Array.isArray(response?.configOptions)) {
+        cfg.configOptions = response.configOptions;
+      }
     } catch (configError) {
-      console.warn('[CodexACPProtocol] setSessionConfigOption failed, trying setSessionMode:', configError);
+      console.warn(`[${this.logPrefix}] setSessionConfigOption failed, trying setSessionMode:`, configError);
       try {
         await connection.setSessionMode({
           sessionId,
           modeId: modeValue,
         });
       } catch (modeError) {
-        console.warn('[CodexACPProtocol] Failed to set session mode:', modeError);
+        console.warn(`[${this.logPrefix}] Failed to set session mode:`, modeError);
       }
+    }
+  }
+
+  private extractEffortLevel(options: SessionOptions): string | undefined {
+    const raw = options.raw as { effortLevel?: unknown } | undefined;
+    return typeof raw?.effortLevel === 'string' && raw.effortLevel.trim()
+      ? raw.effortLevel.trim().toLowerCase()
+      : undefined;
+  }
+
+  private readSelectOptionValues(option: SessionConfigOption | undefined): string[] {
+    if (!option || option.type !== 'select' || !Array.isArray(option.options)) {
+      return [];
+    }
+    const values: string[] = [];
+    for (const entry of option.options) {
+      if ('value' in entry && typeof entry.value === 'string') {
+        values.push(entry.value);
+      } else if ('options' in entry && Array.isArray(entry.options)) {
+        for (const nested of entry.options) {
+          if (typeof nested.value === 'string') {
+            values.push(nested.value);
+          }
+        }
+      }
+    }
+    return values;
+  }
+
+  private pickAllowedEffort(requested: string, allowed: string[]): string | undefined {
+    if (allowed.length === 0) return undefined;
+    if (allowed.includes(requested)) return requested;
+    const requestedRank = EFFORT_RANK_ORDER[requested];
+    if (requestedRank === undefined) return undefined;
+    // Pick the highest allowed effort at or below the requested rank; if every
+    // offered level is higher, pick the lowest offered level.
+    const ranked = allowed
+      .filter((value) => value in EFFORT_RANK_ORDER)
+      .sort((a, b) => EFFORT_RANK_ORDER[a] - EFFORT_RANK_ORDER[b]);
+    if (ranked.length === 0) return undefined;
+    const atOrBelow = ranked.filter((value) => EFFORT_RANK_ORDER[value] <= requestedRank);
+    return atOrBelow.length > 0 ? atOrBelow[atOrBelow.length - 1] : ranked[0];
+  }
+
+  /**
+   * Apply the requested model and reasoning effort onto an ACP session.
+   *
+   * Prefers ACP `configOptions` (`model` + `thought_level`, used by `agy acp`)
+   * so base models pair cleanly with Nimbalyst's effort selector and unsupported
+   * thinking levels clamp to the highest level the selected model actually
+   * offers. Falls back to `session/set_model` when `configOptions` does not
+   * advertise a `model` selector. Never aborts a turn on an unknown/retired
+   * model id; instead reports the live model.
+   */
+  private async applySessionModelAndEffort(
+    connection: ACPClientConnection,
+    sessionId: string,
+    requestedModel: string | undefined,
+    requestedEffort: string | undefined,
+    state: SessionConfigState,
+  ): Promise<string | undefined> {
+    const current = state.models?.currentModelId ?? undefined;
+    const wanted = requestedModel?.trim();
+    if (!wanted && !requestedEffort) {
+      return current;
+    }
+
+    const findConfig = (id: string) =>
+      state.configOptions?.find((opt) => opt.id === id && opt.type === 'select');
+
+    const modelConfig = findConfig('model');
+    if (modelConfig && modelConfig.type === 'select') {
+      const allowedModels = this.readSelectOptionValues(modelConfig);
+      let baseModel = wanted;
+      let inlineEffort: string | undefined;
+
+      if (wanted && !allowedModels.includes(wanted)) {
+        const suffixMatch = INLINE_EFFORT_SUFFIX_RE.exec(wanted);
+        if (suffixMatch && allowedModels.includes(suffixMatch[1])) {
+          baseModel = suffixMatch[1];
+          inlineEffort = suffixMatch[2].toLowerCase();
+        }
+      }
+
+      if (baseModel && allowedModels.includes(baseModel)) {
+        if (modelConfig.currentValue !== baseModel) {
+          try {
+            const updated = await connection.setSessionConfigOption({
+              sessionId,
+              configId: 'model',
+              value: baseModel,
+            });
+            if (Array.isArray(updated?.configOptions)) {
+              state.configOptions = updated.configOptions;
+            }
+          } catch (error) {
+            console.warn(`[${this.logPrefix}] Failed to set model config option "${baseModel}":`, error);
+            return current;
+          }
+        }
+
+        const effectiveEffort = inlineEffort ?? requestedEffort;
+        const thoughtConfig = findConfig('thought_level');
+        if (effectiveEffort && thoughtConfig && thoughtConfig.type === 'select') {
+          const allowedEfforts = this.readSelectOptionValues(thoughtConfig);
+          const clamped = this.pickAllowedEffort(effectiveEffort, allowedEfforts);
+          if (clamped && thoughtConfig.currentValue !== clamped) {
+            try {
+              const updated = await connection.setSessionConfigOption({
+                sessionId,
+                configId: 'thought_level',
+                value: clamped,
+              });
+              if (Array.isArray(updated?.configOptions)) {
+                state.configOptions = updated.configOptions;
+              }
+            } catch (error) {
+              console.warn(`[${this.logPrefix}] Failed to set thought_level "${clamped}":`, error);
+            }
+          }
+          if (clamped) {
+            const combined = `${baseModel}-${clamped}`;
+            if (state.models) state.models.currentModelId = combined;
+            return combined;
+          }
+        }
+
+        if (state.models) state.models.currentModelId = baseModel;
+        return baseModel;
+      }
+    }
+
+    // Fallback: `session/set_model` against `models.availableModels`.
+    const available = state.models?.availableModels ?? [];
+    if (!wanted || available.length === 0) {
+      return current;
+    }
+
+    let targetModelId: string | undefined;
+    if (requestedEffort) {
+      const matchingEfforts = available
+        .map((m) => {
+          const match = INLINE_EFFORT_SUFFIX_RE.exec(m.modelId);
+          return match && match[1] === wanted ? match[2].toLowerCase() : null;
+        })
+        .filter((e): e is string => e !== null);
+      const clamped = this.pickAllowedEffort(requestedEffort, matchingEfforts);
+      if (clamped) {
+        targetModelId = `${wanted}-${clamped}`;
+      }
+    }
+    if (!targetModelId && available.some((m) => m.modelId === wanted)) {
+      targetModelId = wanted;
+    }
+    if (!targetModelId || targetModelId === current) {
+      return current;
+    }
+
+    try {
+      await connection.unstable_setSessionModel({ sessionId, modelId: targetModelId });
+      if (state.models) state.models.currentModelId = targetModelId;
+      return targetModelId;
+    } catch (error) {
+      console.warn(`[${this.logPrefix}] Failed to set session model "${targetModelId}":`, error);
+      return current;
     }
   }
 
@@ -1213,16 +1538,44 @@ export class CodexACPProtocol implements AgentProtocol {
 
   private formatError(error: unknown): string {
     if (error instanceof Error) {
-      return error.message;
+      const data = (error as { data?: unknown }).data;
+      const detail = this.extractErrorDataDetail(data);
+      return detail ? `${error.message}: ${detail}` : error.message;
     }
     if (typeof error === 'string') {
       return error;
+    }
+    if (error && typeof error === 'object') {
+      const record = error as { message?: unknown; data?: unknown };
+      if (typeof record.message === 'string') {
+        const detail = this.extractErrorDataDetail(record.data);
+        return detail ? `${record.message}: ${detail}` : record.message;
+      }
     }
     try {
       return JSON.stringify(error);
     } catch {
       return String(error);
     }
+  }
+
+  private extractErrorDataDetail(data: unknown): string | undefined {
+    if (!data) return undefined;
+    if (typeof data === 'string') return data.trim() || undefined;
+    if (typeof data === 'object') {
+      const record = data as Record<string, unknown>;
+      for (const key of ['details', 'message', 'error'] as const) {
+        if (typeof record[key] === 'string' && record[key].trim()) {
+          return record[key].trim();
+        }
+      }
+      try {
+        return JSON.stringify(data);
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
   }
 
   /**

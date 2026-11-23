@@ -11,7 +11,7 @@
  * which is why the provider declares `contextReporting: 'none'` rather than
  * drawing a percentage it cannot measure (#914).
  */
-import { AntigravityServerManager } from './AntigravityServerManager';
+import { AntigravityServerManager, type AntigravityEndpoint } from './AntigravityServerManager';
 
 export interface AntigravityAccountUsage {
   name?: string;
@@ -92,8 +92,8 @@ export class AntigravityUsageMeter {
   }
 
   /** One call returning account usage + all per-model quotas + a warn flag. */
-  async getSnapshot(): Promise<AntigravityUsageSnapshot> {
-    const us = await this.server.getUserStatus();
+  async getSnapshot(ep?: AntigravityEndpoint): Promise<AntigravityUsageSnapshot> {
+    const us = await this.server.getUserStatus(ep);
     const plan = us?.planStatus ?? {};
     const pi = plan?.planInfo ?? {};
     const account: AntigravityAccountUsage = {

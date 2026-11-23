@@ -71,7 +71,16 @@ interface ACPToolCallLocation {
   line?: unknown;
 }
 
+export interface CodexACPRawParserOptions {
+  /**
+   * When true, `agent_thought_chunk` updates emit `assistant_message` descriptors
+   * with `thinking` (collapsed by default in the UI) instead of visible `text`.
+   */
+  thoughtAsThinking?: boolean;
+}
+
 export class CodexACPRawParser implements IRawMessageParser {
+  private readonly thoughtAsThinking: boolean;
   // Tracks tool calls we've already emitted a started descriptor for in this
   // batch so a tool_call_update doesn't double-create.
   private readonly emittedStartedToolCallIds = new Set<string>();
@@ -82,6 +91,10 @@ export class CodexACPRawParser implements IRawMessageParser {
   // Latest usage snapshot from usage_update events; flushed into turn_ended
   // when we synthesize one.
   private latestContext: { used: number; size: number } | null = null;
+
+  constructor(options?: CodexACPRawParserOptions) {
+    this.thoughtAsThinking = options?.thoughtAsThinking ?? false;
+  }
 
   async parseMessage(
     msg: RawMessage,
@@ -184,6 +197,9 @@ export class CodexACPRawParser implements IRawMessageParser {
       case 'agent_message_chunk':
         return this.parseChunkAsAssistant(msg, update.content);
       case 'agent_thought_chunk':
+        if (this.thoughtAsThinking) {
+          return this.parseChunkAsThinking(msg, update.content);
+        }
         // Reasoning is rendered as assistant content so it shows in the
         // transcript -- there's no separate "reasoning" canonical type.
         return this.parseChunkAsAssistant(msg, update.content);
@@ -226,6 +242,33 @@ export class CodexACPRawParser implements IRawMessageParser {
     return [];
   }
 
+  private parseChunkAsThinking(
+    msg: RawMessage,
+    block: ACPContentBlock | undefined,
+  ): CanonicalEventDescriptor[] {
+    if (!block) return [];
+
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.length > 0) {
+      return [{
+        type: 'assistant_message',
+        text: '',
+        thinking: block.text,
+        createdAt: msg.createdAt,
+      }];
+    }
+
+    if (block.type === 'resource_link' && typeof block.uri === 'string' && block.uri.length > 0) {
+      return [{
+        type: 'assistant_message',
+        text: '',
+        thinking: block.uri,
+        createdAt: msg.createdAt,
+      }];
+    }
+
+    return [];
+  }
+
   private parseToolCall(
     msg: RawMessage,
     update: ACPSessionUpdate,
@@ -234,7 +277,8 @@ export class CodexACPRawParser implements IRawMessageParser {
     const callId = typeof update.toolCallId === 'string' ? update.toolCallId : '';
     if (!callId) return [];
 
-    const toolName = this.deriveToolName(update.title ?? 'Tool call', update.kind);
+    const rawName = typeof update.name === 'string' ? update.name : undefined;
+    const toolName = this.deriveToolName(update.title ?? 'Tool call', update.kind, rawName);
     this.toolNamesById.set(callId, toolName);
 
     if (this.emittedStartedToolCallIds.has(callId) || context.hasToolCall(callId)) {
@@ -371,7 +415,12 @@ export class CodexACPRawParser implements IRawMessageParser {
    * Mirrors CodexACPProtocol.deriveToolName so canonical events have the
    * same tool identifiers as live-streamed events.
    */
-  private deriveToolName(title: string, kind?: string | null): string {
+  private deriveToolName(title: string, kind?: string | null, rawName?: string): string {
+    const normalizedRaw = rawName?.trim().toLowerCase();
+    if (normalizedRaw === 'search_web' || normalizedRaw === 'web_search') {
+      return 'WebSearch';
+    }
+
     const cleaned = title.trim().replace(/^Tool:\s*/i, '');
 
     const match = /^([A-Za-z0-9_-]+)[./]([A-Za-z0-9_-]+)/.exec(cleaned);
@@ -391,6 +440,10 @@ export class CodexACPRawParser implements IRawMessageParser {
         }
       }
       return `mcp__${serverName}__${toolName}`;
+    }
+
+    if (kind === 'search' && /\bon Web$/i.test(cleaned)) {
+      return 'WebSearch';
     }
 
     switch (kind) {

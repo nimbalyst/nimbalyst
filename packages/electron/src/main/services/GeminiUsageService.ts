@@ -107,6 +107,8 @@ class GeminiUsageServiceImpl {
       this.isSleeping = false;
       this.startPolling();
       await this.refresh();
+    } else if (!this.cachedUsage || this.cachedUsage.notStarted) {
+      await this.refresh();
     }
   }
 
@@ -184,11 +186,12 @@ class GeminiUsageServiceImpl {
    */
   private async fetchSnapshot(): Promise<GeminiUsageSnapshotResult> {
     const server = AntigravityServerManager.shared();
-    if (server.currentEndpoint() === null) {
+    const endpoint = server.currentEndpoint();
+    if (endpoint === null) {
       return { available: false, notStarted: true, error: GEMINI_NOT_STARTED_MESSAGE };
     }
     try {
-      const snapshot = await new AntigravityUsageMeter(server).getSnapshot();
+      const snapshot = await new AntigravityUsageMeter(server).getSnapshot(endpoint);
       return { available: true, snapshot };
     } catch (error) {
       return {
