@@ -11,6 +11,8 @@ function setup(overrides: Partial<TeammateIdleWakeDeps> = {}) {
     isSessionActive: () => true,
     startSession: vi.fn(async () => {}),
     endSession: vi.fn(async () => {}),
+    isBlockedOnUser: () => false,
+    holdForUser: vi.fn(),
     // The turn cd'd into a worktree Nimbalyst did not create, so its path was
     // adopted in memory only; the session row still belongs to OWNER.
     turnWorkspacePath: () => ADOPTED_WORKTREE,
@@ -45,5 +47,14 @@ describe('teammate idle wake', () => {
     await noWindow.wake({ sessionId: 's1', message: 'x' });
     expect(noWindow.deps.endSession).toHaveBeenCalledWith('s1');
     expect(noWindow.deps.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('holds the wake while the lead is waiting on the user, instead of starting a turn', async () => {
+    const { deps, wake } = setup({ isBlockedOnUser: () => true });
+    await wake({ sessionId: 's1', message: 'background task finished' });
+
+    expect(deps.holdForUser).toHaveBeenCalledWith('s1', 'background task finished');
+    expect(deps.startSession).not.toHaveBeenCalled();
+    expect(deps.sendMessage).not.toHaveBeenCalled();
   });
 });
