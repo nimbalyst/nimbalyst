@@ -459,6 +459,9 @@ export function isTranscriptAtBottom(distanceFromBottom: number): boolean {
   return distanceFromBottom < TRANSCRIPT_BOTTOM_THRESHOLD_PX;
 }
 
+/** Quiet time after a touch lifts before its momentum scroll counts as over. */
+const TOUCH_SCROLL_SETTLE_MS = 150;
+
 /** Keys that scroll a focused transcript up. */
 const SCROLL_UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home']);
 
@@ -638,14 +641,54 @@ export const RichTranscriptView = React.forwardRef<
     }
   }, [getAtBottomState, scrollToEnd]);
 
+  // virtua 0.51.3 cannot cancel a scrollToIndex: a jump (search hit, message
+  // link, permission or question prompt) keeps re-aiming at its row on every
+  // resize until 150ms pass without one, which never happens while a reply
+  // streams. Any newer imperative scroll supersedes it, and a smooth one aims
+  // once its rows are measured and then lets go, so resuming follow replaces
+  // the jump with a single smooth aim at the end, where the reader already is.
+  const releaseNavigationScroll = useCallback(() => {
+    const scroller = scrollContainerRef.current?.querySelector<HTMLElement>('.rich-transcript-vlist');
+    vlistRef.current?.scrollToIndex(Number.MAX_SAFE_INTEGER, {
+      align: 'end', offset: scroller?.scrollHeight ?? 0, smooth: true,
+    });
+  }, []);
+
+  // Finger lifted: momentum keeps scrolling without a pointer. Count the reader
+  // as holding the list until it has been quiet this long.
+  const touchSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleTouchScroll = useCallback(() => {
+    if (touchSettleTimerRef.current) clearTimeout(touchSettleTimerRef.current);
+    touchSettleTimerRef.current = setTimeout(() => {
+      touchSettleTimerRef.current = null;
+      pointerHeldRef.current = false;
+    }, TOUCH_SCROLL_SETTLE_MS);
+  }, []);
+  useEffect(() => () => {
+    if (touchSettleTimerRef.current) clearTimeout(touchSettleTimerRef.current);
+  }, []);
+
   // The wheel and keys leave follow mode before their scroll lands, so a row
   // resizing in the same frame cannot pin the reader back to the end.
   const handleScrollIntent = useCallback((event: React.WheelEvent<HTMLDivElement> | React.KeyboardEvent<HTMLDivElement> | React.PointerEvent<HTMLDivElement>) => {
     if (event.type === 'pointerdown') {
       pointerHeldRef.current = true;
-      const release = () => { pointerHeldRef.current = false; };
-      window.addEventListener('pointerup', release, { once: true });
-      window.addEventListener('pointercancel', release, { once: true });
+      if (touchSettleTimerRef.current) {
+        clearTimeout(touchSettleTimerRef.current);
+        touchSettleTimerRef.current = null;
+      }
+      const pointerType = (event as React.PointerEvent<HTMLDivElement>).pointerType;
+      // Native panning fires pointercancel as soon as it takes over a touch, then
+      // the drag and its momentum scroll on without the pointer. Hold until the
+      // finger lifts and the scroll settles, or a streamed resize re-pins them.
+      const isTouch = pointerType === 'touch' || pointerType === 'pen';
+      const endEvents = isTouch ? ['pointerup', 'touchend', 'touchcancel'] : ['pointerup', 'pointercancel'];
+      const end = () => {
+        endEvents.forEach(type => window.removeEventListener(type, end));
+        if (isTouch) settleTouchScroll();
+        else pointerHeldRef.current = false;
+      };
+      endEvents.forEach(type => window.addEventListener(type, end));
       return;
     }
     const scrollsUp = 'deltaY' in event
@@ -992,7 +1035,8 @@ export const RichTranscriptView = React.forwardRef<
   const scrollToBottom = useCallback(() => {
     setAtBottomState(true);
     scrollToEnd();
-  }, [scrollToEnd, setAtBottomState]);
+    releaseNavigationScroll();
+  }, [releaseNavigationScroll, scrollToEnd, setAtBottomState]);
 
   const toggleMessageCollapse = useCallback((index: number) => {
     setCollapsedMessages(prev => {
@@ -1223,8 +1267,13 @@ export const RichTranscriptView = React.forwardRef<
                         const distanceFromBottom = scrollSize - offset - viewportSize;
                         const movedUp = offset < lastScrollOffsetRef.current;
                         lastScrollOffsetRef.current = offset;
+                        // Momentum after a lifted touch is still the reader's scroll.
+                        if (touchSettleTimerRef.current) settleTouchScroll();
+                        const wasFollowing = isAtBottomRef.current;
+                        const following = nextTranscriptFollowState(wasFollowing, distanceFromBottom, movedUp, pointerHeldRef.current);
                         // Update the per-session atom - this persists across component remounts
-                        setAtBottomState(nextTranscriptFollowState(isAtBottomRef.current, distanceFromBottom, movedUp, pointerHeldRef.current));
+                        setAtBottomState(following);
+                        if (following && !wasFollowing) releaseNavigationScroll();
                         if (scrollButtonRef.current) {
                           const show = distanceFromBottom > viewportSize;
                           scrollButtonRef.current.style.opacity = show ? '1' : '0';

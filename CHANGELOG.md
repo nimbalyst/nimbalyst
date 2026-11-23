@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deleting a session whose transcript was not open, or while sync was disconnected, now removes it from your other devices too. Before, the server never got the delete and the session could come back. A delete made offline is kept and sent once sync reconnects, including after a restart, and only for the account it was made under.
 - If the database worker crashes again right after Nimbalyst restarts it, Nimbalyst now tries again instead of leaving every database action failing until you restart the app.
 - Launching Nimbalyst while it is already running now brings its window back, or opens the Project Manager, even when the only window left is a hidden background one. On Windows and Linux, closing the Project Manager with no project open and no other window visible now quits the app instead of leaving it running with no window, which made later launches open and close again.
+- While an agent reply streams, scrolling up in the transcript (with the wheel, keys, scrollbar or touch) now keeps you where you scrolled instead of pulling you back to the bottom as the reply grows, and returning to the bottom after jumping to a search result, message or prompt follows the reply again.
 
 ### Removed
 <!-- Removed features go here -->
