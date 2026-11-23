@@ -20,6 +20,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 <!-- Removed features go here -->
 
+## [1.3.1] - 2026-11-23
+
+
+### Changed
+- Session model labels recognize Fable 5.2, GPT-6.2 Sol and Astra
+- Feature flags are no longer fetched at launch, since the app does not use them
+- The transcript test screen is compiled only in Debug builds
+
+### Fixed
+- Transcript image viewer not zooming or panning when the image loaded before the viewer measured it (#1990)
+- Transcript jumping back to an image after scrolling past it
+- Transcript pulling the reader back to the bottom while a reply streams
+- Transcript jumping after a native touch pan ends, and stale jumps firing after returning to the end of the transcript (#919)
+- Codex generated images showing as base64 text instead of an image
+- Opus 5.5 progress updates between tool calls missing from the transcript
+- Question and form cards: an answer closing a different question, denied forms still showing as waiting, and interrupted or backgrounded questions no longer answerable
+- Decision blocks in documents that allow a written answer not showing an Other choice
+- Nested lists under numbered items losing their nesting when a document is saved
+- A malformed session field hiding the session from the list
+- Creating a session failing against desktops on the SQLite database
+- New sessions sent to an offline computer record instead of the active desktop
+
 ## [1.3.0] - 2026-10-19
 
 
