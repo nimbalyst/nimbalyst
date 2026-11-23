@@ -77,6 +77,18 @@ describe('SQLiteStoreAdapter', () => {
     expect(after.rows.map((r) => r.content)).toEqual(['a', 'b']);
   });
 
+  it('matches a Cyrillic title substring regardless of query and title case', async () => {
+    const adapter = createSQLiteStoreAdapter(db);
+    await adapter.query(
+      'INSERT INTO ai_sessions (id, workspace_id, title, provider) VALUES ($1, $2, $3, $4)',
+      ['s1', 'ws1', 'Пост-запуск', 'claude'],
+    );
+    for (const query of ['пост', 'ПОСТ', 'ПоСт']) {
+      const hits = await adapter.searchSessionTitles!('ws1', query);
+      expect(hits.map(hit => hit.session_id)).toEqual(['s1']);
+    }
+  });
+
   it('runs a basic SELECT with $1 param', async () => {
     const adapter = createSQLiteStoreAdapter(db);
     await adapter.query(
