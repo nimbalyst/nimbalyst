@@ -256,4 +256,45 @@ describe('ExtensionEditorAPIRegistry ownership', () => {
     unregisterEditorAPI(filePath, visibleOwner);
     expect(getEditorAPI(filePath)).toBe(hiddenAPI);
   });
+
+  it('resolves a tool\'s relative paths and backend calls against the calling session\'s project', async () => {
+    // #1299: a tool ran with the session's project in its context, but its
+    // filesystem resolved relative paths against the window's first project.
+    const reads: string[] = [];
+    const backendCalls: Array<string | undefined> = [];
+    const extension = makeExtension([
+      {
+        name: 'read_relative',
+        description: 'Read a relative path',
+        access: { kind: 'filesystem' },
+        handler: async (_params, context) => {
+          await context.extensionContext.services.filesystem.readFile('notes/a.md');
+          await context.extensionContext.services.filesystem.readFile('/abs/b.md');
+          await context.extensionContext.services.ai!.callBackendTool('fixture.status', {});
+          return { success: true };
+        },
+      },
+    ]);
+    extension.context.services = {
+      filesystem: {
+        readFile: async (path: string) => { reads.push(path); return ''; },
+        writeFile: async () => {},
+        fileExists: async () => true,
+        findFiles: async () => [],
+      },
+      ai: {
+        callBackendTool: async (_name: string, _args?: Record<string, unknown>, workspacePath?: string) => {
+          backendCalls.push(workspacePath);
+          return {};
+        },
+      },
+    } as unknown as LoadedExtension['context']['services'];
+    registerExtensionTools(extension);
+
+    const result = await executeExtensionTool('fixture.read_relative', {}, { workspacePath: '/ws/b' });
+
+    expect(result).toEqual(expect.objectContaining({ success: true }));
+    expect(reads).toEqual(['/ws/b/notes/a.md', '/abs/b.md']);
+    expect(backendCalls).toEqual(['/ws/b']);
+  });
 });

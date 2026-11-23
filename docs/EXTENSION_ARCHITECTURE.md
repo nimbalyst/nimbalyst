@@ -81,6 +81,19 @@ hidden-editor lifecycle while preserving useful editor-writing tools like
 Excalidraw diagram edits. New extension tools should always set
 `ExtensionAITool.access`; `readOnly` is a deprecated compatibility flag.
 
+## Which Project a Call Acts On
+
+A window can have several projects open in its rail, so the on-screen project is a guess for anything that is not a direct click. Background and agent-initiated work names its project (#544, #1299).
+
+- `services.ai.sendPrompt` requires `workspacePath`, and main rejects a project the calling window does not have open.
+- `callBackendTool` requires `workspacePath`. Main refuses an unnamed call, except from the hidden screenshot capture window, whose one mounted file fixes the project.
+- Inside an AI tool handler, `context.extensionContext.services` is tied to the calling session's project (`scopeContextToProject` in `ExtensionAIToolsBridge.ts`): relative file paths resolve against it, `findFiles` searches it, and `callBackendTool`/`sendPrompt` default to it. A tool call with no project refuses relative paths instead of guessing.
+- Editors get their tab's local project from `EditorHost.workspacePath`. For a shared document `workspaceId` is an opaque collaboration scope key, not a path; never pass it as a project.
+- Non-tool extension code resolves a relative path against the window's on-screen project, asked of main per call (`extensions:get-active-project-path`). Never cache a project path in the renderer; the rail changes it.
+- Work that runs per project on a timer uses `filesystem.listProjectPaths()`, which lists each open project in exactly one window, and `findFiles(pattern, rootDir)`.
+
+Direct UI actions (a dialog, a settings picker) may still use the on-screen project.
+
 ## useEditorLifecycle Hook (Recommended)
 
 The `useEditorLifecycle` hook replaces all manual `EditorHost` subscription boilerplate with a single hook call. **All new custom editors should use this hook.**

@@ -576,6 +576,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
               fileName={tab.fileName}
               isActive={true}
               collabConfig={collabConfig}
+              workspacePath={workspaceId}
               onDirtyChange={handleDirtyChange}
               onGetContentReady={handleGetContentReady}
               onManualSaveReady={handleManualSaveReady}

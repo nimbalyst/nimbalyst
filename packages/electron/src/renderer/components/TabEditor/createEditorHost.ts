@@ -156,6 +156,8 @@ export function createEditorHost(options: EditorHostOptions): EditorHost {
     get isActive() { return options.isActive; },
     get visible() { return options.getVisible ? options.getVisible() : true; },
     workspaceId: options.workspaceId,
+    // A local tab's workspaceId is its project folder.
+    workspacePath: options.workspaceId,
 
     onVisibilityChanged: options.subscribeToVisibilityChanges
       ? (callback: (visible: boolean) => void) => options.subscribeToVisibilityChanges!(callback)

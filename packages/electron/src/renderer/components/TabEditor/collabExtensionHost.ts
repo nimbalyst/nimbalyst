@@ -323,6 +323,8 @@ export interface CollabExtensionHostArgs {
   fileName: string;
   isActive: boolean;
   workspaceId?: string;
+  /** Local project folder the tab is open in; workspaceId is a scope key. */
+  workspacePath?: string;
   activeConfig: CollabDocumentConfig;
   collaboration: CollaborationContext;
   onDirtyChange?: (isDirty: boolean) => void;
@@ -377,6 +379,7 @@ export function createCollabExtensionHost(
     fileName,
     isActive,
     workspaceId,
+    workspacePath,
     activeConfig,
     collaboration,
     onDirtyChange,
@@ -413,6 +416,7 @@ export function createCollabExtensionHost(
     get theme() { return getTheme ? getTheme() : 'auto'; },
     get isActive() { return isActive; },
     workspaceId,
+    workspacePath,
 
     onThemeChanged(callback: (theme: string) => void): () => void {
       return subscribeToThemeChanges ? subscribeToThemeChanges(callback) : () => {};

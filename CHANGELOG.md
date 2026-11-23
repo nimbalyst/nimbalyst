@@ -13,11 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Extensions must name a project when they call `sendPrompt` or one of their backend tools; a call without one is refused instead of using the project on screen. Editors get their tab's project from the new `EditorHost.workspacePath`.
 
 ### Fixed
 <!-- Bug fixes go here -->
 - An automation that runs on a schedule or from its document's Run Now button now starts its AI session in the project that contains the automation file, not whichever project is active in the window's project rail.
 - Automations in every project open in a window's project rail now run on schedule, not only those in the window's first project, and write their output and history into their own project.
+- A relative file path an agent passes to an extension tool now resolves against the session's project, not the window's first project.
 
 ### Removed
 <!-- Removed features go here -->

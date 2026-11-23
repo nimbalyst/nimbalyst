@@ -20,12 +20,11 @@ import { projectRootOf } from '../paths';
 function useExecutionHistory(outputLocation: string | undefined, automationFilePath: string) {
   // Relative paths belong to the project that holds this automation, which
   // need not be the window's first project (#1299).
-  const projectRootFor = useCallback(async (): Promise<string | undefined> => {
-    const own = projectRootOf(automationFilePath);
-    if (own) return own;
-    const state = await (window as any).electronAPI?.getInitialState?.();
-    return state?.workspacePath ?? undefined;
-  }, [automationFilePath]);
+  // An open document's path is absolute, so its project is always known.
+  const projectRootFor = useCallback(
+    async (): Promise<string | undefined> => projectRootOf(automationFilePath),
+    [automationFilePath],
+  );
 
   const [records, setRecords] = useState<ExecutionRecord[]>([]);
 

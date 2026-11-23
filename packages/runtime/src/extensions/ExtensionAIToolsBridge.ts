@@ -13,7 +13,7 @@ import { toolRegistry, type ToolDefinition } from '../ai/tools/definitions';
 import { editorRegistry } from '../ai/EditorRegistry';
 import { getExtensionLoader } from './ExtensionLoader';
 import { getEditorAPI as getCentralEditorAPI, flushEditorSave, getRegisteredPaths } from './ExtensionEditorAPIRegistry';
-import type { ExtensionAITool, ExtensionAIToolAccess, AIToolContext, LoadedExtension, ExtensionToolResult } from './types';
+import type { ExtensionAITool, ExtensionAIToolAccess, AIToolContext, ExtensionContext, LoadedExtension, ExtensionToolResult } from './types';
 
 // Track which tools were registered by which extension
 const extensionToolsMap = new Map<string, string[]>();
@@ -266,7 +266,7 @@ export async function executeExtensionTool(
     const aiContext: AIToolContext = {
       workspacePath: context.workspacePath,
       activeFilePath: resolvedFilePath,
-      extensionContext: handler.extension.context,
+      extensionContext: scopeContextToProject(handler.extension.context, context.workspacePath),
       editorAPI,
     };
 
@@ -356,6 +356,64 @@ export async function executeExtensionTool(
   }
 }
 
+function isAbsolutePath(path: string): boolean {
+  return path.startsWith('/') || /^[a-zA-Z]:/.test(path);
+}
+
+/**
+ * The extension context a tool handler sees, tied to the project of the
+ * session that called the tool (#1299). Relative file paths resolve against
+ * that project and backend tool calls default to it, instead of the window's
+ * first or on-screen project. Without a project, a relative path is refused
+ * rather than guessed.
+ */
+export function scopeContextToProject(
+  extensionContext: ExtensionContext,
+  workspacePath: string | undefined,
+): ExtensionContext {
+  const { filesystem, ai } = extensionContext.services ?? ({} as ExtensionContext['services']);
+  if (!filesystem && !ai) return extensionContext;
+
+  const resolve = (path: string): string => {
+    if (isAbsolutePath(path)) return path;
+    if (!workspacePath) {
+      throw new Error(`Relative path "${path}" needs the calling session's project, and this tool call has none. Pass an absolute path.`);
+    }
+    return `${workspacePath}/${path}`;
+  };
+
+  const services = { ...extensionContext.services };
+  if (filesystem) {
+    services.filesystem = {
+      ...filesystem,
+      readFile: (path) => filesystem.readFile(resolve(path)),
+      writeFile: (path, content) => filesystem.writeFile(resolve(path), content),
+      fileExists: (path) => filesystem.fileExists(resolve(path)),
+      findFiles: (pattern, rootDir) => {
+        const root = rootDir ?? workspacePath;
+        if (!root) {
+          throw new Error('findFiles needs the calling session\'s project, and this tool call has none. Pass a root directory.');
+        }
+        return filesystem.findFiles(pattern, root);
+      },
+    };
+  }
+  if (ai) {
+    services.ai = {
+      ...ai,
+      ...(ai.callBackendTool && {
+        callBackendTool: (toolName: string, args?: Record<string, unknown>, ws?: string) =>
+          ai.callBackendTool(toolName, args, ws ?? workspacePath),
+      }),
+      ...(ai.sendPrompt && {
+        sendPrompt: (options: Parameters<typeof ai.sendPrompt>[0]) =>
+          ai.sendPrompt({ ...options, workspacePath: options.workspacePath ?? workspacePath } as Parameters<typeof ai.sendPrompt>[0]),
+      }),
+    };
+  }
+  return { ...extensionContext, services };
+}
+
 /**
  * Convert an ExtensionAITool to a ToolDefinition compatible with the runtime registry
  */
@@ -383,16 +441,12 @@ function convertExtensionTool(
     },
     source: 'runtime',
     handler: async (args: Record<string, unknown>) => {
-      // Create the AI tool context with active file path from editor registry
-      const context: AIToolContext = {
-        workspacePath: undefined,
+      // One execution path for every extension tool, so this one gets the same
+      // project scoping. This registry route carries no session, so a tool
+      // that needs a project fails here instead of guessing one (#1299).
+      return executeExtensionTool(namespacedName, args, {
         activeFilePath: editorRegistry.getActiveFilePath() ?? undefined,
-        extensionContext: extension.context,
-      };
-
-      // Call the extension's tool handler
-      const result = await tool.handler(args, context);
-      return result;
+      });
     },
   };
 }

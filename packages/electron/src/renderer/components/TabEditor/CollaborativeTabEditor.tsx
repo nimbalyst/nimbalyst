@@ -170,6 +170,8 @@ interface CollaborativeTabEditorProps {
   isActive: boolean;
   /** Collaboration connection config */
   collabConfig: CollabDocumentConfig;
+  /** Local project folder this tab is open in, for extension editors (#1299). */
+  workspacePath?: string;
   /** Dirty state callback */
   onDirtyChange?: (isDirty: boolean) => void;
   /** Callback when getContent function is available */
@@ -272,6 +274,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   fileName,
   isActive,
   collabConfig: initialCollabConfig,
+  workspacePath,
   onDirtyChange,
   onGetContentReady,
   onManualSaveReady,
@@ -1652,6 +1655,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
             fileName={fileName}
             isActive={isActive}
             activeConfig={activeConfig}
+            workspacePath={workspacePath}
             createHistoryClient={createHistoryClient}
             onHistoryControllerChange={(controller) => {
               historyControllerRef.current = controller;
@@ -1674,6 +1678,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
             fileName={fileName}
             isActive={isActive}
             activeConfig={activeConfig}
+            workspacePath={workspacePath}
             createHistoryClient={createHistoryClient}
             onHistoryControllerChange={(controller) => {
               historyControllerRef.current = controller;
@@ -1715,6 +1720,7 @@ interface MonacoCollabBranchProps {
   fileName: string;
   isActive: boolean;
   activeConfig: CollabDocumentConfig;
+  workspacePath?: string;
   createHistoryClient: () => CollabHistoryClient;
   onHistoryControllerChange: (controller: CollabHistoryController | null) => void;
   onEditorReady?: (editor: unknown) => void;
@@ -1728,6 +1734,7 @@ const MonacoCollabBranch: React.FC<MonacoCollabBranchProps> = ({
   fileName,
   isActive,
   activeConfig,
+  workspacePath,
   createHistoryClient,
   onHistoryControllerChange,
   onEditorReady,
@@ -1836,6 +1843,7 @@ const MonacoCollabBranch: React.FC<MonacoCollabBranchProps> = ({
       fileName,
       isActive,
       workspaceId: activeConfig.scope.scopeKey,
+      workspacePath,
       activeConfig,
       collaboration,
       onDirtyChange,
@@ -1851,7 +1859,7 @@ const MonacoCollabBranch: React.FC<MonacoCollabBranchProps> = ({
         };
       },
     }),
-    [activeConfig, collaboration, fileName, filePath, isActive, onDirtyChange, setHistoryDialogFile],
+    [activeConfig, collaboration, fileName, filePath, isActive, workspacePath, onDirtyChange, setHistoryDialogFile],
   );
 
   return (
@@ -1887,6 +1895,8 @@ interface ExtensionCollabBranchProps {
   fileName: string;
   isActive: boolean;
   activeConfig: CollabDocumentConfig;
+  /** Local project folder the tab is open in, for the extension host (#1299). */
+  workspacePath?: string;
   createHistoryClient: () => CollabHistoryClient;
   onHistoryControllerChange: (controller: CollabHistoryController | null) => void;
   onDirtyChange?: (isDirty: boolean) => void;
@@ -1918,6 +1928,7 @@ const ExtensionCollabBranch: React.FC<ExtensionCollabBranchProps> = ({
   fileName,
   isActive,
   activeConfig,
+  workspacePath,
   createHistoryClient,
   onHistoryControllerChange,
   onDirtyChange,
@@ -2152,6 +2163,7 @@ const ExtensionCollabBranch: React.FC<ExtensionCollabBranchProps> = ({
         fileName,
         isActive,
         workspaceId: activeConfig.scope.scopeKey,
+        workspacePath,
         activeConfig,
         collaboration,
         onDirtyChange,
@@ -2167,7 +2179,7 @@ const ExtensionCollabBranch: React.FC<ExtensionCollabBranchProps> = ({
           };
         },
       }),
-    [filePath, fileName, isActive, activeConfig, collaboration, onDirtyChange, setHistoryDialogFile]
+    [filePath, fileName, isActive, workspacePath, activeConfig, collaboration, onDirtyChange, setHistoryDialogFile]
   );
 
   // The comments pane is the platform's, not the extension's: it mounts beside

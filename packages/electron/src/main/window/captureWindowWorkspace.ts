@@ -89,3 +89,16 @@ export function resolveSenderWorkspacePath(sender: {
         getCaptureWindowWorkspacePath(sender.webContentsId)
     );
 }
+
+/**
+ * The project a backend tool call acts on. The caller names it; the on-screen
+ * project is never substituted, because the caller may be background or agent
+ * work for another project (#1299). The one exception is the capture window,
+ * whose single mounted file fixes the project.
+ */
+export function resolveBackendToolCallWorkspacePath(call: {
+    requested: string | undefined;
+    webContentsId?: number | null;
+}): string | undefined {
+    return call.requested || getCaptureWindowWorkspacePath(call.webContentsId);
+}

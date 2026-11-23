@@ -63,4 +63,28 @@ describe('ExtensionLoader filesystem service', () => {
 
     expect(platform.findFiles).toHaveBeenCalledWith('/ws/b', 'nimbalyst-local/automations/*.md');
   });
+
+  it('resolves relative paths against the window\'s current project on every call, not a cached one', async () => {
+    // #1299: the first project was cached at load, so closing it from the rail
+    // or switching projects left relative paths pointing at the old one.
+    const projects = ['/ws/a', '/ws/b'];
+    const invoke = vi.fn(async (channel: string) => (
+      channel === 'extensions:get-active-project-path' ? projects.shift() : undefined
+    ));
+    (globalThis as any).window = { electronAPI: { invoke } };
+    try {
+      const platform = makePlatform(async (context) => {
+        await context.services.filesystem.readFile('notes.md');
+        await context.services.filesystem.readFile('notes.md');
+      });
+      setExtensionPlatformService(platform);
+
+      await new ExtensionLoader().loadExtensionFromPath('/extensions/test');
+
+      const reads = vi.mocked(platform.readFile).mock.calls.map(([path]) => path).filter((path) => path.endsWith('notes.md'));
+      expect(reads).toEqual(['/ws/a/notes.md', '/ws/b/notes.md']);
+    } finally {
+      delete (globalThis as any).window;
+    }
+  });
 });

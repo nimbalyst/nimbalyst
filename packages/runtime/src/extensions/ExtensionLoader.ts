@@ -941,19 +941,15 @@ function createExtensionContext(
 
   const subscriptions: Disposable[] = [];
 
-  // Cache workspace path for resolving relative paths
-  let cachedWorkspacePath: string | null = null;
+  // The project a relative path from non-tool extension code belongs to: the
+  // window's on-screen project, asked of main on every call. A cached copy went
+  // stale when that project closed or the rail switched (#1299). Tool handlers
+  // never get here for relative paths; the tools bridge resolves those against
+  // the calling session's project.
   async function getWorkspacePath(): Promise<string | null> {
-    if (cachedWorkspacePath) return cachedWorkspacePath;
     const electronAPI = (window as any).electronAPI;
-    if (electronAPI?.getInitialState) {
-      const state = await electronAPI.getInitialState();
-      if (state?.workspacePath) {
-        cachedWorkspacePath = state.workspacePath;
-        return cachedWorkspacePath;
-      }
-    }
-    return null;
+    if (!electronAPI?.invoke) return null;
+    return (await electronAPI.invoke('extensions:get-active-project-path')) ?? null;
   }
 
   // Resolve a path: if it's absolute, use as-is; if relative, prepend workspace path

@@ -595,6 +595,15 @@ export interface EditorHost {
   /** Workspace identifier (if in a workspace) */
   readonly workspaceId?: string;
 
+  /**
+   * Absolute path of the local project this editor's tab is open in. Pass it
+   * to `callBackendTool` and `sendPrompt`, which require a project. For a
+   * shared document this is the project the tab is open in; `workspaceId` is
+   * then an opaque collaboration scope key, not a path. Undefined for hosts
+   * with no local project, such as a history preview.
+   */
+  readonly workspacePath?: string;
+
   // ============ CONTENT LOADING ============
 
   /**

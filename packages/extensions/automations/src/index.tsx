@@ -43,7 +43,7 @@ export async function activate(context: {
         sessionName?: string;
         provider?: 'claude-code' | 'claude' | 'openai' | 'openai-codex';
         model?: string;
-        workspacePath?: string;
+        workspacePath: string;
       }) => Promise<{ sessionId: string; response: string }>;
     };
   };
@@ -73,6 +73,9 @@ export async function activate(context: {
 
     if (ai?.sendPrompt) {
       try {
+        if (!projectRoot) {
+          throw new Error(`Cannot tell which project ${filePath} belongs to; automation files must have an absolute path.`);
+        }
         const result = await ai.sendPrompt({
           prompt,
           sessionName: `Automation: ${status.title}`,
@@ -170,15 +173,21 @@ export const components = {
   AutomationDocumentHeader,
 };
 
-/** Whether an automation file belongs to the calling session's project. */
-function belongsTo(filePath: string, workspacePath: string | undefined): boolean {
-  const root = projectRootOf(filePath);
-  return !workspacePath || !root || root === workspacePath;
+/**
+ * The calling session's project. Every automation tool acts on one project,
+ * and a window can have several open, so none of them guesses (#1299).
+ */
+function sessionProject(context: AIToolContext): string {
+  if (!context.workspacePath) {
+    throw new Error('This automation tool needs the calling session\'s project, and the call had none.');
+  }
+  return context.workspacePath;
 }
 
-/** Anchor a project-relative path at the calling session's project when known. */
-function inSessionProject(context: AIToolContext, path: string): string {
-  return inProject(context.workspacePath, path);
+/** Whether an automation file belongs to `project`. */
+function belongsTo(filePath: string, project: string): boolean {
+  const root = projectRootOf(filePath);
+  return !root || root === project;
 }
 
 /**
@@ -198,7 +207,13 @@ const listAutomationsTool: ExtensionAITool = {
     }
 
     // The window schedules every project open in its rail; a session sees its own.
-    const automations = scheduler.getAutomations().filter((a) => belongsTo(a.filePath, context.workspacePath));
+    let project: string;
+    try {
+      project = sessionProject(context);
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    const automations = scheduler.getAutomations().filter((a) => belongsTo(a.filePath, project));
     if (automations.length === 0) {
       return {
         success: true,
@@ -294,9 +309,8 @@ ${scheduleYaml}
 ${prompt}
 `;
 
-    const filePath = inSessionProject(context, `nimbalyst-local/automations/${id}.md`);
-
     try {
+      const filePath = inProject(sessionProject(context), `nimbalyst-local/automations/${id}.md`);
       const fs = context.extensionContext.services.filesystem;
       await fs.writeFile(filePath, content);
       // Await the rescan so an enabled automation is actually scheduled by the
@@ -335,14 +349,15 @@ const runAutomationTool: ExtensionAITool = {
 
     const id = args.id as string;
 
-    // Resolve a bare id to the session's project's automation, so the run
-    // knows which project it belongs to (#1299).
-    const filePath = id.endsWith('.md')
-      ? inSessionProject(context, id)
-      : scheduler.findById(id, context.workspacePath)?.filePath
-        ?? inSessionProject(context, `nimbalyst-local/automations/${id}.md`);
-
     try {
+      // Resolve a bare id to the session's project's automation, so the run
+      // knows which project it belongs to (#1299).
+      const project = sessionProject(context);
+      const filePath = id.endsWith('.md')
+        ? inProject(project, id)
+        : scheduler.findById(id, project)?.filePath
+          ?? inProject(project, `nimbalyst-local/automations/${id}.md`);
+
       const result = await scheduler.runNow(filePath);
       if (!result.success) {
         return {
@@ -382,7 +397,12 @@ const historyAutomationTool: ExtensionAITool = {
 
     const id = args.id as string;
     const limit = (args.limit as number) ?? 10;
-    const records = await scheduler.getHistory(id, limit, context.workspacePath);
+    let records;
+    try {
+      records = await scheduler.getHistory(id, limit, sessionProject(context));
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
 
     if (records.length === 0) {
       return {

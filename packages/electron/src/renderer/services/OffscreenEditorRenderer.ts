@@ -266,6 +266,8 @@ class OffscreenEditorRendererImpl {
       fileName,
       theme: 'light', // TODO: Get from app settings
       isActive: false, // Offscreen editors are never "active"
+      workspaceId: workspacePath,
+      workspacePath,
 
       async loadContent(): Promise<string> {
         const result = await electronAPI.readFileContent(filePath);

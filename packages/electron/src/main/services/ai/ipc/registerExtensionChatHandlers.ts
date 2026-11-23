@@ -4,7 +4,7 @@ import { resolveBackendWorkspacePath } from '../../../mcp/mcpWorkspaceResolver';
 import { handleBackendTool } from '../../../mcp/tools/backendToolHandler';
 import { safeHandle } from '../../../utils/ipcRegistry';
 import { getWindowId } from '../../../window/WindowManager';
-import { resolveSenderWorkspacePath } from '../../../window/captureWindowWorkspace';
+import { resolveBackendToolCallWorkspacePath } from '../../../window/captureWindowWorkspace';
 import { resolveRequestWorkspacePath, windowStates } from '../../../window/windowState';
 import { extensionPromptRequiresConfiguredApiKey, extractModelForProvider, safeSend } from '.././aiServiceUtils';
 import { getLocalHostDeviceId, stampSessionHost } from '.././sessionHostAttribution';
@@ -32,19 +32,20 @@ export function registerExtensionChatHandlers(ctx: AIServiceContext): void {
       throw new Error('prompt is required');
     }
 
-    // A caller that names its project (a scheduled automation, #1299) gets
-    // that project if this window has it open. Otherwise use the rail's active
-    // selection; the raw primary `workspacePath` would route the session to
-    // the startup project in Multi-Project mode (#544).
+    // The caller names the project the session runs in, and this window must
+    // have it open. The on-screen project is never substituted: a scheduled
+    // automation fired into whichever rail project was selected (#1299), and
+    // the raw primary path picked the startup project (#544).
+    if (!options.workspacePath) {
+      throw new Error('sendPrompt requires workspacePath: the project the session runs in');
+    }
     const browserWindow = BrowserWindow.fromWebContents(event.sender);
     const windowId = browserWindow ? getWindowId(browserWindow) : null;
     const workspacePath = windowId === null || windowId === undefined
       ? null
       : resolveRequestWorkspacePath(windowStates.get(windowId), options.workspacePath);
     if (!workspacePath) {
-      throw new Error(options.workspacePath
-        ? `Project ${options.workspacePath} is not open in this window`
-        : 'No workspace path available for extension AI prompt');
+      throw new Error(`Project ${options.workspacePath} is not open in this window`);
     }
 
     // Validate provider is enabled and has required credentials
@@ -135,21 +136,14 @@ export function registerExtensionChatHandlers(ctx: AIServiceContext): void {
       throw new Error('callerExtensionId is required for backend tool call');
     }
 
-    // Resolve the workspace: explicit arg wins, else the window's active
-    // project (honors the project rail selection in Multi-Project mode), else
-    // the offscreen mount's workspace when the sender is the hidden screenshot
-    // capture window, which WindowManager never registers.
-    let workspacePath = options?.workspacePath;
+    // The caller names the project. Only the hidden screenshot capture window
+    // may omit it, because its one mounted file fixes the project (#1299).
+    const workspacePath = resolveBackendToolCallWorkspacePath({
+      requested: options?.workspacePath,
+      webContentsId: event.sender?.id,
+    });
     if (!workspacePath) {
-      const browserWindow = BrowserWindow.fromWebContents(event.sender);
-      const windowId = browserWindow ? getWindowId(browserWindow) : null;
-      workspacePath = resolveSenderWorkspacePath({
-        windowId,
-        webContentsId: event.sender?.id,
-      });
-    }
-    if (!workspacePath) {
-      throw new Error('No workspace path available for backend tool call');
+      throw new Error(`Backend tool ${toolName} requires workspacePath: the project it acts on`);
     }
 
     // Resolve worktree paths to the project path the backend module was started

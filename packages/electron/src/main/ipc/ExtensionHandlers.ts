@@ -10,6 +10,7 @@
 
 import { app, BrowserWindow } from 'electron';
 import { getWindowIdForWindow, listScheduledProjectPaths } from '../window/windowState';
+import { resolveSenderWorkspacePath } from '../window/captureWindowWorkspace';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { logger } from '../utils/logger';
@@ -989,6 +990,16 @@ export function registerExtensionHandlers(): void {
   safeHandle('extensions:is-visible-for-channel', (_event, requiredChannel: string | undefined) => {
     const currentChannel = getReleaseChannel();
     return isExtensionVisibleForChannel({ requiredReleaseChannel: requiredChannel as ReleaseChannel | undefined }, currentChannel);
+  });
+
+  // The project a relative path from non-tool extension code resolves against:
+  // the sender's on-screen project, or the capture window's mounted file's
+  // project. Asked per call; the renderer must not cache it (#1299).
+  safeHandle('extensions:get-active-project-path', (event) => {
+    return resolveSenderWorkspacePath({
+      windowId: getWindowIdForWindow(BrowserWindow.fromWebContents(event.sender)),
+      webContentsId: event.sender.id,
+    }) ?? null;
   });
 
   // The rail projects whose automations this window schedules (#1299). A

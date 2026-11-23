@@ -40,7 +40,7 @@ function makeHarness(initial: Array<[string, string]> = []) {
         files.set(filePath, content);
       },
       fileExists: async (filePath: string) => files.has(filePath),
-      findFiles: async () => [...files.keys()].filter((p) => p.startsWith('nimbalyst-local/automations/') && p.endsWith('.md')),
+      findFiles: async () => [...files.keys()].filter((p) => p.startsWith('/ws/p/nimbalyst-local/automations/') && p.endsWith('.md')),
     },
   };
 }
@@ -56,7 +56,7 @@ describe('automation execution', () => {
   it('writes append output to the configured file name instead of always output.md', async () => {
     // #1351: fileNameTemplate was read only in new-file mode, so an append
     // automation silently logged to output.md whatever its frontmatter said.
-    const path = 'nimbalyst-local/automations/poller.md';
+    const path = '/ws/p/nimbalyst-local/automations/poller.md';
     const harness = makeHarness([[path, `---
 automationStatus:
   id: poller
@@ -77,10 +77,10 @@ Poll.
     const sendPrompt = vi.fn().mockResolvedValue({ sessionId: 's1', response: 'all quiet' });
 
     await activate({ services: { filesystem: harness.filesystem, ui: harness.ui, ai: { sendPrompt } }, subscriptions: disposables });
-    await aiTools.find((t) => t.name === 'automations.run')!.handler({ id: 'poller' }, {} as never);
+    await aiTools.find((t) => t.name === 'automations.run')!.handler({ id: 'poller' }, { workspacePath: '/ws/p' } as never);
 
-    expect(harness.files.get('nimbalyst-local/automations/poller/poller-log.md')).toContain('all quiet');
-    expect(harness.files.has('nimbalyst-local/automations/poller/output.md')).toBe(false);
+    expect(harness.files.get('/ws/p/nimbalyst-local/automations/poller/poller-log.md')).toContain('all quiet');
+    expect(harness.files.has('/ws/p/nimbalyst-local/automations/poller/output.md')).toBe(false);
   });
 
   it('keeps the report the agent wrote instead of overwriting it with the final message', async () => {
@@ -88,7 +88,7 @@ Poll.
     // text over the output path unconditionally. When the prompt told the agent
     // to Write its report to that same path, every run replaced a real report
     // with session narration ("Report written to <that same path>").
-    const path = 'nimbalyst-local/automations/research.md';
+    const path = '/ws/p/nimbalyst-local/automations/research.md';
     const harness = makeHarness([[path, `---
 automationStatus:
   id: research
@@ -107,7 +107,7 @@ automationStatus:
 Write your report to the output directory.
 `]]);
     const today = new Date().toISOString().split('T')[0];
-    const outputPath = `nimbalyst-local/automations/research/${today}-research.md`;
+    const outputPath = `/ws/p/nimbalyst-local/automations/research/${today}-research.md`;
     const report = '# Product Research\n\n## TL;DR\n- Grok 4.6 released\n';
     const sendPrompt = vi.fn().mockImplementation(async () => {
       harness.files.set(outputPath, report);
@@ -115,13 +115,13 @@ Write your report to the output directory.
     });
 
     await activate({ services: { filesystem: harness.filesystem, ui: harness.ui, ai: { sendPrompt } }, subscriptions: disposables });
-    await aiTools.find((t) => t.name === 'automations.run')!.handler({ id: 'research' }, {} as never);
+    await aiTools.find((t) => t.name === 'automations.run')!.handler({ id: 'research' }, { workspacePath: '/ws/p' } as never);
 
     expect(harness.files.get(outputPath)).toBe(report);
     expect(harness.ui.showWarning).toHaveBeenCalledWith(expect.stringContaining(outputPath));
 
     // The run is still recorded, and says the agent's file was kept.
-    const history = JSON.parse(harness.files.get('nimbalyst-local/automations/research/history.json')!);
+    const history = JSON.parse(harness.files.get('/ws/p/nimbalyst-local/automations/research/history.json')!);
     expect(history).toEqual([
       expect.objectContaining({ status: 'success', outputFile: outputPath, outputWrittenByAgent: true }),
     ]);
@@ -130,8 +130,8 @@ Write your report to the output directory.
   it('still overwrites its own previous output in replace mode when the agent wrote nothing', async () => {
     // The guard above must not freeze replace mode, whose whole contract is to
     // overwrite the same file every run.
-    const path = 'nimbalyst-local/automations/status.md';
-    const outputPath = 'nimbalyst-local/automations/status/latest.md';
+    const path = '/ws/p/nimbalyst-local/automations/status.md';
+    const outputPath = '/ws/p/nimbalyst-local/automations/status/latest.md';
     const harness = makeHarness([
       [path, `---
 automationStatus:
@@ -155,7 +155,7 @@ Report status.
     const sendPrompt = vi.fn().mockResolvedValue({ sessionId: 's1', response: 'fresh reading' });
 
     await activate({ services: { filesystem: harness.filesystem, ui: harness.ui, ai: { sendPrompt } }, subscriptions: disposables });
-    await aiTools.find((t) => t.name === 'automations.run')!.handler({ id: 'status' }, {} as never);
+    await aiTools.find((t) => t.name === 'automations.run')!.handler({ id: 'status' }, { workspacePath: '/ws/p' } as never);
 
     expect(harness.files.get(outputPath)).toContain('fresh reading');
     expect(harness.files.get(outputPath)).not.toContain('stale reading');
@@ -166,7 +166,7 @@ Report status.
     const harness = makeHarness();
     await activate({ services: { filesystem: harness.filesystem, ui: harness.ui }, subscriptions: disposables });
     const createTool = aiTools.find((t) => t.name === 'automations.create')!;
-    const context = { extensionContext: { services: { filesystem: harness.filesystem } } } as never;
+    const context = { workspacePath: '/ws/p', extensionContext: { services: { filesystem: harness.filesystem } } } as never;
 
     const result = await createTool.handler(
       { id: 'quiet', title: 'Quiet: poller', prompt: 'Check.', schedule_type: 'interval', interval_minutes: 5, output_mode: 'append' },
@@ -177,7 +177,7 @@ Report status.
     expect((result as { message: string }).message).toContain('DISABLED');
 
     // A colon in the title must not break the YAML the automation parses from.
-    const status = parseAutomationStatus(harness.files.get('nimbalyst-local/automations/quiet.md')!);
+    const status = parseAutomationStatus(harness.files.get('/ws/p/nimbalyst-local/automations/quiet.md')!);
     expect(status).toEqual(expect.objectContaining({ title: 'Quiet: poller', enabled: false }));
     expect(status?.output.fileNameTemplate).toBeUndefined();
   });
@@ -186,7 +186,7 @@ Report status.
     const harness = makeHarness();
     await activate({ services: { filesystem: harness.filesystem, ui: harness.ui }, subscriptions: disposables });
     const createTool = aiTools.find((t) => t.name === 'automations.create')!;
-    const context = { extensionContext: { services: { filesystem: harness.filesystem } } } as never;
+    const context = { workspacePath: '/ws/p', extensionContext: { services: { filesystem: harness.filesystem } } } as never;
 
     const result = await createTool.handler(
       {
@@ -202,7 +202,7 @@ Report status.
     );
 
     expect((result as { message: string }).message).toContain('enabled');
-    const status = parseAutomationStatus(harness.files.get('nimbalyst-local/automations/digest.md')!);
+    const status = parseAutomationStatus(harness.files.get('/ws/p/nimbalyst-local/automations/digest.md')!);
     expect(status).toEqual(expect.objectContaining({ enabled: true }));
     expect(status?.output).toEqual(expect.objectContaining({
       location: 'reports/digest/',
@@ -232,7 +232,7 @@ Report status.
 
     await activate({ services: { filesystem, ui, ai: { sendPrompt } }, subscriptions: disposables });
     const runTool = aiTools.find((tool) => tool.name === 'automations.run');
-    await runTool!.handler({ id: path }, {} as never);
+    await runTool!.handler({ id: path }, { workspacePath: '/Users/me/project-b' } as never);
 
     expect(sendPrompt).toHaveBeenCalledWith(expect.objectContaining({
       workspacePath: '/Users/me/project-b',
@@ -280,6 +280,18 @@ Report status.
       expect(parseAutomationStatus(files.get(fileA)!)?.runCount).toBe(0);
     });
 
+    it('refuses to run a bare id when the call names no project', async () => {
+      const { filesystem, ui } = railHarness();
+      const sendPrompt = vi.fn();
+      await activate({ services: { filesystem, ui, ai: { sendPrompt } }, subscriptions: disposables });
+
+      const runTool = aiTools.find((tool) => tool.name === 'automations.run')!;
+      const result = await runTool.handler({ id: 'codex-scout' }, {} as never);
+
+      expect(result.success).toBe(false);
+      expect(sendPrompt).not.toHaveBeenCalled();
+    });
+
     it('lists only the calling session\'s project', async () => {
       const { filesystem, ui } = railHarness();
       await activate({ services: { filesystem, ui }, subscriptions: disposables });
@@ -292,7 +304,7 @@ Report status.
   });
 
   it('records a Codex prompt rejection as an error while preserving the failure output', async () => {
-    const path = 'nimbalyst-local/automations/codex-scout.md';
+    const path = '/ws/p/nimbalyst-local/automations/codex-scout.md';
     const files = new Map([[path, automationFile()]]);
     const sendPrompt = vi.fn().mockRejectedValue(
       new Error('API key not configured for provider openai-codex.'),
@@ -315,7 +327,7 @@ Report status.
 
     const runTool = aiTools.find((tool) => tool.name === 'automations.run');
     expect(runTool).toBeDefined();
-    const result = await runTool!.handler({ id: 'codex-scout' }, {} as never);
+    const result = await runTool!.handler({ id: 'codex-scout' }, { workspacePath: '/ws/p' } as never);
 
     expect(sendPrompt).toHaveBeenCalledWith(expect.objectContaining({
       provider: 'openai-codex',
@@ -333,7 +345,7 @@ Report status.
       runCount: 0,
     }));
 
-    const history = JSON.parse(files.get('nimbalyst-local/automations/codex-scout/history.json')!);
+    const history = JSON.parse(files.get('/ws/p/nimbalyst-local/automations/codex-scout/history.json')!);
     expect(history).toEqual([
       expect.objectContaining({
         status: 'error',

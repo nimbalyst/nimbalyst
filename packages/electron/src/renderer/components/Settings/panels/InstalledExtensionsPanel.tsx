@@ -735,12 +735,13 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
                     const SettingsComponent = extensionSettingsPanels.get(selectedExtension.id)!;
                     const storage = createExtensionStorage(selectedExtension.id);
                     // READ bridge to the extension's backend-module MCP tools
-                    // (e.g. live index status, facts list). The IPC handler
-                    // resolves the active workspace from this window.
+                    // (e.g. live index status, facts list), for the project
+                    // these settings are open in. Main requires it named (#1299).
                     const callBackendTool = (toolName: string, args?: Record<string, unknown>) =>
                       window.electronAPI.invoke('extensions:ai-call-backend-tool', {
                         toolName,
                         args: args ?? {},
+                        workspacePath,
                         // Host-injected caller identity (not from extension code)
                         // so main can enforce the tool belongs to THIS extension.
                         callerExtensionId: selectedExtension.id,
