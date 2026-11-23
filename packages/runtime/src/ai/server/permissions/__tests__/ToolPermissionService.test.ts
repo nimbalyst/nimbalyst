@@ -1,9 +1,17 @@
 // @vitest-environment node
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ToolPermissionService } from '../ToolPermissionService';
 import { generateToolPattern, matchesAllowPattern } from '../toolPermissionHelpers';
 
-vi.mock('../../../../storage/repositories/AgentMessagesRepository', () => ({ AgentMessagesRepository: class {} }));
+const transcript = vi.hoisted(() => ({ rows: [] as Array<{ content: string }> }));
+vi.mock('../../../../storage/repositories/AgentMessagesRepository', () => ({
+  AgentMessagesRepository: {
+    // Mirrors the real stores: `list` pages from the oldest row, `listTail` from the newest.
+    list: async (_sessionId: string, options?: { limit?: number }) =>
+      transcript.rows.slice(0, options?.limit ?? transcript.rows.length),
+    listTail: async (_sessionId: string, limit: number) => transcript.rows.slice(-limit),
+  },
+}));
 
 describe('SDK permission prompt constraints', () => {
   it.each(['session', 'always', 'always-all'] as const)('does not cache or persist a constrained %s response', async (scope) => {
@@ -312,5 +320,49 @@ describe('one answer settles every waiting request for the same rule', () => {
     expect(await settledOrStillWaiting(second)).toEqual({ decision: 'allow', scope: 'session' });
     expect(waitingCount(service)).toBe(0);
     expect(emit).not.toHaveBeenCalledWith('toolPermission:pending', expect.objectContaining({ requestId: 'second' }));
+  });
+});
+
+// A phone answers the prompt by writing a row to the session transcript. The desktop finds that
+// row by polling. The poll used to read the OLDEST 50 rows, so in a long session it never saw the
+// answer and the prompt waited until the 5 minute timeout.
+describe('answer written on another device in a long session', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    transcript.rows = [];
+  });
+
+  it('settles the waiting prompt with the answer from the newest rows', async () => {
+    vi.useFakeTimers();
+    const filler = Array.from({ length: 60 }, (_, i) => ({ content: JSON.stringify({ type: 'text', i }) }));
+    const answer = {
+      content: JSON.stringify({
+        type: 'nimbalyst_tool_result',
+        tool_use_id: 'request',
+        result: JSON.stringify({ decision: 'allow', scope: 'once' }),
+      }),
+    };
+    transcript.rows = [...filler, answer];
+
+    const service = new ToolPermissionService({
+      trustChecker: () => ({ trusted: true, mode: 'ask' }),
+      patternSaver: vi.fn(),
+      patternChecker: async () => false,
+      emit: vi.fn(),
+    });
+    const abort = new AbortController();
+    let settled: unknown;
+    void service.requestToolPermission({
+      requestId: 'request', sessionId: 'session', workspacePath: '/fixture', permissionsPath: '/fixture',
+      toolName: 'Bash', toolInput: { command: 'npm test' }, pattern: 'Bash(npm test:*)',
+      patternDisplayName: 'npm test', toolDescription: 'Run tests', isDestructive: false,
+      signal: abort.signal,
+    }).then((response) => { settled = response; }, () => { /* the abort below rejects a prompt that never got its answer */ });
+
+    // A few poll rounds are plenty: the answer is already in the transcript.
+    await vi.advanceTimersByTimeAsync(3000);
+    abort.abort();
+
+    expect(settled).toEqual({ decision: 'allow', scope: 'once' });
   });
 });
