@@ -39,7 +39,7 @@ import {
     type WorkspaceWindowCandidate,
     type WorkspaceWindowMatch,
 } from './workspaceWindowMatch';
-import { shouldSaveSessionOnWindowClose } from './sessionSaveOnClose';
+import { shouldSaveSessionOnWindowClose, shouldSaveWindowStateOnClose } from './sessionSaveOnClose';
 import {
     registerCustomTitleBarWindow,
     registerFullScreenChrome,
@@ -400,8 +400,13 @@ export function createWindow(
             }
         });
 
+        // True when the listener below stopped the current close for an unsaved document.
+        // The window state listener further down reads it.
+        let closeBlockedForUnsavedDocument = false;
+
         // Handle window close with unsaved changes
         window.on('close', (event) => {
+            closeBlockedForUnsavedDocument = false;
             if (isQuitting) {
                 // Allow close to proceed without prompts during app quit
                 return;
@@ -410,6 +415,7 @@ export function createWindow(
             const state = windowStates.get(windowId);
             if (state?.documentEdited) {
                 event.preventDefault();
+                closeBlockedForUnsavedDocument = true;
                 // Send message to renderer to show custom dialog
                 window.webContents.send('confirm-close-unsaved');
             }
@@ -433,7 +439,11 @@ export function createWindow(
             });
 
             // A close that an earlier listener stopped (the user chose Stay) must leave the window state alone.
-            if (event.defaultPrevented) return;
+            // A close stopped for an unsaved document still saves it: Save and Discard destroy the window with no second close.
+            if (!shouldSaveWindowStateOnClose({
+                closePrevented: event.defaultPrevented,
+                blockedForUnsavedDocument: closeBlockedForUnsavedDocument,
+            })) return;
 
             if (state?.mode === 'workspace' && state.workspacePath) {
                 const bounds = window.getBounds();

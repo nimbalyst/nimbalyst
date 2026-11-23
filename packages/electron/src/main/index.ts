@@ -3309,8 +3309,6 @@ initializeApplicationWindowRecovery({
 let migrationQuitDraining = false;
 const shutdownForRestart = createRestartShutdown({
     beginRestart: () => {
-        // A restart never asks about unsaved hook changes.
-        approveAllHookLeaves();
         console.log('[QUIT] Restart signal detected, saving session state before restart');
         isAppRestarting = true;
         isAppQuitting = true;
@@ -3334,6 +3332,9 @@ const shutdownForRestart = createRestartShutdown({
     }),
     restartAborted: resumeBackendTerminalsAfterAbortedQuit,
     flushPendingBackups: flushPendingCollabBackups,
+    // A restart never asks about unsaved hook changes. Approve only here, once every step
+    // above worked: a restart that aborts leaves the windows asking as before.
+    commitRestart: approveAllHookLeaves,
     quit: () => {
         console.log('[QUIT] Session state saved for restart');
         app.quit();

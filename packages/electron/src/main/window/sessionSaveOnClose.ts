@@ -17,3 +17,20 @@ export function shouldSaveSessionOnWindowClose(opts: {
 }): boolean {
   return !opts.isQuitting && !opts.isRestarting;
 }
+
+/**
+ * Decision for the same `close` handler: should this close save the window's
+ * bounds and navigation history, and drop its state entry?
+ *
+ * A close that an earlier step stopped (the user chose Stay on the unsaved hooks
+ * question) must leave the state alone, because the window lives on. A close
+ * that was stopped for an unsaved document is different. Save and Discard then
+ * destroy the window, and a destroy sends no second `close` event, so this stopped
+ * close is the last chance to save the state. Upstream saved it there.
+ */
+export function shouldSaveWindowStateOnClose(opts: {
+  closePrevented: boolean;
+  blockedForUnsavedDocument: boolean;
+}): boolean {
+  return !opts.closePrevented || opts.blockedForUnsavedDocument;
+}

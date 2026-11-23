@@ -416,6 +416,46 @@ describe.skipIf(process.platform === 'win32')('hook checks', () => {
     expect(runChecks({ ...pending, scriptWrites: written.scriptWrites })[2].status).toBe('passed');
     expect(runChecks({ ...pending, scriptWrites: [] })[2].status).toBe('failed');
   });
+
+  it('words each schema problem the same way, in the order the file holds them', () => {
+    const doc = open(SETTINGS);
+    const problemsOf = (hooks: unknown) =>
+      runChecks({ text: JSON.stringify({ hooks }), document: doc, scriptWrites: [], fileExists: () => true })[1].problems;
+
+    expect(problemsOf(5)).toEqual(['"hooks" must be an object.']);
+    expect(problemsOf({ Stop: 3 })).toEqual(['hooks.Stop must be a list.']);
+    expect(problemsOf({ Stop: [3, { hooks: 1, matcher: 2 }] })).toEqual([
+      'hooks.Stop[0] must be an object with a "hooks" list.',
+      'hooks.Stop[1] must be an object with a "hooks" list.',
+    ]);
+    expect(
+      problemsOf({
+        Stop: [
+          {
+            matcher: 5,
+            hooks: [
+              { type: 'command' },
+              { command: 'x' },
+              { type: 'http', url: '', timeout: 0 },
+              { type: 'future', timeout: 'x' },
+              { type: 'command', command: 'x', timeout: 2 },
+            ],
+          },
+        ],
+        Other: [{ hooks: [{ type: 'prompt', prompt: 'p', timeout: -1 }] }],
+      }),
+    ).toEqual([
+      'hooks.Stop[0].matcher must be text.',
+      'hooks.Stop[0].hooks[0] needs "command".',
+      'hooks.Stop[0].hooks[1] needs a "type".',
+      'hooks.Stop[0].hooks[2] needs "url".',
+      'hooks.Stop[0].hooks[2].timeout must be a number of seconds above 0.',
+      'hooks.Stop[0].hooks[3].timeout must be a number of seconds above 0.',
+      'hooks.Other[0].hooks[0].timeout must be a number of seconds above 0.',
+    ]);
+    // Unknown events and unknown hook types pass.
+    expect(problemsOf({ FutureEvent: [{ hooks: [{ type: 'future' }] }] })).toEqual([]);
+  });
 });
 
 describe.skipIf(process.platform === 'win32')('tab history', () => {

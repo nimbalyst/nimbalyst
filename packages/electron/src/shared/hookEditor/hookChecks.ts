@@ -4,9 +4,11 @@
  * because their answers would mean nothing.
  */
 
+import { z } from 'zod';
+
 import { REQUIRED_FIELDS } from './compatibility';
 import { openHookDocument, scriptPathsOf, type HookDocument } from './hookDocument';
-import { isHookType, isJsonObject, type JsonValue } from './types';
+import { isHookType, type JsonValue } from './types';
 
 export type CheckName = 'json' | 'schema' | 'scripts';
 
@@ -27,46 +29,68 @@ export interface CheckInput {
   fileExists: (path: string) => boolean;
 }
 
+const requiredText = z.string().min(1);
+const timeoutSeconds = z.number().positive().optional();
+
+/** One hook: it needs a "type". The fields and the time limit depend on that type. */
+const hookEntrySchema = z.looseObject({ type: z.string() }).superRefine((entry, ctx) => {
+  // These issues carry only the end of the sentence. `describeIssue` puts the place in front.
+  if (isHookType(entry.type)) {
+    for (const name of REQUIRED_FIELDS[entry.type]) {
+      if (!requiredText.safeParse(entry[name]).success) {
+        ctx.addIssue({ code: 'custom', path: [name], message: ` needs "${name}".` });
+      }
+    }
+  }
+  if (!timeoutSeconds.safeParse(entry.timeout).success) {
+    ctx.addIssue({ code: 'custom', path: ['timeout'], message: '.timeout must be a number of seconds above 0.' });
+  }
+});
+
 /**
  * The shape Claude Code reads. Unknown events and unknown hook types pass:
  * they may come from a newer Claude Code, and the editor keeps them as they are.
  */
+const hooksSchema = z.record(
+  z.string(),
+  z.array(z.looseObject({ matcher: z.string().optional(), hooks: z.array(hookEntrySchema) })),
+);
+
+/** The plain sentence for one problem the schema found. The path says where in "hooks" it sits. */
+function describeIssue(issue: z.core.$ZodIssue): string {
+  const [event, groupIndex, groupKey, hookIndex] = issue.path;
+  const group = `hooks.${String(event)}[${String(groupIndex)}]`;
+  const hook = `${group}.hooks[${String(hookIndex)}]`;
+  switch (issue.path.length) {
+    case 0:
+      return '"hooks" must be an object.';
+    case 1:
+      return `hooks.${String(event)} must be a list.`;
+    case 2:
+      return `${group} must be an object with a "hooks" list.`;
+    case 3:
+      return groupKey === 'matcher' ? `${group}.matcher must be text.` : `${group} must be an object with a "hooks" list.`;
+    case 4:
+      return `${hook} needs a "type".`;
+    default:
+      return issue.path[4] === 'type' ? `${hook} needs a "type".` : `${hook}${issue.message}`;
+  }
+}
+
 function schemaProblems(hooks: JsonValue | undefined): string[] {
   if (hooks === undefined) return [];
-  if (!isJsonObject(hooks)) return ['"hooks" must be an object.'];
-  const problems: string[] = [];
-  for (const [event, groups] of Object.entries(hooks)) {
-    if (!Array.isArray(groups)) {
-      problems.push(`hooks.${event} must be a list.`);
-      continue;
-    }
-    groups.forEach((group, groupIndex) => {
-      const at = `hooks.${event}[${groupIndex}]`;
-      const list = isJsonObject(group) ? group.hooks : undefined;
-      if (!isJsonObject(group) || !Array.isArray(list)) {
-        problems.push(`${at} must be an object with a "hooks" list.`);
-        return;
-      }
-      if (group.matcher !== undefined && typeof group.matcher !== 'string') problems.push(`${at}.matcher must be text.`);
-      list.forEach((entry, hookIndex) => {
-        const where = `${at}.hooks[${hookIndex}]`;
-        if (!isJsonObject(entry) || typeof entry.type !== 'string') {
-          problems.push(`${where} needs a "type".`);
-          return;
-        }
-        if (isHookType(entry.type)) {
-          for (const name of REQUIRED_FIELDS[entry.type]) {
-            if (typeof entry[name] !== 'string' || entry[name] === '') problems.push(`${where} needs "${name}".`);
-          }
-        }
-        const { timeout } = entry;
-        if (timeout !== undefined && !(typeof timeout === 'number' && timeout > 0)) {
-          problems.push(`${where}.timeout must be a number of seconds above 0.`);
-        }
-      });
-    });
-  }
-  return problems;
+  const result = hooksSchema.safeParse(hooks);
+  if (result.success) return [];
+  const groupOf = (issue: z.core.$ZodIssue) => issue.path.slice(0, 2).join('.');
+  // A group that is not an object with a "hooks" list reports once. Its matcher is not looked at.
+  const brokenGroups = new Set(
+    result.error.issues
+      .filter((issue) => issue.path.length === 2 || (issue.path.length === 3 && issue.path[2] === 'hooks'))
+      .map(groupOf),
+  );
+  return result.error.issues
+    .filter((issue) => issue.path[2] !== 'matcher' || !brokenGroups.has(groupOf(issue)))
+    .map(describeIssue);
 }
 
 function missingScripts(document: HookDocument, input: CheckInput): string[] {

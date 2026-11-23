@@ -7,6 +7,8 @@ interface RestartShutdownDependencies {
   restartAborted?(): void;
   saveSessionState(): Promise<void>;
   flushPendingBackups(): Promise<void>;
+  /** Every step worked and the quit is next. The restart cannot abort after this call. */
+  commitRestart?(): void;
   quit(): void;
 }
 
@@ -27,6 +29,7 @@ export function createRestartShutdown(deps: RestartShutdownDependencies) {
       await Promise.all([deps.stopExternalSessions(), deps.saveSessionState(), deps.stopCommandTerminals()]);
       await deps.flushPendingBackups();
       readyToQuit = true;
+      deps.commitRestart?.();
       deps.quit();
     } catch (error) {
       deps.restartAborted?.();
