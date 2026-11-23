@@ -28,6 +28,14 @@ export interface PendingSessionDeletes {
   has(sessionId: string): boolean;
   /** Forget the delete: it was sent, or the session was made again. */
   remove(sessionId: string): void;
+  /**
+   * Whether an upload of this session may go out. A delete wins over any
+   * upload stamped at or before it: such an upload was built from the session
+   * before it was deleted, and sending it would bring the session back. An
+   * upload stamped after the delete is the same id made again; it cancels the
+   * waiting delete.
+   */
+  allowsUpload(sessionId: string, updatedAt: number | undefined): boolean;
   ids(): string[];
 }
 
@@ -61,6 +69,33 @@ export function createPendingSessionDeletes(storage?: PendingSessionDeleteStorag
     remove(sessionId) {
       if (entries.delete(sessionId)) persist();
     },
+    allowsUpload(sessionId, updatedAt) {
+      const deletedAt = entries.get(sessionId);
+      if (deletedAt === undefined) return true;
+      if (updatedAt === undefined || updatedAt <= deletedAt) return false;
+      entries.delete(sessionId);
+      persist();
+      return true;
+    },
     ids: () => [...entries.keys()],
   };
+}
+
+/** WebSocket.OPEN, spelled out so this runs where the global is absent. */
+const SOCKET_OPEN = 1;
+
+/**
+ * Put an `indexDelete` on the index socket. True only when the socket was open
+ * and took the frame: a closing socket drops it silently, and a throwing one
+ * loses it, so the caller keeps the delete waiting in both cases.
+ */
+export function sendIndexDelete(socket: { readyState: number; send(data: string): void }, sessionId: string): boolean {
+  if (socket.readyState !== SOCKET_OPEN) return false;
+  try {
+    socket.send(JSON.stringify({ type: 'indexDelete', sessionId }));
+    return true;
+  } catch (error) {
+    console.warn('[CollabV3] Index delete was not sent; it stays waiting:', sessionId, error);
+    return false;
+  }
 }

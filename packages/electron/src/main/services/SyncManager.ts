@@ -513,7 +513,8 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
       // Opted-out projects stay listed on the phone, marked as not syncing their transcript (NIM-7545).
       isTranscriptSyncDisabled: createTranscriptSyncDisabledPredicate(),
       // A delete made while sync was down is saved here and sent after the next start (GitHub #1901).
-      pendingSessionDeletes: createPendingSessionDeletesStorage(),
+      // Scoped to this server and account: another account must not send or clear these.
+      pendingSessionDeletes: createPendingSessionDeletesStorage({ serverUrl, orgId: personalOrgId, personalMemberId: personalUserId }),
     });
     logger.main.info('[SyncManager] Created CollabV3 sync provider with device:', initialDeviceInfo.name);
 

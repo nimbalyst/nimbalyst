@@ -814,5 +814,62 @@ describe('CollabV3 index publication gate', () => {
         expect(indexDeletes(fresh)).toEqual([]);
       } finally { provider.disconnectAll(); }
     });
+
+    it('keeps a waiting delete when an upload built before the delete arrives later', async () => {
+      let saved: Record<string, number> = {};
+      const pendingSessionDeletes = { load: () => saved, save: (next: Record<string, number>) => { saved = { ...next }; } };
+      const { provider, indexSocket } = await createConnectedProvider({ pendingSessionDeletes });
+      try {
+        dropIndexSocket(indexSocket);
+        await provider.pushChange('session-1', { type: 'session_deleted' });
+        // Delete queued at fake time 10000; this create-shaped update was stamped before it.
+        await provider.pushChange('session-1', {
+          type: 'metadata_updated',
+          metadata: { title: 'Stale copy', provider: 'claude-code', updatedAt: 5_000 },
+        });
+        expect(Object.keys(saved)).toEqual(['session-1']);
+
+        const fresh = await reconnectIndexSocket(provider);
+        await vi.waitFor(() => expect(indexDeletes(fresh)).toEqual([{ type: 'indexDelete', sessionId: 'session-1' }]), { timeout: 2_000 });
+        expect(indexPackets(fresh).filter((packet) => packet.session?.sessionId === 'session-1')).toEqual([]);
+      } finally { provider.disconnectAll(); }
+    });
+
+    it('keeps a waiting delete when the socket refuses the send, and clears it once a send succeeds', async () => {
+      let saved: Record<string, number> = {};
+      const pendingSessionDeletes = { load: () => saved, save: (next: Record<string, number>) => { saved = { ...next }; } };
+      const { provider, indexSocket } = await createConnectedProvider({ pendingSessionDeletes });
+      try {
+        dropIndexSocket(indexSocket);
+        await provider.pushChange('session-1', { type: 'session_deleted' });
+        expect(Object.keys(saved)).toEqual(['session-1']);
+
+        // The reconnect drain hits a socket that throws on send.
+        const before = FakeWebSocket.instances.length;
+        await provider.reconnectIndex!();
+        await vi.waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(before));
+        const failing = FakeWebSocket.instances.at(-1)!;
+        failing.send.mockImplementation((payload: string) => {
+          if (JSON.parse(payload).type === 'indexDelete') throw new Error('socket is closing');
+        });
+        failing.open();
+        await vi.waitFor(() => expect(failing.send.mock.calls.some(([p]) => JSON.parse(p as string).type === 'indexDelete')).toBe(true), { timeout: 2_000 });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(Object.keys(saved)).toEqual(['session-1']);
+
+        // A socket that has started closing must not count as a send either.
+        failing.send.mockReset();
+        failing.readyState = 2;
+        const closing = await provider.pushChange('session-1', { type: 'session_deleted' });
+        expect(closing).toMatchObject({ published: false, retryable: true });
+        expect(indexDeletes(failing)).toEqual([]);
+        expect(Object.keys(saved)).toEqual(['session-1']);
+
+        dropIndexSocket(failing);
+        const healthy = await reconnectIndexSocket(provider);
+        await vi.waitFor(() => expect(indexDeletes(healthy)).toEqual([{ type: 'indexDelete', sessionId: 'session-1' }]), { timeout: 2_000 });
+        await vi.waitFor(() => expect(saved).toEqual({}));
+      } finally { provider.disconnectAll(); }
+    });
   });
 });

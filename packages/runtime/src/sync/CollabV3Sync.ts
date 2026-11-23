@@ -2,7 +2,7 @@ import { encryptSessionMessage as encryptMessage } from './encryptSessionMessage
 import { applyReplicatedSessionRows, createIndexChangeSubscriptions, createHierarchySnapshotDispatch, dispatchIndexChange, reconcileFetchedIndex } from './indexChangeDispatch';
 import { createPendingIndexPublications } from './pendingIndexPublications';
 import { warnIfUnpublished } from './pushOutcome';
-import { createPendingSessionDeletes } from './pendingSessionDeletes';
+import { createPendingSessionDeletes, sendIndexDelete } from './pendingSessionDeletes';
 import { describeSocketClose, socketErrorMessage, type SocketCloseNext } from './socketCloseLog';
 import { createSessionQueueReconciler, mergeSessionIndexMetadata, type CachedSessionIndex } from './sessionIndexMetadata';
 import { buildClientMetadataFromCacheEntry, buildClientMetadataFromRaw, buildSessionRoomClientMetadata, changeCarriesClientMetadata, decryptClientMetadata, encryptClientMetadata, mergeBulkClientMetadata, mergePendingMetadataUpdate, resolveTranscriptSyncFlag } from './sessionClientMetadata';
@@ -1320,8 +1320,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
   }
 
   function deferMetadataUpdate(sessionId: string, meta: Partial<SyncedSessionMetadata>): void {
-    // A full create for an id with a waiting delete is a new session: the delete must not remove it.
-    if (meta.title && meta.provider) pendingDeletes.remove(sessionId);
+    // A waiting delete wins over an update built before it; a create stamped after it is the id made again.
+    if (pendingDeletes.has(sessionId) && !(meta.title && meta.provider && pendingDeletes.allowsUpload(sessionId, meta.updatedAt))) return;
     const next = mergePendingMetadataUpdate(pendingMetadataUpdates.get(sessionId), meta);
     if (next) pendingMetadataUpdates.set(sessionId, next);
   }
@@ -2944,7 +2944,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
       return { published: false, reason: 'personal-sync writes withheld', retryable: true, publishedSessionIds: [] };
     }
 
-    sessionsData = sessionsData.filter(session => isRetainedSession(session.updatedAt) && !wasIndexActivityRejected(session.id, session.updatedAt));
+    // A row built before a waiting delete must not republish the session.
+    sessionsData = sessionsData.filter(session => isRetainedSession(session.updatedAt) && !wasIndexActivityRejected(session.id, session.updatedAt) && pendingDeletes.allowsUpload(session.id, session.updatedAt));
     if (!sessionsData.length) {
       return { published: false, reason: 'no session in the batch is inside index retention', retryable: false, publishedSessionIds: [] };
     }
@@ -2984,8 +2985,6 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
 
       // Check if we have cached execution/prompt state for this session
       const existingCache = sessionIndexCache.get(session.id);
-      // A session that is still in the local list was not deleted, or was made again.
-      pendingDeletes.remove(session.id);
       const pending = pendingMetadataUpdates.get(session.id);
       const cachedIsExecuting = pending?.isExecuting ?? existingCache?.isExecuting;
       const cachedHasPendingPrompt = pending?.hasPendingPrompt ?? existingCache?.hasPendingPrompt;
@@ -3354,7 +3353,8 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
     if (change.type === 'session_deleted' && !indexWritable) return deferSessionDelete(sessionId);
     if (indexWs && indexWritable) {
       if (change.type === 'session_deleted') {
-        // Delete from index and cache
+        // Forget the waiting delete only once the socket took it.
+        if (!sendIndexDelete(indexWs, sessionId)) return deferSessionDelete(sessionId);
         pendingDeletes.remove(sessionId);
         sessionIndexCache.delete(sessionId);
         sessionQueueReconciler.delete(sessionId);
@@ -3363,12 +3363,12 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
         // row must publish in full, never be suppressed against the deleted
         // row's projection.
         indexPublicationGate.invalidate(sessionId);
-        const indexDeleteMsg: ClientMessage = { type: 'indexDelete', sessionId: sessionId };
-        // console.log('[CollabV3] Sending index_delete for session:', sessionId);
-        indexWs.send(JSON.stringify(indexDeleteMsg));
       } else if (change.type === 'metadata_updated') {
         const pending = pendingMetadataUpdates.get(sessionId);
         const meta = pending ? { ...pending, ...change.metadata } : change.metadata;
+        if (!pendingDeletes.allowsUpload(sessionId, meta.title && meta.provider ? meta.updatedAt : undefined)) {
+          return { published: false, reason: 'a delete for this session is waiting', retryable: false };
+        }
         const cached = sessionIndexCache.get(sessionId);
         // Only use a fresh timestamp if the caller explicitly set updatedAt.
         // For read-status-only updates (lastReadAt), we must NOT bump updatedAt
@@ -3393,9 +3393,6 @@ export function createCollabV3Sync(config: SyncConfig): SyncProvider {
           return outcome;
         } else if (meta.title && meta.provider) {
           // New session - need at least title and provider
-          // The same id made again after a delete is a new session: the waiting
-          // delete must not remove it.
-          pendingDeletes.remove(sessionId);
           const now = updatedAt;
           if (now === undefined || !isRetainedSession(now)) {
             // Too old to publish to the index. The session-room write above
