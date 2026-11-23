@@ -58,7 +58,7 @@ vi.mock('../../services/analytics/AnalyticsService', () => ({
 }));
 vi.mock('../../utils/systemShell', () => ({ systemShell: {} }));
 vi.mock('../../utils/windowsClipboard', () => ({}));
-vi.mock('@nimbalyst/runtime', () => ({ fuzzyMatchPath: vi.fn() }));
+vi.mock('@nimbalyst/runtime/utils/fuzzyMatch', () => ({ fuzzyMatchPath: vi.fn() }));
 vi.mock('../../file/FileWatcher', () => ({ startFileWatcher: vi.fn(), stopFileWatcher: vi.fn() }));
 vi.mock('../../utils/FileTree', () => ({}));
 vi.mock('../../file/FileOperations', () => ({ loadFileIntoWindow: vi.fn() }));

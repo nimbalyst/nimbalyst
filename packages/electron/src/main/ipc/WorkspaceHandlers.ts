@@ -9,7 +9,7 @@ import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { openWorkspaceFile, openFile } from '../file/FileOpener';
-import { fuzzyMatchPath } from '@nimbalyst/runtime';
+import { fuzzyMatchPath } from '@nimbalyst/runtime/utils/fuzzyMatch';
 import { parseFileMask, matchesFileMask } from '@nimbalyst/extension-sdk/file-mask';
 import { getSyncId, removeFileFromIndex } from '../services/DocSyncService';
 

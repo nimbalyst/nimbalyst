@@ -67,7 +67,7 @@ vi.mock('../../services/analytics/AnalyticsService', () => ({
   AnalyticsService: { getInstance: () => ({}) },
 }));
 vi.mock('../../file/FileOpener', () => ({ openWorkspaceFile: vi.fn(), openFile: vi.fn() }));
-vi.mock('@nimbalyst/runtime', () => ({ fuzzyMatchPath: vi.fn() }));
+vi.mock('@nimbalyst/runtime/utils/fuzzyMatch', () => ({ fuzzyMatchPath: vi.fn() }));
 vi.mock('../../services/DocSyncService', () => ({ getSyncId: vi.fn(), removeFileFromIndex: vi.fn() }));
 vi.mock('../../window/WindowManager', () => ({
   windowStates: shared.windowStates,
