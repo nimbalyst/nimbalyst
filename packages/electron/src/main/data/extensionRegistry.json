@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-10T23:58:05.596Z",
+  "generatedAt": "2026-11-23T15:51:10.472Z",
   "extensions": [
     {
       "id": "com.nimbalyst.animation",
@@ -389,7 +389,7 @@
       "id": "com.nimbalyst.electronics",
       "name": "Electronics Studio",
       "description": "PCB & controller design: design, simulate, test, and export for manufacturing. Powered by tscircuit + Circuit JSON.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "author": "Nimbalyst",
       "categories": [
         "developer-tools",
@@ -414,10 +414,10 @@
         "ai"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.electronics/0.2.1",
-      "checksum": "bf917323f9eb642988751866a0d44813a49a08f69870ed4c6ca115793ef9956d",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.electronics/0.2.2",
+      "checksum": "cea41ba178826a134366353b86ac836c0151df09c67ed5fbc4e72537422edbb8",
       "repositoryUrl": "https://github.com/nimbalyst/nimbalyst-electronics",
-      "changelog": "0.2.1: First marketplace release with direct interactive tscircuit viewers, agent-guided circuit authoring, simulation and test workflows, evidence-backed design review, and manufacturing exports.",
+      "changelog": "0.2.2: Ask-agent requests start their session in the project the circuit's tab is open in, which newer Nimbalyst versions require. 0.2.1: First marketplace release with direct interactive tscircuit viewers, agent-guided circuit authoring, simulation and test workflows, evidence-backed design review, and manufacturing exports.",
       "tagline": "Design, simulate, test, and manufacture circuits with an AI-driven tscircuit studio",
       "longDescription": "Electronics Studio turns tscircuit TypeScript and Circuit JSON into an interactive design cockpit with direct schematic, PCB, assembly, and 3D viewers. Build circuits visually or in code, collaborate with selection-aware AI tools, run local logical, analog, and MCU simulations, review evidence-backed readiness guidance, and export BOM, Gerber, KiCad, enclosure, and design-review artifacts with freshness provenance.",
       "highlights": [
@@ -639,7 +639,7 @@
       "id": "com.nimbalyst.jupyter",
       "name": "Jupyter",
       "description": "Jupyter notebook support for Nimbalyst: custom `.ipynb` editor with real kernel execution through managed local Jupyter kernels.",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "author": "Nimbalyst",
       "categories": [
         "data"
@@ -660,10 +660,10 @@
         "ai"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.jupyter/0.4.1",
-      "checksum": "7288ab2dc260926fbb06e12adaedd59345236502513cbfa2f8ff14df6c976c15",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.jupyter/0.4.2",
+      "checksum": "68911b8560abee105f5862dd025bf81f62cfaf267d61e0e5f25eacb14da98786",
       "repositoryUrl": "https://github.com/nimbalyst/nimbalyst-jupyter",
-      "changelog": "0.4.1: Bundled fast-uri, source-map-js, dompurify and katex updated past published advisories. 0.4.0: First marketplace release with a managed local Jupyter runtime, guided Python and Jupyter setup, a slim notebook editor, and AI tools for cell CRUD, execution, variable introspection, and DataFrame previews.",
+      "changelog": "0.4.2: The managed Jupyter server is started, renewed and released for the project the notebook's tab is open in, which newer Nimbalyst versions require. 0.4.1: Bundled fast-uri, source-map-js, dompurify and katex updated past published advisories. 0.4.0: First marketplace release with a managed local Jupyter runtime, guided Python and Jupyter setup, a slim notebook editor, and AI tools for cell CRUD, execution, variable introspection, and DataFrame previews.",
       "tagline": "Edit Jupyter notebooks in Nimbalyst",
       "longDescription": "Open, edit, and execute .ipynb files in a notebook editor built with JupyterLab notebook components. Cells run against a token-secured local Jupyter server managed by the extension backend module, with an escape hatch for user-started localhost servers. Core Jupyter MIME rendering covers code, markdown, HTML, images, LaTeX, and errors; core ipywidgets controls are supported. nbformat round-trip preserves cell IDs and metadata. AI tools can read, edit, run cells, inspect outputs, and request a compact notebook projection that hides large outputs by default.",
       "highlights": [
