@@ -114,6 +114,28 @@ describe('ChatSidebar loadSession vs auto-init', () => {
     });
   });
 
+  it('skips a recent meta-agent parent when auto-selecting, matching the dropdown', async () => {
+    (window as any).electronAPI.invoke = vi.fn().mockImplementation(async (channel: string) => {
+      if (channel === 'sessions:list') {
+        return {
+          success: true,
+          sessions: [
+            { id: 'meta-parent', worktreeId: null, sessionType: 'session', agentRole: 'meta-agent', childCount: 3, messageCount: 20 },
+            { id: 'ordinary-chat', worktreeId: null, sessionType: 'session', childCount: 0, messageCount: 5 },
+          ],
+        };
+      }
+      return { success: true };
+    });
+    const view = render(<ChatSidebar workspacePath="/workspace" />);
+
+    await waitFor(() => {
+      expect(view.getByTestId('session-transcript').getAttribute('data-session-id')).toBe(
+        'ordinary-chat',
+      );
+    });
+  });
+
   it('keeps unmatched GitHub selections empty and follows late matches across PRs and issues', async () => {
     const panel = (selectionKey: string | null, ids: string[] = []) => (
       <GithubPanelShell workspacePath="/workspace" isActive selectionKey={selectionKey}

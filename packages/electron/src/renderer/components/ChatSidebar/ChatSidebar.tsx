@@ -253,8 +253,10 @@ export const ChatSidebar = forwardRef<ChatSidebarRef, ChatSidebarProps>(({
         });
 
         if (sessions.success && Array.isArray(sessions.sessions)) {
-          // Filter for chat sessions (no worktrees, no workstream containers)
+          // Same eligibility as sessionListChatAtom (the dropdown): no meta
+          // agents, no worktrees, no workstream containers.
           const chatSessions = sessions.sessions.filter((s: any) => {
+            if (s.agentRole === 'meta-agent') return false;
             if (s.worktreeId) return false;
             if (isWorkstreamContainer(s)) return false;
             return true;
