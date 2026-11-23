@@ -67,7 +67,7 @@ function slugify(label: string): string {
     .toLowerCase()
     .normalize('NFKD')
     .replace(COMBINING_DIACRITICAL_MARKS, '')
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, '-')
     .replace(/^-+|-+$/g, '') || 'action';
 }
 
