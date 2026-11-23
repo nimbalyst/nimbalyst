@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   existing: { isDestroyed: () => false, isMinimized: () => false, restore: vi.fn(),
     focus: vi.fn(), webContents: { isDestroyed: () => false, send: vi.fn() } },
   managerWindows: [] as any[],
+  // Non-manager windows Electron reports alongside the managers: About, the capture helper, etc.
+  otherWindows: [] as any[],
 }));
 
 vi.mock('electron', async () => {
@@ -21,12 +23,16 @@ vi.mock('electron', async () => {
     loadURL = vi.fn().mockResolvedValue(undefined);
     isDestroyed = () => this.destroyed;
     isMinimized = () => false;
+    isVisible = () => !this.destroyed;
     show = vi.fn(); showInactive = vi.fn(); focus = vi.fn(); restore = vi.fn();
     constructor() { super(); mocks.managerWindows.push(this); }
     // Probed on Electron 45 (Linux): close() emits 'closed' after it returns,
     // destroy() emits it before it returns.
     close() { setImmediate(() => this.destroy()); }
     destroy() { this.destroyed = true; this.emit('closed'); }
+    static getAllWindows() {
+      return [...mocks.managerWindows, ...mocks.otherWindows].filter((w) => !w.isDestroyed());
+    }
   }
   return { BrowserWindow: FakeBrowserWindow, dialog: {},
     app: Object.assign(new EventEmitter(), { isReady: () => true, quit: vi.fn(), isPackaged: false, getAppPath: () => '/app' }) };
@@ -118,7 +124,12 @@ it('lists every rail project as open, not just the project in front of each wind
 
 describe('closing the Project Manager while a hidden helper window is alive', () => {
   // The capture window (?mode=capture) is never closed, so Electron never emits
-  // window-all-closed here; no test emits it.
+  // window-all-closed while it lives.
+  const auxWindow = (visible: boolean) => {
+    const w = { destroyed: false, isDestroyed: () => w.destroyed, isVisible: () => visible && !w.destroyed };
+    return w;
+  };
+  let captureHelper: ReturnType<typeof auxWindow>;
   let dispose: () => void;
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
   const setPlatform = (value: NodeJS.Platform) => Object.defineProperty(process, 'platform', { value });
@@ -126,6 +137,8 @@ describe('closing the Project Manager while a hidden helper window is alive', ()
 
   beforeEach(() => {
     mocks.managerWindows.length = 0;
+    captureHelper = auxWindow(false);
+    mocks.otherWindows = [captureHelper];
     windows.clear();
     wasWorkspaceManagerManuallyClosed();
     dispose = initializeApplicationWindowRecovery({
@@ -154,6 +167,38 @@ describe('closing the Project Manager while a hidden helper window is alive', ()
     expect(vi.mocked(app.quit).mock.calls.length > 0).toBe(quits);
     // Never reopened: on macOS the app stays up with no window until the Dock is clicked.
     expect(mocks.managerWindows).toHaveLength(1);
+  });
+
+  it.each(['linux', 'win32'] as const)('a manual close on %s keeps the app running while another window is visible', async (platform) => {
+    setPlatform(platform);
+    const about = auxWindow(true);
+    mocks.otherWindows.push(about);
+    openManager().close();
+    await vi.runAllTimersAsync();
+    expect(app.quit).not.toHaveBeenCalled();
+    expect(mocks.managerWindows).toHaveLength(1);
+
+    // The dismissal is kept: closing About (no helper left) quits instead of reopening the manager.
+    about.destroyed = true;
+    captureHelper.destroyed = true;
+    app.emit('window-all-closed');
+    await vi.runAllTimersAsync();
+    expect(app.quit).toHaveBeenCalledOnce();
+    expect(mocks.managerWindows).toHaveLength(1);
+  });
+
+  it('on macOS, closing the last auxiliary window after the manager does not reopen the manager', async () => {
+    setPlatform('darwin');
+    const about = auxWindow(true);
+    mocks.otherWindows = [about];
+    openManager().close();
+    await vi.runAllTimersAsync();
+    about.destroyed = true;
+    app.emit('window-all-closed');
+    await vi.runAllTimersAsync();
+    expect(mocks.managerWindows).toHaveLength(1);
+    expect(getWorkspaceManagerWindow()).toBeNull();
+    expect(app.quit).not.toHaveBeenCalled();
   });
 
   it('a close for a project pick neither quits nor reopens the manager', async () => {
