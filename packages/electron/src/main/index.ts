@@ -20,8 +20,10 @@ import {
     createWindow,
     documentServices,
     findWindowByWorkspace,
+    cancelQuitting,
     getMostRecentlyFocusedWorkspaceWindow,
 } from './window/WindowManager';
+import { approveAllHookLeaves, confirmQuitWithHookEdits, withdrawHookLeaves } from './window/hookEditorUnsaved';
 import { beginStartupActivation, finishStartupWindowCreation } from './window/StartupActivation';
 import { loadFileIntoWindow, loadFileIntoWorkspaceWindow, reloadIntoWindowWithFile } from './file/FileOperations';
 import { createApplicationMenu } from './menu/ApplicationMenu';
@@ -142,6 +144,7 @@ import {
 import { shouldShowFirstLaunchOnboarding } from './utils/firstLaunchOnboarding';
 import { getAIProviderOverridesWithWorktreeFallback } from './utils/aiSettingsMerge';
 import { registerMCPConfigHandlers } from './ipc/MCPConfigHandlers';
+import { registerHookEditorHandlers } from './ipc/HookEditorHandlers';
 import { registerMcpSessionStatusHandlers } from './ipc/McpSessionStatusHandlers';
 import { getOpenCodeConfigService, registerOpenCodeConfigHandlers } from './ipc/OpenCodeConfigHandlers';
 import { createOpenCodeModelCatalogCacheKey } from './services/OpenCodeModelCatalogService';
@@ -1805,6 +1808,7 @@ app.whenReady().then(async () => {
     registerProjectMigrationHandlers();
     registerSuperLoopHandlers();
     registerMCPConfigHandlers();
+    registerHookEditorHandlers();
     registerMcpSessionStatusHandlers();
     registerOpenCodeConfigHandlers();
     registerClaudeCodePluginHandlers();
@@ -3328,12 +3332,23 @@ const shutdownForRestart = createRestartShutdown({
     }),
     restartAborted: resumeBackendTerminalsAfterAbortedQuit,
     flushPendingBackups: flushPendingCollabBackups,
+    // A restart never asks about unsaved hook changes. Approve only here, once every step
+    // above worked: a restart that aborts leaves the windows asking as before.
+    commitRestart: approveAllHookLeaves,
     quit: () => {
         console.log('[QUIT] Session state saved for restart');
         app.quit();
     },
 });
 app.on('before-quit', async (event) => {
+    // Unsaved hook editor changes: ask before any shutdown work starts, so Stay leaves the app fully running.
+    // The updater and the dev restart do not ask. A second quit pass after Leave does not ask again.
+    if (!isAppQuitting && !AutoUpdaterService.isUpdatingApp() && !fs.existsSync(getRestartSignalPath())
+        && !confirmQuitWithHookEdits()) {
+        event.preventDefault();
+        cancelQuitting();
+        return;
+    }
     if (migrationQuitDraining || migrationNeedsQuitDrain()) {
         event.preventDefault();
         if (!migrationQuitDraining) {
@@ -3344,6 +3359,9 @@ app.on('before-quit', async (event) => {
                 logger.main.warn('[Migration] Quit drain failed', error);
                 migrationQuitDraining = false;
                 endDatabaseOperationShutdown();
+                // The quit is cancelled, so the Leave answer no longer counts.
+                withdrawHookLeaves();
+                cancelQuitting();
                 return;
             }
             migrationQuitDraining = false;
@@ -3403,6 +3421,9 @@ app.on('before-quit', async (event) => {
         if (response.response !== 0) {
             // User cancelled - stay running.
             endDatabaseOperationShutdown();
+            // The quit is cancelled, so the Leave answer no longer counts.
+            withdrawHookLeaves();
+            cancelQuitting();
             console.log('[QUIT] User cancelled quit due to active AI session');
             analytics.sendEvent('quit_confirmation_result', {
                 result: 'cancelled'

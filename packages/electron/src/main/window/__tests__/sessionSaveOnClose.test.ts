@@ -1,5 +1,22 @@
 import { describe, it, expect } from 'vitest';
-import { shouldSaveSessionOnWindowClose } from '../sessionSaveOnClose';
+import { shouldSaveSessionOnWindowClose, shouldSaveWindowStateOnClose } from '../sessionSaveOnClose';
+
+describe('shouldSaveWindowStateOnClose', () => {
+  it('saves the window bounds and history on a normal close', () => {
+    expect(shouldSaveWindowStateOnClose({ closePrevented: false, blockedForUnsavedDocument: false })).toBe(true);
+  });
+
+  // The user chose Stay on the unsaved hook question: the window lives on, so its state stays as it is.
+  it('leaves the state alone when another step stopped the close', () => {
+    expect(shouldSaveWindowStateOnClose({ closePrevented: true, blockedForUnsavedDocument: false })).toBe(false);
+  });
+
+  // A close stopped for an unsaved document ends in Save or Discard, which destroy the window
+  // with no second close event. The state must be saved on the stopped close, as upstream does.
+  it('still saves the state when the close was stopped for an unsaved document', () => {
+    expect(shouldSaveWindowStateOnClose({ closePrevented: true, blockedForUnsavedDocument: true })).toBe(true);
+  });
+});
 
 describe('shouldSaveSessionOnWindowClose', () => {
   // NIM-1518: during a normal quit, before-quit has already saved the full

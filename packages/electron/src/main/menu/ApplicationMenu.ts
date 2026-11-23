@@ -27,7 +27,7 @@ import { basename, join } from 'path';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import * as fs from 'fs';
-import { windowStates, createWindow, findWindowByFilePath, getWindowId } from '../window/WindowManager';
+import { windowStates, createWindow, findWindowByFilePath, getWindowId, isAppQuitting } from '../window/WindowManager';
 import { resolveActiveWorkspacePath } from '../window/windowState';
 import { installShellCommandInteractive, uninstallShellCommandInteractive } from '../shellCommand/shellCommandActions';
 import { createAboutWindow } from '../window/AboutWindow';
@@ -2067,7 +2067,7 @@ registerTeamManagementFocusChange(() => { void updateApplicationMenu(); });
 
 // Rebuild when windows open, close, or take focus, so the Window menu's
 // project list and checkmark match the real windows.
-installWindowListMenuRefresh(app, () => { void updateApplicationMenu(); });
+installWindowListMenuRefresh(app, () => { void updateApplicationMenu(); }, isAppQuitting);
 
 // Update application menu
 export async function updateApplicationMenu() {

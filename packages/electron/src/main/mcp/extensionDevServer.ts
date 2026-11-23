@@ -36,6 +36,7 @@ import { requireMcpAuth } from "./mcpAuth";
 import { selectFocusedRestartSessions } from "./restartContinuationSelection";
 import { tailFile, grepTailFile } from "./logTail";
 import { app as electronApp } from "electron";
+import { approveAllHookLeaves } from "../window/hookEditorUnsaved";
 import { captureRendererHeapSnapshot } from "../services/HeapSnapshotService";
 import { analyzeHeapSnapshot } from "../services/HeapSnapshotAnalyzer";
 
@@ -1615,6 +1616,7 @@ function createExtensionDevMcpServer(
           // In production, use the standard relaunch mechanism
           // CRITICAL: Use app.quit() NOT app.exit(0) to trigger the before-quit handler
           // which performs proper database backup and cleanup to prevent corruption
+          approveAllHookLeaves();
           app.relaunch();
           app.quit();
 

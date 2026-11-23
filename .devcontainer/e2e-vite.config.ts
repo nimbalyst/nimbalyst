@@ -8,7 +8,6 @@
  */
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { nodePolyfills } from 'vite-plugin-node-polyfills';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 import { resolve } from 'path';
 import fs from 'fs';
@@ -21,15 +20,6 @@ export default defineConfig({
   base: '/',
   publicDir: false,
   plugins: [
-    nodePolyfills({
-      globals: {
-        Buffer: false,
-        global: false,
-        process: 'build',
-      },
-      include: [],
-      protocolImports: false,
-    }),
     react(),
     (() => {
       const toPosix = (p: string) => p.replace(/\\/g, '/');

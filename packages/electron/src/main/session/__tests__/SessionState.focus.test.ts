@@ -215,6 +215,31 @@ describe('restoreSessionState window activation', () => {
     },
   );
 
+  it('approves the unsaved hook changes only once the restart is certain', async () => {
+    const calls: string[] = [];
+    const deps = {
+      beginRestart: vi.fn(),
+      stopExternalSessions: vi.fn(async () => undefined),
+      saveSessionState: vi.fn(async () => undefined),
+      stopCommandTerminals: vi.fn(async () => undefined),
+      restartAborted: vi.fn(),
+      flushPendingBackups: vi.fn(async () => undefined),
+      commitRestart: vi.fn(() => { calls.push('commit'); }),
+      quit: vi.fn(() => { calls.push('quit'); }),
+    };
+    deps.flushPendingBackups.mockRejectedValueOnce(new Error('Backup failed'));
+    const shutdown = createRestartShutdown(deps);
+
+    // A restart that aborts must not leave the windows approved to close without asking.
+    await expect(shutdown({ preventDefault: vi.fn() })).rejects.toThrow('Backup failed');
+    expect(deps.beginRestart).toHaveBeenCalledOnce();
+    expect(deps.commitRestart).not.toHaveBeenCalled();
+
+    // The retry goes through: the approval comes right before the quit.
+    await shutdown({ preventDefault: vi.fn() });
+    expect(calls).toEqual(['commit', 'quit']);
+  });
+
   it('shows every restored workspace window without activating the app', async () => {
     mocks.getSessionState.mockReturnValue({
       windows: [

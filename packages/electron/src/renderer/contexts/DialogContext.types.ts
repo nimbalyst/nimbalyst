@@ -28,6 +28,12 @@ export interface DialogConfig<TData = unknown> {
   priority?: number;
   /** Optional IPC event that triggers this dialog to open */
   ipcEvent?: string;
+  /**
+   * The dialog holds work the user has not saved. ESC does not close it, and
+   * opening another dialog does not close it. The dialog handles ESC itself
+   * and asks first.
+   */
+  keepsUnsavedWork?: boolean;
 }
 
 /**

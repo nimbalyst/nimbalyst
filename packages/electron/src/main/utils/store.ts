@@ -30,6 +30,7 @@ import { omitModelsField } from '@nimbalyst/runtime/ai/server/utils/modelConfigU
 import { planWorkstreamStatePrune } from './workstreamStatePrune';
 import type { WorktreeDefaultBaseSetting } from '../services/worktreeBaseBranch';
 import type { OpenCodeModelCatalogCache } from '@nimbalyst/runtime/ai/server';
+import type { PausedHook } from '../../shared/hookEditor/hookDocument';
 
 // Theme can be a built-in theme or an extension theme ID (format: "extensionId:themeId")
 export type AppTheme = 'dark' | 'light' | 'system' | 'auto' | 'crystal-dark' | string;
@@ -117,6 +118,8 @@ export const DEFAULT_DATABASE_MAINTENANCE: DatabaseMaintenanceSettings = {
 export type TrayStripStyle = FleetStatusStyle;
 
 interface AppStoreSchema {
+  /** Hook editor: hooks paused from the user settings file, by file path. */
+  hookEditorPaused?: Record<string, PausedHook[]>;
   mobileSettingsVersion?: number;
   /** Withheld transcripts still owed to personal sync; see services/sync/transcriptBackfill.ts. */
   transcriptBackfill?: { projects?: string[]; sessions?: string[] };
@@ -571,6 +574,8 @@ export interface WorkspaceState {
   cloudflareSandboxSelection?: { profileName: string; accountId: string | null };
   /** When the Personal Home page was seeded; set once so a removed Home stays removed. */
   personalPagesHomeSeededAt?: number;
+  /** Hook editor: hooks paused from this project's settings files, by file path. */
+  hookEditorPaused?: Record<string, PausedHook[]>;
   workspacePath: string;
   /**
    * Additional top-level folders attached to this workspace, as absolute paths.
@@ -1378,6 +1383,38 @@ export function updateWorkspaceState(
   const draft = cloneWorkspaceState(current);
   const result = updater(draft) || draft;
   return cloneWorkspaceState(persistWorkspaceState(workspacePath, result));
+}
+
+/** Copies `all` with the list for one file set. An empty list removes the file. */
+function withPausedList(
+  all: Record<string, PausedHook[]> | undefined,
+  filePath: string,
+  hooks: PausedHook[],
+): Record<string, PausedHook[]> {
+  const next = { ...(all ?? {}) };
+  if (hooks.length === 0) delete next[filePath];
+  else next[filePath] = structuredClone(hooks);
+  return next;
+}
+
+/** Hooks paused from the user settings file. They stay paused in every project. */
+export function getAppPausedHooks(filePath: string): PausedHook[] {
+  return structuredClone(getAppStore().get('hookEditorPaused')?.[filePath] ?? []);
+}
+
+export function setAppPausedHooks(filePath: string, hooks: PausedHook[]): void {
+  getAppStore().set('hookEditorPaused', withPausedList(getAppStore().get('hookEditorPaused'), filePath, hooks));
+}
+
+/** Hooks paused from a project or local settings file. They are kept with the project. */
+export function getWorkspacePausedHooks(workspacePath: string, filePath: string): PausedHook[] {
+  return getWorkspaceState(workspacePath).hookEditorPaused?.[filePath] ?? [];
+}
+
+export function setWorkspacePausedHooks(workspacePath: string, filePath: string, hooks: PausedHook[]): void {
+  updateWorkspaceState(workspacePath, (state) => {
+    state.hookEditorPaused = withPausedList(state.hookEditorPaused, filePath, hooks);
+  });
 }
 
 /**

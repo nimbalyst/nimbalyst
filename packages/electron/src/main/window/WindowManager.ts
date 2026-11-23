@@ -23,6 +23,7 @@ import {
 } from '@nimbalyst/runtime';
 import { navigationHistoryService } from '../services/NavigationHistoryService';
 import { revealReadyWindow } from './revealReadyWindow';
+import { confirmLeaveHookEdits, guardHookEditorUnload } from './hookEditorUnsaved';
 import { registerStartupWindow } from './StartupActivation';
 import { signalFirstWindowLoaded } from '../services/startupMaintenanceGate';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
@@ -38,7 +39,7 @@ import {
     type WorkspaceWindowCandidate,
     type WorkspaceWindowMatch,
 } from './workspaceWindowMatch';
-import { shouldSaveSessionOnWindowClose } from './sessionSaveOnClose';
+import { shouldSaveSessionOnWindowClose, shouldSaveWindowStateOnClose } from './sessionSaveOnClose';
 import {
     registerCustomTitleBarWindow,
     registerFullScreenChrome,
@@ -165,6 +166,11 @@ app.on('before-quit', () => {
  *  (e.g. auto-opening a project to deliver a queued prompt) must check this. */
 export function isAppQuitting(): boolean {
   return isQuitting;
+}
+
+/** Undo for a quit that the user stopped with Stay, so a later window close asks about unsaved files again. */
+export function cancelQuitting(): void {
+  isQuitting = false;
 }
 
 // Get focused window or create new one
@@ -394,8 +400,13 @@ export function createWindow(
             }
         });
 
+        // True when the listener below stopped the current close for an unsaved document.
+        // The window state listener further down reads it.
+        let closeBlockedForUnsavedDocument = false;
+
         // Handle window close with unsaved changes
         window.on('close', (event) => {
+            closeBlockedForUnsavedDocument = false;
             if (isQuitting) {
                 // Allow close to proceed without prompts during app quit
                 return;
@@ -404,10 +415,15 @@ export function createWindow(
             const state = windowStates.get(windowId);
             if (state?.documentEdited) {
                 event.preventDefault();
+                closeBlockedForUnsavedDocument = true;
                 // Send message to renderer to show custom dialog
                 window.webContents.send('confirm-close-unsaved');
             }
         });
+
+        // Unsaved hook editor changes: a reload, close or quit asks first.
+        // Keep this call above the close listener below. Its close question must run before that listener tears the window down.
+        guardHookEditorUnload(window);
 
         // Store state for use in both 'close' and 'closed' handlers
         let savedState: WindowState | undefined;
@@ -421,6 +437,13 @@ export function createWindow(
                 prevented: event.defaultPrevented, focused: window.isFocused(),
                 visible: window.isVisible(), minimized: window.isMinimized(),
             });
+
+            // A close that an earlier listener stopped (the user chose Stay) must leave the window state alone.
+            // A close stopped for an unsaved document still saves it: Save and Discard destroy the window with no second close.
+            if (!shouldSaveWindowStateOnClose({
+                closePrevented: event.defaultPrevented,
+                blockedForUnsavedDocument: closeBlockedForUnsavedDocument,
+            })) return;
 
             if (state?.mode === 'workspace' && state.workspacePath) {
                 const bounds = window.getBounds();
@@ -899,7 +922,7 @@ safeOn('close-window-save', (event) => {
             // Wait for save to complete, then close
             setTimeout(() => {
                 const currentState = windowStates.get(windowId);
-                if (!currentState?.documentEdited && !window.isDestroyed()) {
+                if (!currentState?.documentEdited && !window.isDestroyed() && confirmLeaveHookEdits(window)) {
                     window.destroy();
                 }
             }, 100);
@@ -909,7 +932,7 @@ safeOn('close-window-save', (event) => {
 
 safeOn('close-window-discard', (event) => {
     const window = BrowserWindow.fromWebContents(event.sender);
-    if (window && !window.isDestroyed()) {
+    if (window && !window.isDestroyed() && confirmLeaveHookEdits(window)) {
         window.destroy();
     }
 });

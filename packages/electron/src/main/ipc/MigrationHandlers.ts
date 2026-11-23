@@ -51,6 +51,7 @@ import { beginDatabaseMaintenance, databaseRequiresRestart } from '../database/d
 import * as fs from 'fs';
 import { claimConsentPrompt } from '../database/sqlite/migrationConsentOffer';
 import { isSqliteMigrationConsentAnswered, markSqliteMigrationConsentAnswered } from '../utils/store';
+import { approveAllHookLeaves } from '../window/hookEditorUnsaved';
 
 /**
  * Every handler below runs under `withDatabaseOperationLock`.
@@ -350,6 +351,8 @@ function relaunchAfterReply(): void {
     // Under Playwright a relaunch spawns an Electron the test runner does not
     // own; the spec asserts the on-disk state and launches again itself.
     if (process.env.PLAYWRIGHT !== '1') app.relaunch();
+    // This relaunch is not the user's choice, so a pending hook question must not stop it.
+    approveAllHookLeaves();
     app.quit();
   });
 }

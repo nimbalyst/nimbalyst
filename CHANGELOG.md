@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Settings → Project → Claude Code Hooks lists your hooks for each settings file and opens a block editor to add, change, pause, check and save them, with a backup on every save.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
