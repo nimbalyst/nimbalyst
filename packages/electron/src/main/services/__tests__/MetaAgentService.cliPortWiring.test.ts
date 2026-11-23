@@ -57,6 +57,7 @@ vi.mock('../../mcp/metaAgentServer', () => ({
 }));
 vi.mock('../metaAgentNotificationSignature', () => ({ computeNotificationSignature: vi.fn() }));
 vi.mock('../metaAgentMessageText', () => ({
+  coalesceAcpMessageChunks: <T,>(messages: T[]) => messages,
   extractMessageText: vi.fn(),
   extractUserPrompts: vi.fn(),
 }));

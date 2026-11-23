@@ -37,7 +37,7 @@ import { inheritedOwnership, isParentNotificationSuppressed } from './extensionS
 import { childReportingMetadata, resolveChildReporting, type ChildReporting } from './childReporting';
 import { startExtensionSessionService } from './extensionSessions/extensionSessionsService';
 import { broadcastSessionCreated } from './session/broadcastSessionCreated';
-import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
+import { coalesceAcpMessageChunks, extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 import type { NotificationOptions, NotificationResult } from './NotificationService';
 import type { MobilePushResult } from '@nimbalyst/runtime/sync/types';
 import { composeNotificationTitle } from '../../shared/notificationTitle';
@@ -1450,9 +1450,10 @@ export class MetaAgentService {
     // response fields mid-session once a child passed 500 rows. Results come from
     // the newest page; the first page is read only for the prompts it adds.
     const PAGE = 500;
-    const messages = await AgentMessagesRepository.listTail(sessionId, PAGE);
+    const tail = await AgentMessagesRepository.listTail(sessionId, PAGE);
+    const messages = coalesceAcpMessageChunks(tail);
     const firstTailId = messages[0]?.id ?? Number.POSITIVE_INFINITY;
-    const head = messages.length < PAGE ? [] : await AgentMessagesRepository.list(sessionId, { limit: PAGE });
+    const head = tail.length < PAGE ? [] : await AgentMessagesRepository.list(sessionId, { limit: PAGE });
     const userPrompts = extractUserPrompts([...head.filter((m) => (m.id ?? 0) < firstTailId), ...messages]);
     const recentMessages = this.extractRecentMessages(messages, 3);
     const pendingPrompt = await this.getPendingInteractivePrompt(sessionId);

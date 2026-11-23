@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractMessageText, extractUserPrompts } from '../metaAgentMessageText';
+import { coalesceAcpMessageChunks, extractMessageText, extractUserPrompts } from '../metaAgentMessageText';
 
 describe('extractMessageText', () => {
   describe('synthetic prompts and plain text', () => {
@@ -420,5 +420,23 @@ describe('extractUserPrompts', () => {
       { direction: 'input', content: 'real', metadata: { mode: 'agent' } },
     ]);
     expect(prompts).toEqual(['real']);
+  });
+});
+
+describe('coalesceAcpMessageChunks', () => {
+  const chunk = (text: string) => ({
+    direction: 'output',
+    content: JSON.stringify({ type: 'session/update', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } }),
+  });
+  it('merges consecutive ACP chunks into one readable output row', () => {
+    const rows = coalesceAcpMessageChunks([
+      { direction: 'input', content: 'q' },
+      chunk('Hello '),
+      chunk('world'),
+      { direction: 'output', content: JSON.stringify({ type: 'session/update', update: { sessionUpdate: 'usage_update' } }) },
+      chunk('Bye'),
+    ]);
+    expect(rows.map((r) => r.content)).toEqual(['q', 'Hello world', rows[2].content, 'Bye']);
+    expect(extractMessageText(rows[1].content)).toBe('Hello world');
   });
 });

@@ -64,6 +64,7 @@ vi.mock('../../mcp/metaAgentServer', () => ({
 }));
 vi.mock('../metaAgentNotificationSignature', () => ({ computeNotificationSignature: vi.fn() }));
 vi.mock('../metaAgentMessageText', () => ({
+  coalesceAcpMessageChunks: <T,>(messages: T[]) => messages,
   extractMessageText: (content: unknown) => (typeof content === 'string' ? content : ''),
   extractUserPrompts: (messages: Array<{ direction: string; content: unknown }>) =>
     messages.filter((m) => m.direction === 'input').map((m) => String(m.content)),

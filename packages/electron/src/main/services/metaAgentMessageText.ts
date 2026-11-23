@@ -18,6 +18,45 @@ export interface AgentMessageLike {
  * canonical Codex shape catalog. Keep this in sync when new shapes are added
  * there.
  */
+/**
+ * ACP agents (agy, codex-acp) stream the reply as one `agent_message_chunk`
+ * row per fragment. Read alone, a fragment is not a reply, so merge each run of
+ * consecutive chunk rows into one plain-text output row before extraction.
+ */
+export function coalesceAcpMessageChunks<T extends { direction: string; content: string }>(messages: T[]): T[] {
+  const out: T[] = [];
+  let run: { row: T; text: string } | null = null;
+  const flush = () => {
+    if (run) out.push({ ...run.row, content: run.text, metadata: null } as T);
+    run = null;
+  };
+  for (const message of messages) {
+    const text = message.direction === 'output' ? acpChunkText(message.content) : null;
+    if (text === null) {
+      flush();
+      out.push(message);
+    } else if (run) {
+      run.text += text;
+    } else {
+      run = { row: message, text };
+    }
+  }
+  flush();
+  return out;
+}
+
+function acpChunkText(rawContent: string): string | null {
+  if (!rawContent.includes('agent_message_chunk')) return null;
+  try {
+    const parsed = JSON.parse(rawContent) as { update?: { sessionUpdate?: unknown; content?: { type?: unknown; text?: unknown } } };
+    const update = parsed?.update;
+    if (update?.sessionUpdate !== 'agent_message_chunk') return null;
+    return update.content?.type === 'text' && typeof update.content.text === 'string' ? update.content.text : null;
+  } catch {
+    return null;
+  }
+}
+
 export function extractMessageText(
   rawContent: string,
   metadata?: Record<string, unknown> | null,
