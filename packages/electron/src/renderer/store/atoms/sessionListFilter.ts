@@ -54,6 +54,42 @@ export function matchesSessionListTag(
   return (session.tags ?? []).includes(tag);
 }
 
+/**
+ * Title the automations extension gives every session it starts
+ * (`packages/extensions/automations/src/index.tsx`). It sets the title with
+ * `force` and `markAsNamed`, so the prefix survives auto-naming.
+ */
+export const AUTOMATION_SESSION_TITLE_PREFIX = 'Automation: ';
+
+/** Sessions started by a scheduled automation run, not by the user. */
+export function isAutomationSession(session: Pick<SessionMeta, 'title'>): boolean {
+  return (session.title ?? '').startsWith(AUTOMATION_SESSION_TITLE_PREFIX);
+}
+
+export const AUTOMATIONS_GROUP_KEY = 'Automations';
+
+/**
+ * List groups that start collapsed. Scheduled runs pile up fast, so their
+ * group stays out of the way until the user opens it. For these keys the
+ * persisted `collapsedGroups` list records the opposite state: an
+ * `<key>:expanded` entry means the user opened it.
+ */
+const COLLAPSED_BY_DEFAULT_GROUPS = new Set([AUTOMATIONS_GROUP_KEY]);
+
+export function isSessionListGroupCollapsed(collapsedGroups: readonly string[], groupKey: string): boolean {
+  if (COLLAPSED_BY_DEFAULT_GROUPS.has(groupKey)) {
+    return !collapsedGroups.includes(`${groupKey}:expanded`);
+  }
+  return collapsedGroups.includes(groupKey);
+}
+
+export function toggleSessionListGroup(collapsedGroups: readonly string[], groupKey: string): string[] {
+  const stored = COLLAPSED_BY_DEFAULT_GROUPS.has(groupKey) ? `${groupKey}:expanded` : groupKey;
+  return collapsedGroups.includes(stored)
+    ? collapsedGroups.filter(g => g !== stored)
+    : [...collapsedGroups, stored];
+}
+
 export interface SessionListFilter {
   tags: string[];
 }

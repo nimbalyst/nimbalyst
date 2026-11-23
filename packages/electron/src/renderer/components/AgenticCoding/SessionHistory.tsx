@@ -71,10 +71,14 @@ import { useSuperLoopDialog } from '../../hooks/useSuperLoop';
 import { workspaceSessionTurnActivityAtom } from '../../store/atoms/sessionActivity';
 import { sessionKanbanTagsAtom } from '../../store/atoms/sessionKanban';
 import {
+  AUTOMATIONS_GROUP_KEY,
+  isAutomationSession,
+  isSessionListGroupCollapsed,
   isWorkstreamParentSession,
   matchesSessionListTag,
   SESSION_LIST_VIRTUAL_TAGS,
   sessionListTagFilterAtom,
+  toggleSessionListGroup,
   VIRTUAL_TAG_WORKSTREAMS,
   VIRTUAL_TAG_WORKTREE,
 } from '../../store/atoms/sessionListFilter';
@@ -1172,11 +1176,7 @@ const SessionHistoryComponent: React.FC = () => {
   }, [updatedSession]);
 
   const handleToggleGroup = (groupName: string) => {
-    if (collapsedGroups.includes(groupName)) {
-      onCollapsedGroupsChange(collapsedGroups.filter(g => g !== groupName));
-    } else {
-      onCollapsedGroupsChange([...collapsedGroups, groupName]);
-    }
+    onCollapsedGroupsChange(toggleSessionListGroup(collapsedGroups, groupName));
   };
 
   const handleDeleteSession = async (sessionId: string) => {
@@ -2138,6 +2138,8 @@ const SessionHistoryComponent: React.FC = () => {
     const timestampField = sortBy === 'updated' ? 'updatedAt' : 'createdAt';
     const items: UnifiedListItem[] = [];
     const pinnedItems: UnifiedListItem[] = [];
+    // Scheduled automation runs get their own group so they don't bury the user's own sessions
+    const automationItems: UnifiedListItem[] = [];
     // Add regular sessions and workstreams (those without worktreeId)
     for (const session of sessions) {
       // Skip blitz sessions - they're rendered via BlitzGroup, not as individual items
@@ -2177,6 +2179,8 @@ const SessionHistoryComponent: React.FC = () => {
 
           if (session.isPinned) {
             pinnedItems.push(item);
+          } else if (isAutomationSession(session)) {
+            automationItems.push(item);
           } else {
             items.push(item);
           }
@@ -2336,6 +2340,7 @@ const SessionHistoryComponent: React.FC = () => {
 
     // Sort pinned items by timestamp (newest first)
     pinnedItems.sort(compareUnifiedItems);
+    automationItems.sort(compareUnifiedItems);
 
     // Build pinned and time groups
     const result: Record<string, UnifiedListItem[]> = {};
@@ -2348,6 +2353,10 @@ const SessionHistoryComponent: React.FC = () => {
       result['Pinned'] = pinnedItems;
     }
 
+    if (automationItems.length > 0) {
+      result[AUTOMATIONS_GROUP_KEY] = automationItems;
+    }
+
     // Add time-based groups
     for (const [groupKey, groupItems] of Object.entries(groups)) {
       if (groupItems.length > 0) {
@@ -2355,11 +2364,11 @@ const SessionHistoryComponent: React.FC = () => {
       }
     }
 
-    return result as Record<TimeGroupKey | 'Pinned' | 'Meta Agent', UnifiedListItem[]>;
+    return result as Record<TimeGroupKey | 'Pinned' | 'Meta Agent' | typeof AUTOMATIONS_GROUP_KEY, UnifiedListItem[]>;
   }, [sessions, worktreeGroupsData, sortBy, worktreeCache, workstreamChildrenCache, sessionTreeIndex, blitzCache, superLoops, showArchived, isMetaAgentEnabled, getDisplayedOrderRank, getDisplayedOrderTimestamp, compareSessionOrder, compareUnifiedItems]);
 
   const groupKeys = useMemo(
-    () => Object.keys(groupedItems) as (TimeGroupKey | 'Pinned' | 'Meta Agent')[],
+    () => Object.keys(groupedItems) as (TimeGroupKey | 'Pinned' | 'Meta Agent' | typeof AUTOMATIONS_GROUP_KEY)[],
     [groupedItems],
   );
 
@@ -2406,7 +2415,7 @@ const SessionHistoryComponent: React.FC = () => {
     const flat: FlatVirtuosoItem[] = [];
     for (const groupKey of groupKeys) {
       const items = groupedItems[groupKey];
-      const isExpanded = !collapsedGroups.includes(groupKey);
+      const isExpanded = !isSessionListGroupCollapsed(collapsedGroups, groupKey);
       flat.push({ kind: 'group-header', key: `group:${groupKey}`, groupKey, itemCount: items.length, isExpanded });
       if (isExpanded) {
         for (const item of items) {
