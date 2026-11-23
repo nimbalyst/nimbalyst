@@ -560,7 +560,7 @@ const SessionHistoryComponent: React.FC = () => {
     setTagFilter({ tags: tagFilter.tags.filter(t => t !== tag) });
   };
 
-  // Phase visibility toggles (session-only, complete hidden by default)
+  // Phase visibility toggles (session-only)
   const hiddenPhases = useAtomValue(sessionListHiddenPhasesAtom);
   const setHiddenPhases = useSetAtom(sessionListHiddenPhasesAtom);
 

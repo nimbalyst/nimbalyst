@@ -85,7 +85,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - Session search with full-text index (Cmd+L)
 - Session pinning
 - Session branching / forking
-- Session tags and phase tracking
+- Session tags and phase tracking, with opt-in phase toggles in the session list that hide sessions by phase (all phases shown by default; applies to top-level sessions, children follow their parent)
 - Session HTML export and clipboard copy
 - Shareable session links (E2E encrypted, 1/7/30 day expiry)
 - Live import of external Claude Code and Codex CLI sessions — opt in with **Follow external agent sessions** under **Settings → Agent Features** (OFF by default); follow sessions in open workspaces and their worktrees into the session list and open transcripts, including later title updates while preserving names set in Nimbalyst

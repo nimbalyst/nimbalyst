@@ -85,11 +85,17 @@ describe('session list phase filter', () => {
     [done, planning, unphased, workstream, doneChild, activeChild].map(s => [s.id, s]),
   );
 
-  it('hides only complete sessions by default and never hides unphased ones', () => {
+  it('shows every phase by default, including complete', () => {
     const hidden = createStore().get(sessionListHiddenPhasesAtom);
-    expect(hidden).toEqual(['complete']);
-    expect(matchesSessionListPhases(done, hidden, registry)).toBe(false);
+    expect(hidden).toEqual([]);
+    expect(matchesSessionListPhases(done, hidden, registry)).toBe(true);
     expect(matchesSessionListPhases(planning, hidden, registry)).toBe(true);
+    expect(matchesSessionListPhases(unphased, hidden, registry)).toBe(true);
+  });
+
+  it('hides complete sessions once complete is selected and never hides unphased ones', () => {
+    expect(matchesSessionListPhases(done, ['complete'], registry)).toBe(false);
+    expect(matchesSessionListPhases(planning, ['complete'], registry)).toBe(true);
     expect(matchesSessionListPhases(unphased, ['backlog', 'planning', 'implementing', 'validating', 'complete'], registry)).toBe(true);
   });
 

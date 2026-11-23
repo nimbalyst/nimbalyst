@@ -71,8 +71,8 @@ export interface SessionListFilter {
 
 export const sessionListTagFilterAtom = atom<SessionListFilter>({ tags: [] });
 
-/** Phases hidden from the sessions list. Complete sessions are hidden by default. */
-export const sessionListHiddenPhasesAtom = atom<SessionPhase[]>(['complete']);
+/** Phases hidden from the sessions list. Opt-in: every phase, including complete, is shown by default. */
+export const sessionListHiddenPhasesAtom = atom<SessionPhase[]>([]);
 
 /**
  * Whether a root session survives the phase toggles. Sessions without a phase
