@@ -19,6 +19,20 @@ let scheduler: AutomationScheduler | null = null;
 // Re-export types
 export type { AutomationStatus } from './frontmatter/types';
 
+const AUTOMATIONS_DIR = /[\\/]nimbalyst-local[\\/]automations[\\/]/g;
+
+/**
+ * The project root an absolute automation file path lives under, or undefined
+ * for a relative path (main then uses the window's active project).
+ */
+export function owningWorkspacePath(filePath: string): string | undefined {
+  let lastIndex = -1;
+  for (const match of filePath.matchAll(AUTOMATIONS_DIR)) lastIndex = match.index ?? -1;
+  if (lastIndex <= 0) return undefined;
+  if (!filePath.startsWith('/') && !/^[a-zA-Z]:/.test(filePath)) return undefined;
+  return filePath.slice(0, lastIndex);
+}
+
 /**
  * Extension activation - sets up the scheduler.
  */
@@ -41,6 +55,7 @@ export async function activate(context: {
         sessionName?: string;
         provider?: 'claude-code' | 'claude' | 'openai' | 'openai-codex';
         model?: string;
+        workspacePath?: string;
       }) => Promise<{ sessionId: string; response: string }>;
     };
   };
@@ -55,7 +70,7 @@ export async function activate(context: {
 
   // Wire up the execution callback
   scheduler.setOnFire(async (
-    _filePath: string,
+    filePath: string,
     status: AutomationStatus,
     prompt: string,
   ) => {
@@ -74,6 +89,9 @@ export async function activate(context: {
           sessionName: `Automation: ${status.title}`,
           provider: status.provider || 'claude-code',
           model: status.model,
+          // Run in the project that owns this file. Without it main picks the
+          // window's active rail project, which a timer has no reason to use (#1299).
+          workspacePath: owningWorkspacePath(filePath),
         });
         response = result.response;
         sessionId = result.sessionId;

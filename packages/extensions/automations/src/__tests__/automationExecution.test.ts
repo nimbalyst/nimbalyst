@@ -210,6 +210,35 @@ Report status.
     }));
   });
 
+  it('starts the session in the project that owns the automation file, not the active project', async () => {
+    // #1299: sendPrompt named no project, so main used whichever rail project
+    // was active when the timer fired, while output still went to the owner.
+    const path = '/Users/me/project-b/nimbalyst-local/automations/codex-scout.md';
+    const files = new Map([[path, automationFile()]]);
+    const sendPrompt = vi.fn().mockResolvedValue({ sessionId: 's1', response: 'done' });
+    const ui = { showInfo: vi.fn(), showWarning: vi.fn(), showError: vi.fn() };
+    const filesystem = {
+      readFile: async (filePath: string) => {
+        const content = files.get(filePath);
+        if (content === undefined) throw new Error(`ENOENT: ${filePath}`);
+        return content;
+      },
+      writeFile: async (filePath: string, content: string) => {
+        files.set(filePath, content);
+      },
+      fileExists: async (filePath: string) => files.has(filePath),
+      findFiles: async () => [path],
+    };
+
+    await activate({ services: { filesystem, ui, ai: { sendPrompt } }, subscriptions: disposables });
+    const runTool = aiTools.find((tool) => tool.name === 'automations.run');
+    await runTool!.handler({ id: path }, {} as never);
+
+    expect(sendPrompt).toHaveBeenCalledWith(expect.objectContaining({
+      workspacePath: '/Users/me/project-b',
+    }));
+  });
+
   it('records a Codex prompt rejection as an error while preserving the failure output', async () => {
     const path = 'nimbalyst-local/automations/codex-scout.md';
     const files = new Map([[path, automationFile()]]);
