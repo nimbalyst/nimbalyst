@@ -124,7 +124,7 @@ describe('LiveGateway tracker list adaptation', () => {
   });
 });
 
-// MUL-26: `tracker_get` used to omit `archived` entirely, and the `?? false`
+// `tracker_get` used to omit `archived` entirely, and the `?? false`
 // below turned the absent key into a confident `false` -- so an archived item
 // read back as active through `nim tracker get --json` permanently. Comments
 // arrive as a top-level key (not in the customFields bag), so they need their
@@ -155,7 +155,7 @@ describe('LiveGateway tracker get adaptation', () => {
     expect(record?.syncStatus).toBe('synced');
   });
 
-  it('maps top-level comments into the record fields', async () => {
+  it('maps top-level comments into system, not fields', async () => {
     const gateway = makeGetGateway({
       id: 'bug-1',
       type: 'bug',
@@ -165,9 +165,10 @@ describe('LiveGateway tracker get adaptation', () => {
 
     const record = await gateway.getTracker('/ws', 'bug-1');
 
-    expect(record?.fields.comments).toEqual([
+    expect(record?.system.comments).toEqual([
       { id: 'comment_1', body: 'PROBE-XYZZY', deleted: false },
     ]);
+    expect(record?.fields.comments).toBeUndefined();
   });
 
   it('leaves comments unset when the item carries none', async () => {
@@ -175,6 +176,7 @@ describe('LiveGateway tracker get adaptation', () => {
 
     const record = await gateway.getTracker('/ws', 'bug-1');
 
+    expect(record?.system.comments).toBeUndefined();
     expect(record?.fields.comments).toBeUndefined();
   });
 });
