@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automations in every project open in a window's project rail now run on schedule, not only those in the window's first project, and write their output and history into their own project.
 - A relative file path an agent passes to an extension tool now resolves against the session's project, not the window's first project.
 - An extension editor whose tab is in a project other than the one on screen now reads and writes files in its own project, not the on-screen one.
+- In auto mode, approving a Claude tool call that the safety classifier blocked now tells the agent you approved it and to run it again. Before, the agent only got a generic retry hint and could skip the call. The prompt for a compound shell command now offers only Allow Once, since Session and Always never applied to it.
 
 ### Removed
 <!-- Removed features go here -->

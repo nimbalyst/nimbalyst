@@ -494,6 +494,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       trustChecker: BaseAgentProvider.trustChecker || undefined,
       patternSaver: ClaudeCodeDeps.claudeSettingsPatternSaver || undefined,
       localAllowRuleChecker: ClaudeCodeDeps.claudeLocalAllowRuleChecker || undefined,
+      // `priority: 'next'` lets the CLI fold the message into the running turn
+      // beside the blocked call's result instead of waiting for the turn to end.
+      sendApprovalToModel: (text) => this.promptController?.push({
+        type: 'user',
+        message: { role: 'user', content: text },
+        parent_tool_use_id: null,
+        priority: 'next',
+      }) ?? false,
       getCurrentMode: () => this.currentMode,
       setCurrentMode: (mode) => { this.currentMode = mode; },
       getPendingExitPlanModeConfirmations: () => this.pendingExitPlanModeConfirmations,

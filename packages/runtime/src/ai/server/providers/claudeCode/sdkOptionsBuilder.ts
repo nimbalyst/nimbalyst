@@ -32,6 +32,8 @@ type SDKUserMessage = {
   type: 'user';
   message: MessageParam;
   parent_tool_use_id: string | null;
+  /** 'next' folds the message into a running turn at the next model request. */
+  priority?: 'now' | 'next' | 'later';
 };
 
 export interface BuildSdkOptionsDeps {

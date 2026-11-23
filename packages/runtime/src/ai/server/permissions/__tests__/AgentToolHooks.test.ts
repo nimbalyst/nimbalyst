@@ -446,6 +446,65 @@ describe('AgentToolHooks', () => {
       });
     });
 
+    // retry:true only adds a fixed "you may retry" hint, so the model could not
+    // tell the user had approved and sometimes skipped the call.
+    it('tells the model the user approved the exact call, and only on approval', async () => {
+      const pending = new Map<string, any>();
+      const sendApprovalToModel = vi.fn((_text: string) => true);
+      const hooks = new AgentToolHooks(createMockOptions({
+        getCurrentMode: () => 'auto',
+        getPendingToolPermissions: () => pending,
+        getSessionApprovedPatterns: () => new Set<string>(),
+        sendApprovalToModel,
+      }));
+      const command = 'git fetch -q && gh workflow run publish.yml -f dry_run=true';
+      const run = async (decision: 'allow' | 'deny') => {
+        const denied = hooks.createPermissionDeniedHook()(
+          { tool_name: 'Bash', tool_input: { command }, reason: '[Destructive]' },
+          'tool-use-denied-8',
+          { signal: new AbortController().signal }
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+        const [requestId, entry] = Array.from(pending.entries()).at(-1)!;
+        pending.delete(requestId);
+        entry.resolve({ decision, scope: 'once' });
+        return denied;
+      };
+
+      await run('deny');
+      expect(sendApprovalToModel).not.toHaveBeenCalled();
+
+      await run('allow');
+      expect(sendApprovalToModel).toHaveBeenCalledOnce();
+      expect(sendApprovalToModel.mock.calls[0][0]).toContain(command);
+    });
+
+    it('offers only a one-time approval for a compound Bash command', async () => {
+      const pending = new Map<string, any>();
+      const options = createMockOptions({
+        getCurrentMode: () => 'auto',
+        getPendingToolPermissions: () => pending,
+        getSessionApprovedPatterns: () => new Set<string>(),
+      });
+      const hooks = new AgentToolHooks(options);
+      const signal = new AbortController().signal;
+      void hooks.createPermissionDeniedHook()(
+        { tool_name: 'Bash', tool_input: { command: 'git fetch && git push' }, reason: 'x' },
+        'tool-use-denied-9',
+        { signal }
+      );
+      void hooks.createPermissionDeniedHook()(
+        { tool_name: 'Bash', tool_input: { command: 'git push' }, reason: 'x' },
+        'tool-use-denied-10',
+        { signal }
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      const widgets = (options.logAgentMessage as any).mock.calls.map((call: any[]) => JSON.parse(call[3]).input);
+      expect(widgets.map((w: any) => w.suppressAlwaysAllowRule === true)).toEqual([true, false]);
+    });
+
     it('honours a saved project-local allow rule only in auto mode', async () => {
       let mode: 'agent' | 'auto' = 'auto';
       const localAllowRuleChecker = vi.fn(async (_workspacePath: string, pattern: string) => pattern === 'Agent');

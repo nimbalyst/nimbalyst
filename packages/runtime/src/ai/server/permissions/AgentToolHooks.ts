@@ -79,6 +79,15 @@ export interface AgentToolHooksOptions {
   localAllowRuleChecker?: (workspacePath: string, pattern: string) => Promise<boolean>;
 
   /**
+   * Deliver a user message to the model during the running turn. Used after
+   * the user approves a call the auto-mode classifier blocked: the CLI turns
+   * the hook's `retry: true` into a fixed "you may retry" hint that does not
+   * say the user approved, so the model could skip the call. Returns false
+   * when the turn's input stream is already closed.
+   */
+  sendApprovalToModel?: (text: string) => boolean;
+
+  /**
    * Current mode ('planning' | 'agent' | 'auto')
    */
   getCurrentMode?: () => 'planning' | 'agent' | 'auto' | undefined;
@@ -166,6 +175,7 @@ export class AgentToolHooks {
   private readonly trustChecker?: TrustChecker;
   private readonly patternSaver?: (workspacePath: string, pattern: string) => Promise<void>;
   private readonly localAllowRuleChecker?: (workspacePath: string, pattern: string) => Promise<boolean>;
+  private readonly sendApprovalToModel?: (text: string) => boolean;
   private readonly getCurrentMode?: () => 'planning' | 'agent' | 'auto' | undefined;
   private readonly setCurrentMode?: (mode: 'planning' | 'agent' | 'auto' | undefined) => void;
   private readonly getPendingExitPlanModeConfirmations?: () => Map<string, {
@@ -216,6 +226,7 @@ export class AgentToolHooks {
     this.trustChecker = options.trustChecker;
     this.patternSaver = options.patternSaver;
     this.localAllowRuleChecker = options.localAllowRuleChecker;
+    this.sendApprovalToModel = options.sendApprovalToModel;
     this.getCurrentMode = options.getCurrentMode;
     this.setCurrentMode = options.setCurrentMode;
     this.getPendingExitPlanModeConfirmations = options.getPendingExitPlanModeConfirmations;
@@ -421,6 +432,9 @@ export class AgentToolHooks {
       const warnings = classifierReason
         ? [`Auto-mode classifier flagged this call: ${classifierReason}`]
         : ['Auto-mode classifier requested user approval before running this tool.'];
+      // A compound Bash pattern is unique to this prompt and never saved, so
+      // Session and Always would act as Allow Once. Offer only Allow Once.
+      const suppressAlwaysAllowRule = pattern.startsWith('Bash:compound:');
 
       this.logSecurity('[PermissionDenied] Auto-mode denied tool, re-prompting user:', {
         toolName,
@@ -449,6 +463,7 @@ export class AgentToolHooks {
           sensitivePaths: [],
         }],
         hasDestructiveActions: isDestructive,
+        suppressAlwaysAllowRule,
         createdAt: Date.now(),
       };
 
@@ -470,6 +485,7 @@ export class AgentToolHooks {
               isDestructive,
               warnings,
               workspacePath: this.workspacePath,
+              ...(suppressAlwaysAllowRule ? { suppressAlwaysAllowRule: true } : {}),
             }
           })
         );
@@ -529,6 +545,19 @@ export class AgentToolHooks {
           } catch (saveError) {
             console.error('[AGENT-HOOKS] PermissionDenied: failed to persist pattern:', saveError);
           }
+        }
+
+        if (this.sendApprovalToModel) {
+          const approvedCall = toolName === 'Bash'
+            ? `\`\`\`\n${rawCommand}\n\`\`\``
+            : `${toolName}: ${toolDescription}`;
+          const delivered = this.sendApprovalToModel(
+            `I approved the tool call the auto-mode classifier just blocked. Run it again exactly as written:\n\n${approvedCall}`
+          );
+          this.logSecurity('[PermissionDenied] Told the model the user approved the blocked call', {
+            toolName,
+            delivered,
+          });
         }
 
         return {
