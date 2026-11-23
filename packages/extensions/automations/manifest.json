@@ -1,14 +1,14 @@
 {
   "id": "com.nimbalyst.automations",
   "name": "Automations",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Schedule recurring AI-powered tasks with file-based automation definitions",
   "author": "Nimbalyst",
   "main": "dist/index.js",
   "styles": "dist/index.css",
   "apiVersion": "1.0.0",
   "marketplace": {
-    "changelog": "1.0.3: A disabled automation no longer fires on its schedule, automations no longer rerun after a restart or overwrite their own report, output settings are respected, a hand-edited schedule no longer stops the scheduler, and Codex automations run with subscription auth.\n1.0.2: Scheduled interval automations now fire on time.\n1.0.1: Reliable automation status detection on Windows and consistent skill namespacing.",
+    "changelog": "1.0.4: An automation runs its AI session and writes its output in the project that contains it, and automations in every project open in a window's project rail run on schedule. Needed by Nimbalyst versions after 0.84.3. 1.0.3: A disabled automation no longer fires on its schedule, automations no longer rerun after a restart or overwrite their own report, output settings are respected, a hand-edited schedule no longer stops the scheduler, and Codex automations run with subscription auth.\n1.0.2: Scheduled interval automations now fire on time.\n1.0.1: Reliable automation status detection on Windows and consistent skill namespacing.",
     "categories": ["ai-tools"],
     "tags": ["automation", "scheduled-tasks", "agent", "workflow", "recurring"],
     "icon": "schedule",

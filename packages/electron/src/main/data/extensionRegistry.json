@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-23T15:51:10.472Z",
+  "generatedAt": "2026-11-23T16:32:06.200Z",
   "extensions": [
     {
       "id": "com.nimbalyst.animation",
@@ -93,7 +93,7 @@
       "id": "com.nimbalyst.automations",
       "name": "Automations",
       "description": "Schedule recurring AI-powered tasks with file-based automation definitions",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "author": "Nimbalyst",
       "categories": [
         "ai-tools"
@@ -114,10 +114,10 @@
         "ai"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.automations/1.0.3",
-      "checksum": "31138ed698539b7f604448feff40723254ae4054e0333cb75fed9b16d3968529",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.automations/1.0.4",
+      "checksum": "798f4186fb99d9b7ba98ff75572546205f480eae5e98ebbd4edfd4a5722d9400",
       "repositoryUrl": "",
-      "changelog": "1.0.3: A disabled automation no longer fires on its schedule, automations no longer rerun after a restart or overwrite their own report, output settings are respected, a hand-edited schedule no longer stops the scheduler, and Codex automations run with subscription auth.\n1.0.2: Scheduled interval automations now fire on time.\n1.0.1: Reliable automation status detection on Windows and consistent skill namespacing.",
+      "changelog": "1.0.4: An automation runs its AI session and writes its output in the project that contains it, and automations in every project open in a window's project rail run on schedule. Needed by Nimbalyst versions after 0.84.3. 1.0.3: A disabled automation no longer fires on its schedule, automations no longer rerun after a restart or overwrite their own report, output settings are respected, a hand-edited schedule no longer stops the scheduler, and Codex automations run with subscription auth.\n1.0.2: Scheduled interval automations now fire on time.\n1.0.1: Reliable automation status detection on Windows and consistent skill namespacing.",
       "tagline": "Run recurring AI workflows from markdown automation definitions",
       "longDescription": "Define recurring automations in markdown and let Nimbalyst run them on a schedule. Use them for routine reviews, status updates, content refreshes, and any repeatable AI workflow that should happen without starting a new session manually.",
       "highlights": [
