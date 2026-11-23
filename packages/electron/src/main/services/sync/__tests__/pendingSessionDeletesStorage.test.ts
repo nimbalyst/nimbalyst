@@ -14,10 +14,11 @@ vi.mock('electron-store', () => ({
   },
 }));
 
+import { asPersonalMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { createPendingSessionDeletesStorage } from '../pendingSessionDeletesStorage';
 
-const accountA = { serverUrl: 'wss://sync.example.test', orgId: 'org-a', personalMemberId: 'member-a' };
-const accountB = { serverUrl: 'wss://sync.example.test', orgId: 'org-b', personalMemberId: 'member-b' };
+const accountA = { serverUrl: 'wss://sync.example.test', orgId: 'org-a', personalMemberId: asPersonalMemberId('member-a') };
+const accountB = { serverUrl: 'wss://sync.example.test', orgId: 'org-b', personalMemberId: asPersonalMemberId('member-b') };
 
 describe('pending session deletes storage', () => {
   beforeEach(() => files.clear());

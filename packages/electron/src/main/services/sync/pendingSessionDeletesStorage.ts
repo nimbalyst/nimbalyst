@@ -1,4 +1,5 @@
 import Store from 'electron-store';
+import type { PersonalMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import type { SyncConfig } from '@nimbalyst/runtime/sync/types';
 
 type PendingSessionDeleteStorage = NonNullable<SyncConfig['pendingSessionDeletes']>;
@@ -7,7 +8,7 @@ type PendingSessionDeleteStorage = NonNullable<SyncConfig['pendingSessionDeletes
 export interface PendingSessionDeletesScope {
   serverUrl: string;
   orgId: string;
-  personalMemberId: string;
+  personalMemberId: PersonalMemberId;
 }
 
 /**
