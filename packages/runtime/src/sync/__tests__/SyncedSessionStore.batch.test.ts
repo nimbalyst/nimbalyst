@@ -23,3 +23,35 @@ it('preserves batch hydration through the sync decorator for a heavily linked fi
   expect(get).not.toHaveBeenCalled();
   expect(connect).not.toHaveBeenCalled();
 });
+
+// GitHub #1901: after an app restart no session is "connected", so deleting an
+// older session never told the sync server and the session came back.
+it('sends session_deleted for a session that was never connected, then deletes locally', async () => {
+  const order: string[] = [];
+  const pushChange = vi.fn(async () => { order.push('push'); return { published: true } as const; });
+  const disconnect = vi.fn();
+  const baseDelete = vi.fn(async () => { order.push('local'); });
+  const store = createSyncedSessionStore(
+    { delete: baseDelete } as unknown as SessionStore,
+    { pushChange, disconnect } as unknown as SyncProvider,
+  );
+
+  await store.delete('old-session');
+
+  expect(pushChange).toHaveBeenCalledExactlyOnceWith('old-session', { type: 'session_deleted' });
+  expect(baseDelete).toHaveBeenCalledExactlyOnceWith('old-session');
+  expect(order).toEqual(['push', 'local']);
+});
+
+it('still deletes locally at once when the sync delete is deferred', async () => {
+  const pushChange = vi.fn(async () => ({ published: false, reason: 'index delete deferred', retryable: true }) as const);
+  const baseDelete = vi.fn(async () => {});
+  const store = createSyncedSessionStore(
+    { delete: baseDelete } as unknown as SessionStore,
+    { pushChange, disconnect: vi.fn() } as unknown as SyncProvider,
+  );
+
+  await store.delete('old-session');
+
+  expect(baseDelete).toHaveBeenCalledExactlyOnceWith('old-session');
+});

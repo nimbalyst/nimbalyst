@@ -130,7 +130,7 @@ export function createSyncedSessionStore(
   // metadata_updated changes can flow via the index channel even without a session room connection,
   // so we allow them through regardless of connectedSessions state.
   async function pushToSync(sessionId: string, change: SessionChange, isCurrent?: () => boolean): Promise<void> {
-    if (!connectedSessions.has(sessionId) && change.type !== 'metadata_updated') return;
+    if (!connectedSessions.has(sessionId) && change.type !== 'metadata_updated' && change.type !== 'session_deleted') return;
 
     try {
       if (isCurrent && !isCurrent()) return;
@@ -262,9 +262,12 @@ export function createSyncedSessionStore(
     },
 
     async delete(sessionId: string): Promise<void> {
-      // Push deletion to sync first
+      // Push deletion to sync first. This must not depend on a room connection:
+      // after an app restart no session is connected, and the server would
+      // keep the session and send it back (GitHub #1901). The sync layer sends
+      // the delete now, or keeps it and sends it once the index is ready.
+      await pushToSync(sessionId, { type: 'session_deleted' });
       if (connectedSessions.has(sessionId)) {
-        await pushToSync(sessionId, { type: 'session_deleted' });
         syncProvider.disconnect(sessionId);
         connectedSessions.delete(sessionId);
       }

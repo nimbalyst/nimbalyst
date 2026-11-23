@@ -23,6 +23,7 @@ import { getProjectFileSyncService } from './ProjectFileSyncService';
 import { startProjectFileSync, stopAllProjectFileSync } from '../file/WorkspaceWatcher';
 import { listOpenWorkspacePaths } from '../window/windowState';
 import { createProjectConfigSync } from './sync/projectConfigSync';
+import { createPendingSessionDeletesStorage } from './sync/pendingSessionDeletesStorage';
 import { projectConfigSources } from './sync/projectConfigSources';
 import { nextMobileSettingsVersion } from './sync/mobileSettingsVersion';
 import { createMobileJoinDetector } from './sync/mobileJoinDetector';
@@ -511,6 +512,8 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
       getDeviceInfo: () => getDeviceInfo(personalUserId),
       // Opted-out projects stay listed on the phone, marked as not syncing their transcript (NIM-7545).
       isTranscriptSyncDisabled: createTranscriptSyncDisabledPredicate(),
+      // A delete made while sync was down is saved here and sent after the next start (GitHub #1901).
+      pendingSessionDeletes: createPendingSessionDeletesStorage(),
     });
     logger.main.info('[SyncManager] Created CollabV3 sync provider with device:', initialDeviceInfo.name);
 
