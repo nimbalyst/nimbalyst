@@ -11,6 +11,7 @@ import type { AgentMessage } from '../ai/server/types';
 import type { PersonalJwt, PersonalMemberId } from '../auth/jwtScopes';
 import type { SyncedReadReceipt } from '../readReceipts/readReceipts';
 import type { PersonalSyncWriteGateSnapshot } from './personalSyncWriteGate';
+import type { PendingSessionDeleteStorage } from './pendingSessionDeletes';
 
 /** Caller-side knobs for {@link SyncProvider.requestMobilePush}. */
 export interface MobilePushOptions {
@@ -90,6 +91,14 @@ export interface SyncConfig {
    * Omitted by hosts that never withhold transcripts.
    */
   isTranscriptSyncDisabled?: (projectId: string, sessionId: string) => boolean;
+
+  /**
+   * Where to save session deletes the server has not heard about yet, so a
+   * delete made while sync was down is still sent after an app restart
+   * (GitHub #1901). Omitted by hosts that do not restart in between: the
+   * list then lives in memory only.
+   */
+  pendingSessionDeletes?: PendingSessionDeleteStorage;
 }
 
 /**

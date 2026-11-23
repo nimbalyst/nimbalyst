@@ -720,4 +720,99 @@ describe('CollabV3 index publication gate', () => {
       provider.disconnectAll();
     }
   });
+
+  /**
+   * GitHub #1901: a deleted session came back after an app restart. After a
+   * restart no session room is open, and the delete was dropped before it
+   * reached the index. These tests pin that a delete always reaches the server,
+   * or waits and is sent later, and is never reported as published when it was not.
+   */
+  describe('session delete (GitHub #1901)', () => {
+    const indexDeletes = (socket: FakeWebSocket) => socket.send.mock.calls
+      .map(([payload]) => JSON.parse(payload as string))
+      .filter((message) => message.type === 'indexDelete');
+
+    /** Close the index socket as a dropped connection, then bring up a fresh one. */
+    async function reconnectIndexSocket(provider: ReturnType<typeof createCollabV3Sync>): Promise<FakeWebSocket> {
+      const before = FakeWebSocket.instances.length;
+      await provider.reconnectIndex!();
+      await vi.waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(before));
+      const fresh = FakeWebSocket.instances.at(-1)!;
+      fresh.open();
+      return fresh;
+    }
+
+    function dropIndexSocket(socket: FakeWebSocket): void {
+      socket.readyState = 3;
+      socket.onclose?.({ code: 1006, reason: '', wasClean: false } as CloseEvent);
+    }
+
+    it('sends the index delete for a session whose room was never opened (the state after a restart)', async () => {
+      const { provider, indexSocket } = await createConnectedProvider();
+      try {
+        const outcome = await provider.pushChange('old-session', { type: 'session_deleted' });
+        expect(outcome).toMatchObject({ published: true });
+        expect(indexDeletes(indexSocket)).toEqual([{ type: 'indexDelete', sessionId: 'old-session' }]);
+      } finally { provider.disconnectAll(); }
+    });
+
+    it('does not call a delete published while the index is down, and sends it once the index is back', async () => {
+      const { provider, indexSocket } = await createConnectedProvider();
+      try {
+        // An open session room, so the old code reached its silent drop.
+        const connecting = provider.connect('session-1');
+        await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+        FakeWebSocket.instances[1].open();
+        await connecting;
+
+        dropIndexSocket(indexSocket);
+        const outcome = await provider.pushChange('session-1', { type: 'session_deleted' });
+        expect(outcome).toMatchObject({ published: false, retryable: true });
+
+        const fresh = await reconnectIndexSocket(provider);
+        await vi.waitFor(() => expect(indexDeletes(fresh)).toEqual([{ type: 'indexDelete', sessionId: 'session-1' }]), { timeout: 2_000 });
+      } finally { provider.disconnectAll(); }
+    });
+
+    it('keeps a delete made while the index was down across an app restart', async () => {
+      let saved: Record<string, number> = {};
+      const pendingSessionDeletes = { load: () => saved, save: (next: Record<string, number>) => { saved = { ...next }; } };
+
+      const first = await createConnectedProvider({ pendingSessionDeletes });
+      dropIndexSocket(first.indexSocket);
+      const outcome = await first.provider.pushChange('old-session', { type: 'session_deleted' });
+      expect(outcome).toMatchObject({ published: false, retryable: true });
+      expect(Object.keys(saved)).toEqual(['old-session']);
+      first.provider.disconnectAll();
+
+      // "Restart": a new provider, a new socket, the same saved list.
+      FakeWebSocket.instances = [];
+      const second = await createConnectedProvider({ pendingSessionDeletes });
+      try {
+        await vi.waitFor(() => expect(indexDeletes(second.indexSocket)).toEqual([{ type: 'indexDelete', sessionId: 'old-session' }]), { timeout: 2_000 });
+        await vi.waitFor(() => expect(saved).toEqual({}));
+      } finally { second.provider.disconnectAll(); }
+    });
+
+    it('does not delete a session that was created again with the same id after the delete was queued', async () => {
+      let saved: Record<string, number> = {};
+      const pendingSessionDeletes = { load: () => saved, save: (next: Record<string, number>) => { saved = { ...next }; } };
+      const { provider, indexSocket } = await createConnectedProvider({ pendingSessionDeletes });
+      try {
+        dropIndexSocket(indexSocket);
+        await provider.pushChange('session-1', { type: 'session_deleted' });
+        expect(Object.keys(saved)).toEqual(['session-1']);
+        // The delete was queued at fake time 10000. A create-shaped update stamped later is a new session.
+        await provider.pushChange('session-1', {
+          type: 'metadata_updated',
+          metadata: { title: 'Back again', provider: 'claude-code', updatedAt: 20_000 },
+        });
+        expect(saved).toEqual({});
+
+        const fresh = await reconnectIndexSocket(provider);
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        expect(indexDeletes(fresh)).toEqual([]);
+      } finally { provider.disconnectAll(); }
+    });
+  });
 });
