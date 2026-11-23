@@ -18,10 +18,11 @@ vi.mock("electron", () => ({
 vi.mock("@nimbalyst/runtime/storage/repositories/AgentMessagesRepository", () => ({
   AgentMessagesRepository: { listTail: async () => [] },
 }));
+const updateMetadata = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("@nimbalyst/runtime/storage/repositories/AISessionsRepository", () => ({
   AISessionsRepository: {
     get: async () => ({ id: "session", provider: "claude-code" }),
-    updateMetadata: async () => {},
+    updateMetadata,
   },
 }));
 vi.mock("@nimbalyst/runtime/ai/server/SessionStateManager", () => ({
@@ -71,6 +72,7 @@ const question = {
 
 afterEach(() => {
   ipcMain.removeAllListeners();
+  updateMetadata.mockReset().mockImplementation(async () => {});
 });
 
 describe("MCP interactive prompts and the idle-wake guard", () => {
@@ -93,5 +95,30 @@ describe("MCP interactive prompts and the idle-wake guard", () => {
     await vi.waitFor(() => expect(unblocked).toEqual(["session"]));
     expect(isSessionBlockedOnUser("session")).toBe(false);
     unsubscribe();
+  });
+
+  it("reports the session blocked while the question waits even if persisting the bit has not finished or failed", async () => {
+    // The persisted bit is written asynchronously, and a drain wake can land
+    // inside that write -- or after it failed. The guard must not depend on
+    // the database round trip to know the user is being asked.
+    let failWrite: (err: Error) => void = () => {};
+    updateMetadata.mockImplementation(
+      () => new Promise<void>((_resolve, reject) => { failWrite = reject; }),
+    );
+
+    const pending = handleAskUserQuestion({ questions: [question] }, "session", {});
+    await vi.waitFor(() => expect(updateMetadata).toHaveBeenCalled());
+    expect(isSessionBlockedOnUser("session")).toBe(true);
+
+    failWrite(new Error("database busy"));
+    await new Promise((r) => setImmediate(r));
+    expect(isSessionBlockedOnUser("session")).toBe(true);
+
+    updateMetadata.mockImplementation(async () => {});
+    ipcMain.emit("ask-user-question:session", {}, {
+      answers: { [question.question]: "Stop here" },
+    });
+    await pending;
+    expect(isSessionBlockedOnUser("session")).toBe(false);
   });
 });

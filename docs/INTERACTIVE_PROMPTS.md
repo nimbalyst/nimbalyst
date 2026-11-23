@@ -118,6 +118,7 @@ When adding a new interactive prompt, keep the correlation path unified:
 4. If Codex is involved, reuse the shared resolver instead of parsing `_meta` or synthetic ids locally.
 5. If the prompt blocks an MCP call, decide what the fallback wakeup path is before shipping it.
 6. Add at least one regression test that covers the full request -> persist response -> waiter resume path.
+7. Set and clear the session's pending-prompt bit with `setSessionPendingPrompt` (directly, or through `openPromptRegistry`) on open and on every settle. A lead blocked on the user must not be woken by a background-task result: `idleWakeSignals.ts` holds those wakes while the bit, the open-prompt registry, or MCP prompt liveness says the session is blocked, and releases them on each clear (#1557): a direct wake when no turn is running, or a queued prompt behind a turn the answer already started. A prompt that never clears the bit holds those results until it does.
 
 ## What Broke Before
 

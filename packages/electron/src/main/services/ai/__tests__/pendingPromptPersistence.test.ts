@@ -26,6 +26,7 @@ vi.mock('../../../utils/logger', () => ({
 
 import {
   getSessionsWithPendingPrompt,
+  hasSessionPendingPrompt,
   onPendingPromptCleared,
   resetPendingPromptTracking,
   setSessionPendingPrompt,
@@ -192,21 +193,37 @@ describe('pending-prompt cleared notification', () => {
     updateMetadata.mockReset().mockResolvedValue(undefined);
   });
 
-  it('fires only on the transition out of blocked, never for a redundant clear', async () => {
-    // A drain wake held while the session was blocked is released from this
-    // signal; a spurious fire would release it while the user is still asked.
+  it('fires on every clear request, including a redundant one, and never on a set', async () => {
+    // With a provider prompt and an MCP prompt open, each path clears when its
+    // own last prompt settles; the second clear is the one that finds nothing
+    // left open, so it must reach the release. Listeners re-check.
     const cleared: string[] = [];
     const unsubscribe = onPendingPromptCleared((id) => cleared.push(id));
 
-    await setSessionPendingPrompt('s1', false);
-    expect(cleared).toEqual([]);
-
     await setSessionPendingPrompt('s1', true);
     await setSessionPendingPrompt('s1', true);
     expect(cleared).toEqual([]);
 
     await setSessionPendingPrompt('s1', false);
     await setSessionPendingPrompt('s1', false);
+    expect(cleared).toEqual(['s1', 's1']);
+    unsubscribe();
+  });
+
+  it('reports the session blocked from the moment the set is requested, even if the write fails', async () => {
+    updateMetadata.mockRejectedValue(new Error('database busy'));
+
+    const write = setSessionPendingPrompt('s1', true);
+    expect(hasSessionPendingPrompt('s1')).toBe(true);
+    await write;
+    expect(hasSessionPendingPrompt('s1')).toBe(true);
+    // The persisted-bit mirror still reflects only what reached the database.
+    expect(getSessionsWithPendingPrompt()).toEqual([]);
+
+    const cleared: string[] = [];
+    const unsubscribe = onPendingPromptCleared((id) => cleared.push(id));
+    await setSessionPendingPrompt('s1', false);
+    expect(hasSessionPendingPrompt('s1')).toBe(false);
     expect(cleared).toEqual(['s1']);
     unsubscribe();
   });

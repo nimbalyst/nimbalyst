@@ -48,11 +48,22 @@ export function getSessionsWithPendingPrompt(): string[] {
 /** Reset the mirror; called by the startup sweep once every row is cleared. */
 export function resetPendingPromptTracking(): void {
   sessionsWithPendingPrompt.clear();
+  sessionsBlockedOnUser.clear();
 }
+
+/**
+ * The bit as last requested, updated synchronously before any await.
+ *
+ * `sessionsWithPendingPrompt` above mirrors what reached the database, so it
+ * lags the write and never sees a set whose write failed. The idle-wake guard
+ * (#1557) cannot wait for that round trip: a drain wake landing inside the
+ * write, or after it failed, would preempt the question it exists to protect.
+ */
+const sessionsBlockedOnUser = new Set<string>();
 
 /** Is this one session currently blocked on an interactive prompt? */
 export function hasSessionPendingPrompt(sessionId: string): boolean {
-  return sessionsWithPendingPrompt.has(sessionId);
+  return sessionsBlockedOnUser.has(sessionId);
 }
 
 type PendingPromptClearedListener = (sessionId: string) => void;
@@ -63,8 +74,11 @@ const clearedListeners = new Set<PendingPromptClearedListener>();
  *
  * This module is the single writer of the bit, and every prompt path writes
  * it: provider-event prompts through `openPromptRegistry`, the MCP tool
- * prompts directly. So this is the only place that sees the true -> false
- * transition for all of them. Returns an unsubscribe function.
+ * prompts directly. Fires on every clear request, not only on the true ->
+ * false transition: the MCP path and the registry each clear when their own
+ * last prompt settles, so with prompts open on both, the second clear is the
+ * one that finds nothing left open. Listeners must re-check and tolerate a
+ * redundant call. Returns an unsubscribe function.
  */
 export function onPendingPromptCleared(
   listener: PendingPromptClearedListener,
@@ -98,6 +112,14 @@ export async function setSessionPendingPrompt(
     TrayManager.getInstance().onPromptCreated(sessionId, kind);
   } else {
     TrayManager.getInstance().onPromptResolved(sessionId);
+  }
+
+  // Same reason, for the idle-wake guard and the release of what it held.
+  if (hasPendingPrompt) {
+    sessionsBlockedOnUser.add(sessionId);
+  } else {
+    sessionsBlockedOnUser.delete(sessionId);
+    notifyPendingPromptCleared(sessionId);
   }
 
   try {
@@ -136,20 +158,17 @@ export async function setSessionPendingPrompt(
   if (hasPendingPrompt && !wasAlreadyPending) {
     void notifyMobileOfBlockedSession(sessionId);
   }
+}
 
-  // Fire on the logical transition, not on the database write: work held back
-  // while this session was blocked must be released even if persisting the bit
-  // failed.
-  if (!hasPendingPrompt && wasAlreadyPending) {
-    for (const listener of clearedListeners) {
-      try {
-        listener(sessionId);
-      } catch (err) {
-        logger.main.warn(
-          `[pendingPromptPersistence] pending-prompt-cleared listener threw for session ${sessionId}:`,
-          err,
-        );
-      }
+function notifyPendingPromptCleared(sessionId: string): void {
+  for (const listener of clearedListeners) {
+    try {
+      listener(sessionId);
+    } catch (err) {
+      logger.main.warn(
+        `[pendingPromptPersistence] pending-prompt-cleared listener threw for session ${sessionId}:`,
+        err,
+      );
     }
   }
 }

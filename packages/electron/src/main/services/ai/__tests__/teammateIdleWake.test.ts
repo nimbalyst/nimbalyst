@@ -51,7 +51,7 @@ describe('teammate idle wake', () => {
 
   it('holds the wake while the lead is waiting on the user, instead of starting a turn', async () => {
     const { deps, wake } = setup({ isBlockedOnUser: () => true });
-    await wake({ sessionId: 's1', message: 'background task finished' });
+    expect(await wake({ sessionId: 's1', message: 'background task finished' })).toBe('held');
 
     expect(deps.holdForUser).toHaveBeenCalledWith('s1', 'background task finished');
     expect(deps.startSession).not.toHaveBeenCalled();

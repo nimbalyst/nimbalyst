@@ -1,11 +1,13 @@
 // @vitest-environment node
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import {
+  createHeldIdleWakeRelease,
   decideIdleWake,
   deferIdleWakeMessage,
-  takeDeferredIdleWakeMessages,
+  peekDeferredIdleWakeMessages,
   resetDeferredIdleWakes,
+  type HeldIdleWakeReleaseDeps,
 } from '../idleWakeGating';
 
 describe('decideIdleWake', () => {
@@ -31,22 +33,91 @@ describe('decideIdleWake', () => {
   });
 });
 
-describe('deferred idle wakes', () => {
+function releaseSetup(overrides: Partial<HeldIdleWakeReleaseDeps> = {}) {
+  const deps = {
+    isBlockedOnUser: () => false,
+    isSessionActive: () => true,
+    deliver: vi.fn(async (_id: string, _message: string) => true),
+    logInfo: () => {},
+    logWarn: () => {},
+    ...overrides,
+  };
+  return { deps, release: createHeldIdleWakeRelease(deps) };
+}
+
+describe('releasing held idle wakes', () => {
   beforeEach(() => {
     resetDeferredIdleWakes();
   });
 
-  it('returns deferred messages in order and drains them exactly once', () => {
+  it('queues every held result for the session in order once the prompt clears', async () => {
     deferIdleWakeMessage('s1', 'first');
     deferIdleWakeMessage('s1', 'second');
     deferIdleWakeMessage('s2', 'other session');
+    const { deps, release } = releaseSetup();
 
-    expect(takeDeferredIdleWakeMessages('s1')).toEqual(['first', 'second']);
-    expect(takeDeferredIdleWakeMessages('s1')).toEqual([]);
-    expect(takeDeferredIdleWakeMessages('s2')).toEqual(['other session']);
+    await release('s1');
+
+    expect(deps.deliver).toHaveBeenCalledTimes(1);
+    expect(deps.deliver).toHaveBeenCalledWith('s1', 'first\n\nsecond');
+    expect(peekDeferredIdleWakeMessages('s1')).toEqual([]);
+    expect(peekDeferredIdleWakeMessages('s2')).toEqual(['other session']);
   });
 
-  it('returns nothing for a session that never deferred', () => {
-    expect(takeDeferredIdleWakeMessages('unknown')).toEqual([]);
+  it('keeps holding while another prompt on the session is still open', async () => {
+    deferIdleWakeMessage('s1', 'result');
+    const { deps, release } = releaseSetup({ isBlockedOnUser: () => true });
+
+    await release('s1');
+
+    expect(deps.deliver).not.toHaveBeenCalled();
+    expect(peekDeferredIdleWakeMessages('s1')).toEqual(['result']);
+  });
+
+  it('keeps the results when the hand-off fails or is declined, and delivers them on the next clear', async () => {
+    deferIdleWakeMessage('s1', 'result');
+    const deliver = vi.fn(async (_id: string, _message: string) => true)
+      .mockRejectedValueOnce(new Error('database busy'));
+    const { release } = releaseSetup({ deliver });
+
+    await release('s1');
+    expect(peekDeferredIdleWakeMessages('s1')).toEqual(['result']);
+
+    deliver.mockResolvedValueOnce(false);
+    await release('s1');
+    expect(peekDeferredIdleWakeMessages('s1')).toEqual(['result']);
+
+    await release('s1');
+    expect(deliver).toHaveBeenCalledTimes(3);
+    expect(deliver).toHaveBeenLastCalledWith('s1', 'result');
+    expect(peekDeferredIdleWakeMessages('s1')).toEqual([]);
+  });
+
+  it('serializes overlapping releases so a result is queued once, and queues one held during the hand-off after it', async () => {
+    deferIdleWakeMessage('s1', 'first');
+    let finishFirst: () => void = () => {};
+    const deliver = vi.fn(async (_id: string, _message: string) => true)
+      .mockImplementationOnce(() => new Promise<boolean>((resolve) => { finishFirst = () => resolve(true); }));
+    const { release } = releaseSetup({ deliver });
+
+    const a = release('s1');
+    const b = release('s1');
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1));
+    deferIdleWakeMessage('s1', 'second');
+    finishFirst();
+    await Promise.all([a, b]);
+
+    expect(deliver.mock.calls.map(([, message]) => message)).toEqual(['first', 'second']);
+    expect(peekDeferredIdleWakeMessages('s1')).toEqual([]);
+  });
+
+  it('drops held results for a session that ended while they were held', async () => {
+    deferIdleWakeMessage('s1', 'result');
+    const { deps, release } = releaseSetup({ isSessionActive: () => false });
+
+    await release('s1');
+
+    expect(deps.deliver).not.toHaveBeenCalled();
+    expect(peekDeferredIdleWakeMessages('s1')).toEqual([]);
   });
 });

@@ -15,6 +15,13 @@ export interface TeammateIdleWakeData {
   message: string;
 }
 
+/**
+ * What the listener did with a wake. `started` means the session was marked
+ * running and the send was scheduled; a send that fails after that ends the
+ * session through the abandon path like any other failed wake.
+ */
+export type TeammateIdleWakeOutcome = 'ignored' | 'dropped' | 'held' | 'started' | 'abandoned';
+
 export interface WakeTargetWindow {
   isDestroyed: () => boolean;
 }
@@ -45,10 +52,10 @@ export interface TeammateIdleWakeDeps<W extends WakeTargetWindow = WakeTargetWin
 }
 
 export function createTeammateIdleWakeListener<W extends WakeTargetWindow>(deps: TeammateIdleWakeDeps<W>) {
-  return async (data: TeammateIdleWakeData): Promise<void> => {
+  return async (data: TeammateIdleWakeData): Promise<TeammateIdleWakeOutcome> => {
     if (!data.sessionId) {
       deps.logWarn('[AIService] teammate:messageWhileIdle with no sessionId');
-      return;
+      return 'ignored';
     }
     const decision = decideIdleWake({
       // Don't wake a session that already ended (e.g., all teammates completed
@@ -58,12 +65,12 @@ export function createTeammateIdleWakeListener<W extends WakeTargetWindow>(deps:
     });
     if (decision.action === 'drop') {
       deps.logInfo(`[AIService] Ignoring teammate message for ended session ${data.sessionId}`);
-      return;
+      return 'dropped';
     }
     if (decision.action === 'defer') {
       deps.holdForUser(data.sessionId, data.message);
       deps.logInfo(`[AIService] Holding teammate message for session ${data.sessionId}: lead is waiting on an interactive prompt`);
-      return;
+      return 'held';
     }
     deps.logInfo(`[AIService] Teammate message while lead idle, triggering sendMessage for session ${data.sessionId}`);
     // Load with the workspace that owns the session row. The turn's path can be
@@ -86,15 +93,17 @@ export function createTeammateIdleWakeListener<W extends WakeTargetWindow>(deps:
       const targetWindow = deps.findWindow(workspacePath);
       if (!targetWindow || targetWindow.isDestroyed()) {
         abandon('[AIService] No window for idle wake', new Error(`No window for workspace ${workspacePath}`));
-        return;
+        return 'abandoned';
       }
       deps.defer(() => {
         deps.sendMessage(targetWindow, data.message, data.sessionId, workspacePath).catch((err) => {
           abandon('[AIService] Failed to process teammate message while idle', err);
         });
       });
+      return 'started';
     } catch (error) {
       abandon('[AIService] Failed to handle teammate message while idle', error);
+      return 'abandoned';
     }
   };
 }
