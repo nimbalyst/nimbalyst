@@ -23,6 +23,7 @@ export const DIALOG_IDS = {
 
   // Settings group
   API_KEY: 'api-key',
+  HOOK_EDITOR: 'hook-editor',
 
   // Alert group
   CONFIRM: 'confirm-dialog',

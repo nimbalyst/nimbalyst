@@ -47,6 +47,7 @@ import { ToolsMcpPanel } from './panels/ToolsMcpPanel';
 import { CloudflareSandboxesPanel } from './panels/CloudflareSandboxesPanel';
 import { ClaudeCodePluginsPanel } from '../GlobalSettings/panels/ClaudeCodePluginsPanel';
 import { ProjectPermissionsPanel } from './panels/ProjectPermissionsPanel';
+import { HooksSettingsPanel } from './panels/HooksSettingsPanel';
 import { ProviderOverrideWrapper } from './panels/ProviderOverrideWrapper';
 import { InstalledExtensionsPanel } from './panels/InstalledExtensionsPanel';
 import { PrivilegedExtensionsPanel } from './panels/PrivilegedExtensionsPanel';
@@ -1049,6 +1050,10 @@ export function SettingsView({
         return workspacePath
           ? <ProjectPermissionsPanel workspacePath={workspacePath} workspaceName={workspaceName ?? 'this project'} />
           : <p className="text-sm text-[var(--nim-text-muted)]">Open a local project to configure agent permissions.</p>;
+      case 'project-claude-hooks':
+        return workspacePath
+          ? <HooksSettingsPanel workspacePath={workspacePath} />
+          : <p className="text-sm text-[var(--nim-text-muted)]">Open a local project to edit its Claude Code hooks.</p>;
       case 'project-trackers':
       case 'tracker-config':
         return <TrackerConfigPanel workspacePath={workspacePath ?? undefined} />;

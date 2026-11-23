@@ -216,5 +216,15 @@ describe('settings route registry', () => {
       category: 'project-github',
       target: { kind: 'workspace', workspacePath: '/workspace' },
     });
+    // A link that already names a project page, such as Claude Code Hooks, opens that page, not Sharing.
+    expect(normalizeSettingsDestination({
+      category: 'project-claude-hooks',
+      scope: 'project',
+      workspacePath: '/workspace',
+    })).toEqual({
+      scope: 'project',
+      category: 'project-claude-hooks',
+      target: { kind: 'workspace', workspacePath: '/workspace' },
+    });
   });
 });

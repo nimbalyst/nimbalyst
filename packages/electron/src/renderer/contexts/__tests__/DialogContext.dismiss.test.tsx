@@ -41,4 +41,36 @@ describe('DialogProvider dismissal', () => {
     act(() => dialogRef.current?.open('probe-b', {}));
     expect(displaced).toHaveBeenCalledTimes(1);
   });
+
+  it('leaves a dialog that keeps unsaved work open on ESC', () => {
+    const onDismiss = vi.fn();
+    registerDialog<{ onDismiss?: () => void }>({
+      id: 'probe-keep',
+      group: 'system',
+      component: () => <div data-testid="probe-keep" />,
+      keepsUnsavedWork: true,
+    });
+    const view = render(<DialogProvider workspacePath="/workspace"><div /></DialogProvider>);
+    act(() => dialogRef.current?.open('probe-keep', { onDismiss }));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(view.queryByTestId('probe-keep')).not.toBeNull();
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it('opens a new dialog on top of one that keeps unsaved work, and ESC then closes only the new one', () => {
+    // A higher priority than the dialog opened over it, so priority alone would draw it on top.
+    registerDialog({ id: 'probe-keep-2', group: 'system', component: () => <div data-testid="probe-keep-2" />, keepsUnsavedWork: true, priority: 200 });
+    registerProbe('probe-over');
+    const view = render(<DialogProvider workspacePath="/workspace"><div /></DialogProvider>);
+    act(() => dialogRef.current?.open('probe-keep-2', {}));
+    act(() => dialogRef.current?.open('probe-over', {}));
+    const kept = view.getByTestId('probe-keep-2');
+    const over = view.getByTestId('probe-over');
+    // The new dialog comes later in the page, so it draws on top.
+    expect(kept.compareDocumentPosition(over) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(view.queryByTestId('probe-over')).toBeNull();
+    expect(view.queryByTestId('probe-keep-2')).not.toBeNull();
+  });
 });

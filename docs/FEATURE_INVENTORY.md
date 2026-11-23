@@ -527,6 +527,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Project: sharing/organization attachment, project access, AI provider overrides, agent permissions, tracker config, GitHub, and extensions
 - Tools & Token Cost panel: per-tool-group estimated context-token cost and load policy (eager / on-demand / conditional) across built-in, extension, and user MCP servers; trackers toggle inline; reachable from the AI panel's token meter ("Manage tools")
 - Claude Code: custom executable path, environment variables, effort slider, plan mode, auto-commit, extended context
+- **Claude Code hook editor** — edit the hooks in the user, project and local Claude Code settings files as blocks from Settings → Project → Claude Code Hooks. Each save shows the changes in plain words, backs up the file first (any backup can be restored from the editor), refuses a file that changed on disk, and never changes settings outside `hooks`. A hook can be paused: it leaves the file and waits in a "Paused hooks" tray until it is turned back on.
 - Multi-account support (add/remove/reconnect accounts, per-project binding, explicit share/team account defaults)
 - Release channel selection (stable / beta / alpha)
 - Document history retention

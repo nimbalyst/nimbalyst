@@ -22,6 +22,7 @@ import {
 import { installAtomFeedFilter } from './electronUpdaterPatch';
 import { createWindowsSignatureVerifier } from './windowsSignatureVerifier';
 import type { NsisUpdater } from 'electron-updater';
+import { approveAllHookLeaves } from '../window/hookEditorUnsaved';
 
 // Install the atom-feed filter before any AutoUpdaterService is constructed
 // (which is the first thing that triggers electron-updater to read the feed).
@@ -409,12 +410,15 @@ export class AutoUpdaterService {
 
         await this.closeDatabaseBeforeQuit();
         AutoUpdaterService.isUpdating = true;
+        // An update never asks about unsaved hook changes.
+        approveAllHookLeaves();
         app.removeAllListeners('before-quit');
         app.removeAllListeners('window-all-closed');
         autoUpdater.quitAndInstall(true, true);
       } catch (error) {
         log.error('Failed to quit and install:', error);
         AutoUpdaterService.isUpdating = true;
+        approveAllHookLeaves();
         app.removeAllListeners('before-quit');
         app.removeAllListeners('window-all-closed');
         app.relaunch();

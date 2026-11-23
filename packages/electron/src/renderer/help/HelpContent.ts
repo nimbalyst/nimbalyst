@@ -422,6 +422,35 @@ export const HelpContent: Record<string, HelpEntry> = {
     title: 'Recent Projects',
     body: 'Your recently opened projects for quick access.',
   },
+
+  // ============================================================================
+  // Claude Code hook editor
+  // ============================================================================
+
+  'hook-review': {
+    title: 'Review and save',
+    body: 'Shows each change in plain words and as text, then saves. Nimbalyst backs up the file first and runs the checks again. Changes start in new sessions.',
+  },
+  'hook-undo': {
+    title: 'Undo',
+    body: 'Takes back the last change in this file, also after a save. A saved change you undo counts as a change to save again.',
+  },
+  'hook-when-input': {
+    title: 'Pick an event',
+    body: 'Type part of an event name, then pick it. Click Add to start a hook on it, or drag its chip onto the hooks.',
+  },
+  'hook-do-input': {
+    title: 'Pick a block',
+    body: 'Type part of a block name, then pick it. Click Add to add it where the selection is, or drag its chip onto a group. A block that does not fit says why.',
+  },
+  'hook-json-scope': {
+    title: 'Show hooks only or the whole file',
+    body: 'Switch between the whole settings file and only the part the blocks write. You never type here; the blocks write it.',
+  },
+  'hook-add-watch-helper': {
+    title: 'Add the watch list',
+    body: 'Adds a SessionStart hook that gives FileChanged the files to watch. Use the full path of each file. On a Mac one change can fire the hook twice, once for /tmp and once for /private/tmp.',
+  },
 };
 
 /**

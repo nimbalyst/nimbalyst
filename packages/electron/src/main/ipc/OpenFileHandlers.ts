@@ -76,5 +76,5 @@ export function registerOpenFileHandlers(): void {
   powerMonitor.on("resume", () => {
     void openFileReconciler.reconcile(true);
   });
-  app.once("before-quit", () => openFileReconciler.stop());
+  app.once("will-quit", () => openFileReconciler.stop());
 }

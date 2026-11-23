@@ -13,6 +13,7 @@ import { ProjectSelectionDialog } from '../components/ProjectSelectionDialog/Pro
 import { ErrorDialog } from '../components/ErrorDialog/ErrorDialog';
 import { SessionImportDialog } from '../components/AgenticCoding/SessionImportDialog';
 import { BlitzDialog } from '../components/BlitzDialog/BlitzDialog';
+import { HookEditorDialog, type HookEditorDialogData } from '../components/HookEditor/HookEditorDialog';
 import { DIALOG_IDS } from './registry';
 import { registerConfirmDialog } from './confirmDialogRegistration';
 import { store } from '@nimbalyst/runtime/store';
@@ -177,5 +178,14 @@ export function registerDataDialogs() {
     group: 'system',
     component: BlitzDialogWrapper as DialogConfig<BlitzDialogData>['component'],
     priority: 100,
+  });
+
+  registerDialog<HookEditorDialogData>({
+    id: DIALOG_IDS.HOOK_EDITOR,
+    group: 'settings',
+    component: HookEditorDialog as DialogConfig<HookEditorDialogData>['component'],
+    priority: 200,
+    // The editor asks before it closes with unsaved changes, and no other dialog may replace it.
+    keepsUnsavedWork: true,
   });
 }

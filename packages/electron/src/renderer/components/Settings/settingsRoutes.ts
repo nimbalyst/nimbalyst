@@ -58,6 +58,7 @@ export type ProjectSettingsCategory =
   | 'project-appearance'
   | 'project-sharing'
   | 'project-agent-permissions'
+  | 'project-claude-hooks'
   | 'project-trackers'
   | 'project-ai-providers'
   | 'project-mcp-servers'
@@ -182,6 +183,7 @@ const builtinSettingsRouteDefinitions: readonly Omit<BuiltinSettingsRoute, 'sour
   { id: 'project-appearance', scope: 'project', group: 'Project', label: 'Appearance', icon: 'palette' },
   { id: 'project-sharing', scope: 'project', group: 'Project', label: 'Sharing', icon: 'group', isAlpha: true, isAvailable: teamsVisible },
   { id: 'project-agent-permissions', scope: 'project', group: 'Project', label: 'Agent Permissions', icon: 'shield' },
+  { id: 'project-claude-hooks', scope: 'project', group: 'Project', label: 'Claude Code Hooks', icon: 'webhook' },
   { id: 'project-trackers', scope: 'project', group: 'Project', label: 'Trackers', icon: 'assignment' },
   { id: 'project-ai-providers', scope: 'project', group: 'Project', label: 'AI Providers', icon: 'smart_toy' },
   { id: 'project-mcp-servers', scope: 'project', group: 'Project', label: 'MCP Servers', icon: 'dns' },
@@ -314,6 +316,7 @@ export function normalizeSettingsDestination(link: LegacySettingsLink): Settings
     if (legacyCategory && isExtensionSettingsRouteId(legacyCategory)) {
       return { scope: 'project', category: legacyCategory, target };
     }
+    // A link that already names a project page goes to that page. Only old names go through the list below.
     if (settingsRoutes.some(route => route.id === legacyCategory && route.scope === 'project')) {
       return { scope: 'project', category: legacyCategory as ProjectSettingsCategory, target };
     }

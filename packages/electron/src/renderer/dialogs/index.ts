@@ -32,6 +32,7 @@ export {
   type SessionImportData,
 } from './dataDialogs';
 export { registerConfirmDialog, type ConfirmDialogData } from './confirmDialogRegistration';
+export type { HookEditorDialogData } from '../components/HookEditor/HookEditorDialog';
 export {
   registerOnboardingDialogs,
   type WindowsClaudeCodeWarningData,

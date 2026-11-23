@@ -55,12 +55,23 @@ const STACKABLE_GROUPS = new Set(['alert']);
 
 // All other groups are mutually exclusive - opening one closes all non-stackable dialogs
 
+/** The dialog opened last, which ESC and a plain close() act on. */
+function topmostDialogId(dialogs: ReadonlyMap<string, ActiveDialog>): string | undefined {
+  let topmost: ActiveDialog | undefined;
+  for (const dialog of dialogs.values()) {
+    // On the same millisecond, the dialog added later counts as newer.
+    if (!topmost || dialog.openedAt >= topmost.openedAt) topmost = dialog;
+  }
+  return topmost?.id;
+}
+
 /**
  * DialogProvider manages all modal dialogs in the application.
  *
  * Features:
  * - Mutual exclusion within groups (e.g., only one navigation dialog at a time)
- * - ESC key to close topmost dialog
+ * - ESC key to close topmost dialog, unless it sets keepsUnsavedWork
+ * - A dialog that sets keepsUnsavedWork is never closed by opening another dialog
  * - Type-safe data passing to dialogs
  * - Promise-based confirm dialog
  */
@@ -122,7 +133,7 @@ export function DialogProvider({
     for (const [id] of activeDialogsRef.current) {
       const otherConfig = dialogRegistry.get(id);
       const isDisplaced = id === dialogId
-        || (!STACKABLE_GROUPS.has(config.group) && otherConfig && !STACKABLE_GROUPS.has(otherConfig.group));
+        || (!STACKABLE_GROUPS.has(config.group) && otherConfig && !STACKABLE_GROUPS.has(otherConfig.group) && !otherConfig.keepsUnsavedWork);
       if (isDisplaced) displaced.push(id);
     }
     dismissDialogs(displaced);
@@ -135,8 +146,8 @@ export function DialogProvider({
       if (!STACKABLE_GROUPS.has(config.group)) {
         for (const [id] of prev) {
           const otherConfig = dialogRegistry.get(id);
-          // Keep stackable dialogs (alerts), close everything else
-          if (otherConfig && !STACKABLE_GROUPS.has(otherConfig.group)) {
+          // Keep stackable dialogs (alerts) and dialogs with unsaved work, close everything else
+          if (otherConfig && !STACKABLE_GROUPS.has(otherConfig.group) && !otherConfig.keepsUnsavedWork) {
             next.delete(id);
           }
         }
@@ -163,13 +174,7 @@ export function DialogProvider({
     // Resolve "topmost" once, up here, so the dialog we tell about the close is
     // the same one the state updater removes.
     let closing = dialogId;
-    if (!closing) {
-      let topmost: ActiveDialog | undefined;
-      for (const dialog of current.values()) {
-        if (!topmost || dialog.openedAt > topmost.openedAt) topmost = dialog;
-      }
-      closing = topmost?.id;
-    }
+    if (!closing) closing = topmostDialogId(current);
     if (!closing || !current.has(closing)) return;
     const closingId = closing;
     dismissDialogs([closingId]);
@@ -245,11 +250,12 @@ export function DialogProvider({
   // ESC key to close topmost dialog
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && activeDialogsRef.current.size > 0) {
-        e.preventDefault();
-        e.stopPropagation();
-        close();
-      }
+      if (e.key !== 'Escape' || activeDialogsRef.current.size === 0) return;
+      const topmost = topmostDialogId(activeDialogsRef.current);
+      if (topmost !== undefined && dialogRegistry.get(topmost)?.keepsUnsavedWork) return;
+      e.preventDefault();
+      e.stopPropagation();
+      close();
     };
 
     // Use capture phase to handle ESC before other handlers
@@ -302,6 +308,15 @@ export function DialogProvider({
       const configB = dialogRegistry.get(b.id);
       const priorityA = configA?.priority ?? 0;
       const priorityB = configB?.priority ?? 0;
+
+      // A dialog that keeps unsaved work stays open under every dialog opened
+      // after it, so it renders first. ESC acts on the newer dialog, which is
+      // then the one the user sees on top.
+      const keepsA = configA?.keepsUnsavedWork ? 1 : 0;
+      const keepsB = configB?.keepsUnsavedWork ? 1 : 0;
+      if (keepsA !== keepsB) {
+        return keepsB - keepsA;
+      }
 
       // Higher priority renders on top
       if (priorityA !== priorityB) {

@@ -118,6 +118,8 @@ Dialogs are organized into groups that control mutual exclusivity:
 
 Dialogs in the same group are mutually exclusive - opening one closes others in the group.
 
+A dialog can set `keepsUnsavedWork: true` when it holds work the user has not saved. Escape does not close such a dialog, and opening another dialog does not close it; the new dialog opens on top. Such a dialog renders under any dialog opened after it. The dialog must handle Escape itself and ask the user before it drops the work.
+
 ## Opening Dialogs from IPC (Menu Items)
 
 For dialogs triggered by menu items:
