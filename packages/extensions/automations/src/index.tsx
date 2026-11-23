@@ -11,6 +11,7 @@ import { AutomationDocumentHeader, setRunNowCallback, setDefinitionChangedCallba
 import { AutomationScheduler } from './scheduler/AutomationScheduler';
 import { OutputWriter } from './output/OutputWriter';
 import type { AutomationStatus } from './frontmatter/types';
+import { inProject, projectRootOf } from './paths';
 import type { ExtensionAITool, AIToolContext, ExtensionToolResult } from '@nimbalyst/extension-sdk';
 
 // Module-level scheduler reference for sharing between activate() and components
@@ -18,20 +19,6 @@ let scheduler: AutomationScheduler | null = null;
 
 // Re-export types
 export type { AutomationStatus } from './frontmatter/types';
-
-const AUTOMATIONS_DIR = /[\\/]nimbalyst-local[\\/]automations[\\/]/g;
-
-/**
- * The project root an absolute automation file path lives under, or undefined
- * for a relative path (main then uses the window's active project).
- */
-export function owningWorkspacePath(filePath: string): string | undefined {
-  let lastIndex = -1;
-  for (const match of filePath.matchAll(AUTOMATIONS_DIR)) lastIndex = match.index ?? -1;
-  if (lastIndex <= 0) return undefined;
-  if (!filePath.startsWith('/') && !/^[a-zA-Z]:/.test(filePath)) return undefined;
-  return filePath.slice(0, lastIndex);
-}
 
 /**
  * Extension activation - sets up the scheduler.
@@ -42,7 +29,8 @@ export async function activate(context: {
       readFile: (path: string) => Promise<string>;
       writeFile: (path: string, content: string) => Promise<void>;
       fileExists: (path: string) => Promise<boolean>;
-      findFiles: (pattern: string) => Promise<string[]>;
+      findFiles: (pattern: string, rootDir?: string) => Promise<string[]>;
+      listProjectPaths?: () => Promise<string[]>;
     };
     ui: {
       showInfo: (message: string) => void;
@@ -80,7 +68,8 @@ export async function activate(context: {
     // Snapshot the output file before the agent runs, so the write below can
     // tell "the agent wrote its report here" from "this is last run's output"
     // and never overwrite the former.
-    const target = await outputWriter.reserve(status);
+    const projectRoot = projectRootOf(filePath);
+    const target = await outputWriter.reserve(status, projectRoot);
 
     if (ai?.sendPrompt) {
       try {
@@ -91,7 +80,7 @@ export async function activate(context: {
           model: status.model,
           // Run in the project that owns this file. Without it main picks the
           // window's active rail project, which a timer has no reason to use (#1299).
-          workspacePath: owningWorkspacePath(filePath),
+          workspacePath: projectRoot,
         });
         response = result.response;
         sessionId = result.sessionId;
@@ -181,6 +170,17 @@ export const components = {
   AutomationDocumentHeader,
 };
 
+/** Whether an automation file belongs to the calling session's project. */
+function belongsTo(filePath: string, workspacePath: string | undefined): boolean {
+  const root = projectRootOf(filePath);
+  return !workspacePath || !root || root === workspacePath;
+}
+
+/** Anchor a project-relative path at the calling session's project when known. */
+function inSessionProject(context: AIToolContext, path: string): string {
+  return inProject(context.workspacePath, path);
+}
+
 /**
  * AI tools exported by this extension.
  */
@@ -192,12 +192,13 @@ const listAutomationsTool: ExtensionAITool = {
     type: 'object',
     properties: {},
   },
-  handler: async (_args: Record<string, unknown>, _context: AIToolContext): Promise<ExtensionToolResult> => {
+  handler: async (_args: Record<string, unknown>, context: AIToolContext): Promise<ExtensionToolResult> => {
     if (!scheduler) {
       return { success: false, error: 'Automation scheduler is not initialized' };
     }
 
-    const automations = scheduler.getAutomations();
+    // The window schedules every project open in its rail; a session sees its own.
+    const automations = scheduler.getAutomations().filter((a) => belongsTo(a.filePath, context.workspacePath));
     if (automations.length === 0) {
       return {
         success: true,
@@ -293,7 +294,7 @@ ${scheduleYaml}
 ${prompt}
 `;
 
-    const filePath = `nimbalyst-local/automations/${id}.md`;
+    const filePath = inSessionProject(context, `nimbalyst-local/automations/${id}.md`);
 
     try {
       const fs = context.extensionContext.services.filesystem;
@@ -327,15 +328,19 @@ const runAutomationTool: ExtensionAITool = {
     },
     required: ['id'],
   },
-  handler: async (args: Record<string, unknown>, _context: AIToolContext): Promise<ExtensionToolResult> => {
+  handler: async (args: Record<string, unknown>, context: AIToolContext): Promise<ExtensionToolResult> => {
     if (!scheduler) {
       return { success: false, error: 'Automation scheduler is not initialized' };
     }
 
     const id = args.id as string;
 
-    // Resolve to file path if only an ID was given
-    const filePath = id.endsWith('.md') ? id : `nimbalyst-local/automations/${id}.md`;
+    // Resolve a bare id to the session's project's automation, so the run
+    // knows which project it belongs to (#1299).
+    const filePath = id.endsWith('.md')
+      ? inSessionProject(context, id)
+      : scheduler.findById(id, context.workspacePath)?.filePath
+        ?? inSessionProject(context, `nimbalyst-local/automations/${id}.md`);
 
     try {
       const result = await scheduler.runNow(filePath);
@@ -370,14 +375,14 @@ const historyAutomationTool: ExtensionAITool = {
     },
     required: ['id'],
   },
-  handler: async (args: Record<string, unknown>, _context: AIToolContext): Promise<ExtensionToolResult> => {
+  handler: async (args: Record<string, unknown>, context: AIToolContext): Promise<ExtensionToolResult> => {
     if (!scheduler) {
       return { success: false, error: 'Automation scheduler is not initialized' };
     }
 
     const id = args.id as string;
     const limit = (args.limit as number) ?? 10;
-    const records = await scheduler.getHistory(id, limit);
+    const records = await scheduler.getHistory(id, limit, context.workspacePath);
 
     if (records.length === 0) {
       return {

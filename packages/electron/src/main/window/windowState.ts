@@ -132,6 +132,31 @@ export function resolveRequestWorkspacePath(
 }
 
 /**
+ * The window that schedules a project's background work (automations), so a
+ * project open in several windows runs it once. The window the project is
+ * primary in wins; otherwise the lowest window id that has it in its rail.
+ */
+function schedulingOwnerWindowId(projectPath: string): number | null {
+    let railOwner: number | null = null;
+    for (const [id, state] of [...windowStates].sort(([a], [b]) => a - b)) {
+        if (state.workspacePath === projectPath) return id;
+        if (railOwner === null && state.additionalWorkspacePaths?.includes(projectPath)) railOwner = id;
+    }
+    return railOwner;
+}
+
+/**
+ * The projects open in this window whose background work this window runs
+ * (#1299). Every open project is listed by exactly one window.
+ */
+export function listScheduledProjectPaths(windowId: number | null | undefined): string[] {
+    if (windowId === null || windowId === undefined) return [];
+    const state = windowStates.get(windowId);
+    if (!state) return [];
+    return getWindowProjectPaths(state).filter(path => schedulingOwnerWindowId(path) === windowId);
+}
+
+/**
  * The rail project of this window that contains `filePath`, deepest root
  * first, or null when none does. Used where an action follows the file (save
  * refresh, recent files) rather than whichever project is on screen.

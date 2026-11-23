@@ -1149,8 +1149,19 @@ export interface ExtensionFileSystemService {
   /** Check if a file exists */
   fileExists(path: string): Promise<boolean>;
 
-  /** Find files matching a pattern */
-  findFiles(pattern: string): Promise<string[]>;
+  /**
+   * Find files matching a pattern. Searches `rootDir` when given (an absolute
+   * project path, e.g. one from listProjectPaths), otherwise the window's
+   * first project. Returns absolute paths.
+   */
+  findFiles(pattern: string, rootDir?: string): Promise<string[]>;
+
+  /**
+   * Absolute paths of the projects open in this window that this window runs
+   * background work for. A project open in several windows is listed by only
+   * one of them, so scheduled work keyed on this list runs once.
+   */
+  listProjectPaths?(): Promise<string[]>;
 }
 
 export interface ExtensionUIService {

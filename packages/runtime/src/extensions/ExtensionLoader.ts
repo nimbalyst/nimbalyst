@@ -975,7 +975,10 @@ function createExtensionContext(
       writeFile: async (p: string, content: string | Uint8Array) =>
         platformService.writeFile(await resolvePath(p), content),
       fileExists: async (p: string) => platformService.fileExists(await resolvePath(p)),
-      findFiles: async (pattern: string) => {
+      findFiles: async (pattern: string, rootDir?: string) => {
+        if (rootDir) {
+          return platformService.findFiles(rootDir, pattern);
+        }
         const wp = await getWorkspacePath();
         if (wp) {
           return platformService.findFiles(wp, pattern);
@@ -983,6 +986,11 @@ function createExtensionContext(
         // Fallback to extensions directory if workspace path unavailable
         const extensionsDir = await platformService.getExtensionsDirectory();
         return platformService.findFiles(extensionsDir, pattern);
+      },
+      listProjectPaths: async () => {
+        const electronAPI = (window as any).electronAPI;
+        if (!electronAPI) return [];
+        return electronAPI.invoke('extensions:list-scheduled-project-paths');
       },
     },
     ui: {

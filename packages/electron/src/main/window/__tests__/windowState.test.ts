@@ -13,6 +13,7 @@ import {
   listWindowsWithProject,
   resolveRequestWorkspacePath,
   resolveProjectForFile,
+  listScheduledProjectPaths,
 } from '../windowState';
 import type { BrowserWindow } from 'electron';
 import type { WindowState } from '../../types';
@@ -285,6 +286,22 @@ describe('windowState helpers', () => {
     it('works for any window mode and returns null without a state', () => {
       expect(resolveRequestWorkspacePath(makeState({ mode: 'document', workspacePath: '/ws/a' }))).toBe('/ws/a');
       expect(resolveRequestWorkspacePath(undefined)).toBeNull();
+    });
+  });
+
+  describe('listScheduledProjectPaths', () => {
+    // #1299: automations in a non-primary rail project were never scheduled,
+    // and a project open in two windows must not fire twice.
+    it('gives every rail project to exactly one window, preferring the window it is primary in', () => {
+      windowStates.set(1, makeState({ workspacePath: '/ws/a', additionalWorkspacePaths: ['/ws/b', '/ws/c'] }));
+      windowStates.set(2, makeState({ workspacePath: '/ws/c', additionalWorkspacePaths: ['/ws/b', '/ws/d'] }));
+      expect(listScheduledProjectPaths(1)).toEqual(['/ws/a', '/ws/b']);
+      expect(listScheduledProjectPaths(2)).toEqual(['/ws/c', '/ws/d']);
+    });
+
+    it('returns nothing for an unknown window', () => {
+      expect(listScheduledProjectPaths(99)).toEqual([]);
+      expect(listScheduledProjectPaths(null)).toEqual([]);
     });
   });
 

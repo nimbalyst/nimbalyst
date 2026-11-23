@@ -9,6 +9,7 @@
  */
 
 import { app, BrowserWindow } from 'electron';
+import { getWindowIdForWindow, listScheduledProjectPaths } from '../window/windowState';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { logger } from '../utils/logger';
@@ -988,6 +989,12 @@ export function registerExtensionHandlers(): void {
   safeHandle('extensions:is-visible-for-channel', (_event, requiredChannel: string | undefined) => {
     const currentChannel = getReleaseChannel();
     return isExtensionVisibleForChannel({ requiredReleaseChannel: requiredChannel as ReleaseChannel | undefined }, currentChannel);
+  });
+
+  // The rail projects whose automations this window schedules (#1299). A
+  // project open in several windows is listed by only one of them.
+  safeHandle('extensions:list-scheduled-project-paths', (event) => {
+    return listScheduledProjectPaths(getWindowIdForWindow(BrowserWindow.fromWebContents(event.sender)));
   });
 
   // Find files matching a glob pattern

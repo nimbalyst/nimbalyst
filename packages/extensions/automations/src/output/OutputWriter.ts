@@ -7,6 +7,7 @@
  * - replace: Overwrites a single output file each run
  */
 
+import { inProject } from '../paths';
 import type { AutomationStatus } from '../frontmatter/types';
 
 interface ExtensionFileSystem {
@@ -52,8 +53,8 @@ export class OutputWriter {
    * Pass the result to `write()` so it can refuse to clobber a report the agent
    * wrote itself.
    */
-  async reserve(status: AutomationStatus): Promise<OutputTarget> {
-    const path = this.resolveFilePath(status);
+  async reserve(status: AutomationStatus, projectRoot?: string): Promise<OutputTarget> {
+    const path = this.resolveFilePath(status, projectRoot);
     let contentBefore: string | null = null;
     try {
       if (await this.fs.fileExists(path)) {
@@ -131,12 +132,13 @@ export class OutputWriter {
    * only in new-file mode, so an append/replace automation silently wrote to
    * `output.md` no matter what its frontmatter asked for (#1351).
    */
-  private resolveFilePath(status: AutomationStatus): string {
+  private resolveFilePath(status: AutomationStatus, projectRoot?: string): string {
     const { output } = status;
     const template =
       output.fileNameTemplate ?? (output.mode === 'new-file' ? '{{date}}-output.md' : 'output.md');
     const location = output.location.endsWith('/') ? output.location : output.location + '/';
-    return location + this.expandTemplate(template, status.id);
+    // A relative location belongs to the automation's own project (#1299).
+    return inProject(projectRoot, location + this.expandTemplate(template, status.id));
   }
 
   private async writeNewFile(

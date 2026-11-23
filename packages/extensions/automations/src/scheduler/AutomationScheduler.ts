@@ -8,12 +8,17 @@
 import type { AutomationStatus, ExecutionRecord } from '../frontmatter/types';
 import { parseAutomation, parseAutomationStatus, extractPromptBody, updateAutomationStatus } from '../frontmatter/parser';
 import { calculateNextRun, msUntilNextRun } from './scheduleUtils';
+import { inProject, projectRootOf } from '../paths';
+
+const AUTOMATIONS_GLOB = 'nimbalyst-local/automations/*.md';
 
 interface ExtensionFileSystem {
   readFile: (path: string) => Promise<string>;
   writeFile: (path: string, content: string) => Promise<void>;
   fileExists: (path: string) => Promise<boolean>;
-  findFiles: (pattern: string) => Promise<string[]>;
+  findFiles: (pattern: string, rootDir?: string) => Promise<string[]>;
+  /** Projects this window schedules for; absent on hosts without multi-project support. */
+  listProjectPaths?: () => Promise<string[]>;
 }
 
 interface ExtensionUI {
@@ -88,13 +93,8 @@ export class AutomationScheduler {
   async rescan(): Promise<void> {
     if (this.disposed) return;
 
-    let files: string[];
-    try {
-      files = await this.fs.findFiles('nimbalyst-local/automations/*.md');
-    } catch {
-      // Directory might not exist yet
-      return;
-    }
+    const files = await this.discoverFiles();
+    if (!files) return;
 
     const currentPaths = new Set(files);
 
@@ -242,6 +242,55 @@ export class AutomationScheduler {
     this.ui.showError(
       `Automation "${status.title}" (${fileName}) will not run — invalid schedule: ${problem}`,
     );
+  }
+
+  /**
+   * Automation files in every project this window schedules for (#1299), or
+   * only the window's first project on a host that can't list them. Returns
+   * null when discovery failed outright, so a transient error doesn't
+   * unschedule everything.
+   */
+  private async discoverFiles(): Promise<string[] | null> {
+    let roots: string[] | null = null;
+    if (this.fs.listProjectPaths) {
+      try {
+        roots = await this.fs.listProjectPaths();
+      } catch (err) {
+        console.error('[Automations] Could not list open projects:', err);
+        return null;
+      }
+    }
+    if (!roots || roots.length === 0) {
+      try {
+        return await this.fs.findFiles(AUTOMATIONS_GLOB);
+      } catch {
+        // Directory might not exist yet
+        return null;
+      }
+    }
+    const files: string[] = [];
+    for (const root of roots) {
+      try {
+        files.push(...await this.fs.findFiles(AUTOMATIONS_GLOB, root));
+      } catch {
+        // This project has no automations directory yet
+      }
+    }
+    return files;
+  }
+
+  /**
+   * Find a tracked automation by id. With `projectRoot`, only that project's
+   * automation matches; ids are unique per project, not per window.
+   */
+  findById(automationId: string, projectRoot?: string): { filePath: string; status: AutomationStatus } | undefined {
+    for (const automation of this.automations.values()) {
+      if (automation.status.id !== automationId) continue;
+      const root = projectRootOf(automation.filePath);
+      if (projectRoot && root && root !== projectRoot) continue;
+      return { filePath: automation.filePath, status: automation.status };
+    }
+    return undefined;
   }
 
   /** Manually run an automation immediately. */
@@ -501,7 +550,7 @@ export class AutomationScheduler {
       await this.fs.writeFile(filePath, updated);
 
       // Record execution history
-      await this.appendHistory(status, {
+      await this.appendHistory(filePath, status, {
         id: `run_${Date.now()}`,
         timestamp: now,
         durationMs,
@@ -561,7 +610,7 @@ export class AutomationScheduler {
       // History first: it is the durable record of the failure and it swallows
       // its own errors, so a subsequent unreadable/unwritable definition file
       // can no longer erase the evidence that the run happened.
-      await this.appendHistory(status, {
+      await this.appendHistory(filePath, status, {
         id: `run_${Date.now()}`,
         timestamp: now,
         durationMs,
@@ -595,25 +644,21 @@ export class AutomationScheduler {
   }
 
   /** Read execution history for an automation. */
-  async getHistory(automationId: string, limit?: number): Promise<ExecutionRecord[]> {
-    // Find the automation by ID to get its output location
-    for (const automation of this.automations.values()) {
-      if (automation.status.id === automationId) {
-        return this.readHistory(automation.status, limit);
-      }
-    }
-    return [];
+  async getHistory(automationId: string, limit?: number, projectRoot?: string): Promise<ExecutionRecord[]> {
+    const automation = this.findById(automationId, projectRoot);
+    return automation ? this.readHistory(automation.filePath, automation.status, limit) : [];
   }
 
-  private getHistoryPath(status: AutomationStatus): string {
+  /** history.json sits in the output location, in the project that owns the automation. */
+  private getHistoryPath(filePath: string, status: AutomationStatus): string {
     const location = status.output.location.endsWith('/')
       ? status.output.location
       : status.output.location + '/';
-    return location + 'history.json';
+    return inProject(projectRootOf(filePath), location + 'history.json');
   }
 
-  private async readHistory(status: AutomationStatus, limit?: number): Promise<ExecutionRecord[]> {
-    const historyPath = this.getHistoryPath(status);
+  private async readHistory(filePath: string, status: AutomationStatus, limit?: number): Promise<ExecutionRecord[]> {
+    const historyPath = this.getHistoryPath(filePath, status);
     try {
       if (await this.fs.fileExists(historyPath)) {
         const raw = await this.fs.readFile(historyPath);
@@ -628,8 +673,8 @@ export class AutomationScheduler {
     return [];
   }
 
-  private async appendHistory(status: AutomationStatus, record: ExecutionRecord): Promise<void> {
-    const historyPath = this.getHistoryPath(status);
+  private async appendHistory(filePath: string, status: AutomationStatus, record: ExecutionRecord): Promise<void> {
+    const historyPath = this.getHistoryPath(filePath, status);
     // console.log('[Automations] Writing history to:', historyPath);
     try {
       let records: ExecutionRecord[] = [];

@@ -151,7 +151,7 @@ The extension registers three AI tools that any agent session can use:
 
 ### `automations.list`
 
-Lists all automation definitions in the workspace with their name, schedule, enabled status, and run count.
+Lists the automations in the calling session's project with their name, schedule, enabled status, and run count.
 
 ### `automations.create`
 
@@ -200,9 +200,9 @@ src/
 
 ### Extension Services Used
 
-- **filesystem**: `readFile`, `writeFile`, `fileExists`, `findFiles` -- all paths resolve relative to the workspace root
+- **filesystem**: `readFile`, `writeFile`, `fileExists`, `findFiles`, `listProjectPaths` -- the scheduler scans `nimbalyst-local/automations/` in every project open in the window's project rail. A project open in several windows is scheduled by one of them. An automation's relative output location and `history.json` resolve against the project that contains the automation file.
 - **ui**: `showInfo`, `showWarning`, `showError` -- toast notifications for run status
-- **ai**: `sendPrompt` -- sends the prompt to the configured AI provider and returns the response
+- **ai**: `sendPrompt` -- sends the prompt to the configured AI provider and returns the response. The session runs in the project that contains the automation file.
 
 ## Example: Changelog Digest
 

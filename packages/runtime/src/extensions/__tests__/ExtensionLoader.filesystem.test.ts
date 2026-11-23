@@ -51,4 +51,16 @@ describe('ExtensionLoader filesystem service', () => {
     expect(result.success).toBe(true);
     expect(platform.writeFile).toHaveBeenCalledWith('/workspace/model.3mf', bytes);
   });
+
+  it('searches the named project root instead of the window\'s first project', async () => {
+    // #1299: automations in a second rail project were never found.
+    const platform = makePlatform(async (context) => {
+      await context.services.filesystem.findFiles('nimbalyst-local/automations/*.md', '/ws/b');
+    });
+    setExtensionPlatformService(platform);
+
+    await new ExtensionLoader().loadExtensionFromPath('/extensions/test');
+
+    expect(platform.findFiles).toHaveBeenCalledWith('/ws/b', 'nimbalyst-local/automations/*.md');
+  });
 });

@@ -239,6 +239,58 @@ Report status.
     }));
   });
 
+  describe('with several projects open in the window (#1299)', () => {
+    const fileA = '/ws/a/nimbalyst-local/automations/codex-scout.md';
+    const fileB = '/ws/b/nimbalyst-local/automations/codex-scout.md';
+
+    function railHarness() {
+      const files = new Map([[fileA, automationFile()], [fileB, automationFile()]]);
+      const filesystem = {
+        readFile: async (filePath: string) => {
+          const content = files.get(filePath);
+          if (content === undefined) throw new Error(`ENOENT: ${filePath}`);
+          return content;
+        },
+        writeFile: async (filePath: string, content: string) => {
+          files.set(filePath, content);
+        },
+        fileExists: async (filePath: string) => files.has(filePath),
+        // Without a root the host searches only the window's first project.
+        findFiles: async (_pattern: string, rootDir?: string) =>
+          [...files.keys()].filter((p) => p.startsWith(`${rootDir ?? '/ws/a'}/nimbalyst-local/automations/`) && p.endsWith('.md')),
+        listProjectPaths: async () => ['/ws/a', '/ws/b'],
+      };
+      const ui = { showInfo: vi.fn(), showWarning: vi.fn(), showError: vi.fn() };
+      return { files, filesystem, ui };
+    }
+
+    it('runs a second project\'s automation in that project and writes its output and history there', async () => {
+      const { files, filesystem, ui } = railHarness();
+      const sendPrompt = vi.fn().mockResolvedValue({ sessionId: 's1', response: 'done' });
+      await activate({ services: { filesystem, ui, ai: { sendPrompt } }, subscriptions: disposables });
+
+      const runTool = aiTools.find((tool) => tool.name === 'automations.run')!;
+      const result = await runTool.handler({ id: 'codex-scout' }, { workspacePath: '/ws/b' } as never);
+
+      expect(result.success).toBe(true);
+      expect(sendPrompt).toHaveBeenCalledWith(expect.objectContaining({ workspacePath: '/ws/b' }));
+      expect(files.has('/ws/b/nimbalyst-local/automations/codex-scout/history.json')).toBe(true);
+      expect([...files.keys()].some((p) => p.startsWith('/ws/b/nimbalyst-local/automations/codex-scout/') && p.endsWith('-output.md'))).toBe(true);
+      expect([...files.keys()].some((p) => !p.startsWith('/ws/'))).toBe(false);
+      expect(parseAutomationStatus(files.get(fileA)!)?.runCount).toBe(0);
+    });
+
+    it('lists only the calling session\'s project', async () => {
+      const { filesystem, ui } = railHarness();
+      await activate({ services: { filesystem, ui }, subscriptions: disposables });
+
+      const listTool = aiTools.find((tool) => tool.name === 'automations.list')!;
+      const result = await listTool.handler({}, { workspacePath: '/ws/b' } as never);
+
+      expect(result).toEqual(expect.objectContaining({ message: expect.stringContaining('Found 1 automation(s)') }));
+    });
+  });
+
   it('records a Codex prompt rejection as an error while preserving the failure output', async () => {
     const path = 'nimbalyst-local/automations/codex-scout.md';
     const files = new Map([[path, automationFile()]]);
