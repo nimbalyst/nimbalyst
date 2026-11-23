@@ -92,6 +92,28 @@ describe('ChatSidebar loadSession vs auto-init', () => {
     });
   });
 
+  it('auto-selects a parent session that has its own conversation, skipping empty workstream wrappers', async () => {
+    (window as any).electronAPI.invoke = vi.fn().mockImplementation(async (channel: string) => {
+      if (channel === 'sessions:list') {
+        return {
+          success: true,
+          sessions: [
+            { id: 'wrapper', worktreeId: null, sessionType: 'workstream', childCount: 1, messageCount: 0 },
+            { id: 'conversation-parent', worktreeId: null, sessionType: 'session', childCount: 4, messageCount: 12 },
+          ],
+        };
+      }
+      return { success: true };
+    });
+    const view = render(<ChatSidebar workspacePath="/workspace" />);
+
+    await waitFor(() => {
+      expect(view.getByTestId('session-transcript').getAttribute('data-session-id')).toBe(
+        'conversation-parent',
+      );
+    });
+  });
+
   it('keeps unmatched GitHub selections empty and follows late matches across PRs and issues', async () => {
     const panel = (selectionKey: string | null, ids: string[] = []) => (
       <GithubPanelShell workspacePath="/workspace" isActive selectionKey={selectionKey}

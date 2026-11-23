@@ -19,6 +19,7 @@ import {
   initSessionList,
 } from '../../store';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
+import { isWorkstreamContainer } from '../../store/atoms/sessionListFilter';
 import type { SerializableDocumentContext } from '../../hooks/useDocumentContext';
 import { useResizeDragShield } from '../../hooks/useResizeDragShield';
 
@@ -252,10 +253,10 @@ export const ChatSidebar = forwardRef<ChatSidebarRef, ChatSidebarProps>(({
         });
 
         if (sessions.success && Array.isArray(sessions.sessions)) {
-          // Filter for chat sessions (no worktrees, no workstream parents)
+          // Filter for chat sessions (no worktrees, no workstream containers)
           const chatSessions = sessions.sessions.filter((s: any) => {
             if (s.worktreeId) return false;
-            if (s.childCount && s.childCount > 0) return false;
+            if (isWorkstreamContainer(s)) return false;
             return true;
           });
 
