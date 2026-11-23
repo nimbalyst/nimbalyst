@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { TranscriptViewMessage, ChatAttachment } from '../../../ai/server/types';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { ChildSessionUpdateCard } from './ChildSessionUpdateCard';
+import type { ChildUpdateDisplay } from '../utils/parseChildSessionUpdate';
 import { JSONViewer } from './JSONViewer';
 import { DiffViewer } from './DiffViewer';
 import { LoginRequiredWidget } from './LoginRequiredWidget';
@@ -19,6 +21,7 @@ import { useTranscriptImageGallery } from './transcriptImageGalleryContext';
 import { attachmentImageKey, attachmentImageSrc } from '../utils/transcriptImages';
 
 interface MessageSegmentProps {
+  childUpdate?: ChildUpdateDisplay | null;
   message: TranscriptViewMessage;
   isUser: boolean;
   isCollapsed?: boolean;
@@ -44,6 +47,7 @@ interface MessageSegmentProps {
 
 export const MessageSegment = React.memo(function MessageSegment({
   message,
+  childUpdate,
   isUser,
   isCollapsed = false,
   showToolCalls,
@@ -234,6 +238,10 @@ export const MessageSegment = React.memo(function MessageSegment({
     // If it's a login-required message but we shouldn't show the widget, render nothing
     if (isLoginRequired && !isUser && !shouldShowLoginWidget) {
       return null;
+    }
+
+    if (isUser && childUpdate) {
+      return <ChildSessionUpdateCard key={message.id} messageId={message.id} display={childUpdate} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />;
     }
 
     // Render commit request user messages as a collapsible card

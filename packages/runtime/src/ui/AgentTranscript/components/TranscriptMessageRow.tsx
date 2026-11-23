@@ -1,4 +1,5 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+import { parseChildSessionUpdate } from '../utils/parseChildSessionUpdate';
 import type { TranscriptViewMessage } from '../../../ai/server/types';
 import { isInteractiveWidgetTool } from '../../../ai/server/interactivePromptTools';
 import { MessageSegment } from './MessageSegment';
@@ -387,9 +388,13 @@ export function computeTranscriptRowInfos(
 
   for (let i = 0; i < n; i++) {
     const message = messages[i];
+    const prior = messages[prevNonToolIdx];
+    const changedUserAuthor = message.type === 'user_message' && prior?.type === 'user_message'
+      && (parseChildSessionUpdate(message.text ?? '', message.promptActor)?.kind === 'single')
+        !== (parseChildSessionUpdate(prior.text ?? '', prior.promptActor)?.kind === 'single');
     const info: TranscriptRowInfo = {
       kind: 'message',
-      isNewGroup: prevNonToolIdx < 0 || messages[prevNonToolIdx].type !== message.type,
+      isNewGroup: prevNonToolIdx < 0 || messages[prevNonToolIdx].type !== message.type || changedUserAuthor,
       toolEntries: null,
       priorUserMessage: null,
       turn: null,
@@ -610,6 +615,9 @@ export const TranscriptMessageRow = React.memo(function TranscriptMessageRow({
   );
   const { sessionId, workspacePath, onOpenFile, onOpenSession } = toolShared;
   const isUser = message.type === 'user_message';
+  const childUpdate = useMemo(() => isUser
+    ? parseChildSessionUpdate(message.text ?? '', message.promptActor)
+    : null, [isUser, message.text, message.promptActor]);
   const { isNewGroup } = info;
 
   switch (info.kind) {
@@ -712,14 +720,14 @@ export const TranscriptMessageRow = React.memo(function TranscriptMessageRow({
         <div className="rich-transcript-message-header flex items-center gap-2 mb-1.5">
           <div className={`rich-transcript-message-avatar w-7 h-7 rounded-full shrink-0 flex items-center justify-center ${isUser ? 'user' : 'assistant'}`}>
             {isUser ? (
-              <MaterialSymbol icon="person" size={18} />
+              <MaterialSymbol icon={childUpdate?.kind === 'single' ? 'account_tree' : 'person'} size={18} />
             ) : (
               <ProviderIcon provider={provider || 'claude-code'} size={18} />
             )}
           </div>
           <div className="rich-transcript-message-meta flex-1 flex items-baseline gap-2">
             <span className="rich-transcript-message-sender font-medium text-[var(--nim-text)] text-sm">
-              {isUser ? 'You' : getProviderDisplayName(provider)}
+              {childUpdate?.kind === 'single' ? 'Child session update' : isUser ? 'You' : getProviderDisplayName(provider)}
             </span>
             {isUser && message.mode === 'planning' && (
               <span
@@ -734,7 +742,7 @@ export const TranscriptMessageRow = React.memo(function TranscriptMessageRow({
             </span>
           </div>
           <div className="rich-transcript-message-actions flex items-center gap-1">
-            {(message.text ?? '').length > 200 && (
+            {!childUpdate && (message.text ?? '').length > 200 && (
               <button
                 onClick={() => onToggleCollapse(index)}
                 className="rich-transcript-collapse-button p-1 rounded-md bg-transparent border-none text-[var(--nim-text-faint)] cursor-pointer transition-colors hover:bg-[var(--nim-bg-secondary)] hover:text-[var(--nim-text-muted)]"
@@ -774,6 +782,7 @@ export const TranscriptMessageRow = React.memo(function TranscriptMessageRow({
         </div>
         <MessageSegment
           message={message}
+          childUpdate={childUpdate}
           isUser={isUser}
           isCollapsed={isCollapsed}
           showToolCalls={false}
