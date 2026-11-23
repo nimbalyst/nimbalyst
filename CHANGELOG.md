@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An automation that runs on a schedule or from its document's Run Now button now starts its AI session in the project that contains the automation file, not whichever project is active in the window's project rail.
 - Automations in every project open in a window's project rail now run on schedule, not only those in the window's first project, and write their output and history into their own project.
 - A relative file path an agent passes to an extension tool now resolves against the session's project, not the window's first project.
+- An extension editor whose tab is in a project other than the one on screen now reads and writes files in its own project, not the on-screen one.
 
 ### Removed
 <!-- Removed features go here -->

@@ -6,7 +6,7 @@ import { getAppSetting } from '../utils/store';
 import { BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import { getWindowId } from '../window/WindowManager';
 import { listWindowsWithProject } from '../window/windowState';
-import { resolveSenderWorkspacePath } from '../window/captureWindowWorkspace';
+import { resolveProjectFileRoot } from '../window/captureWindowWorkspace';
 import { dirtyEditorRegistry } from '../services/DirtyEditorRegistry';
 import { ProjectFileService } from '../services/ProjectFileService';
 import { jsonKeyAccessor } from '../database/jsonKeyExpr';
@@ -35,14 +35,21 @@ const projectFiles = new ProjectFileService(
  * the file main most recently mounted in that window, which is main's own
  * record and just as trustworthy as a `WindowState`.
  */
-function getAuthorizedWorkspaceRoot(event: IpcMainInvokeEvent): string {
+function getAuthorizedWorkspaceRoot(event: IpcMainInvokeEvent, requested: string | undefined): string {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window) throw new Error('Project file access requires a workspace window.');
-    const workspaceRoot = resolveSenderWorkspacePath({
+    // The editor's tab names its project, and main accepts it only if this
+    // window has it open; the on-screen project may be another one (#1299).
+    const workspaceRoot = resolveProjectFileRoot({
         windowId: getWindowId(window),
         webContentsId: event.sender.id,
+        requested,
     });
-    if (!workspaceRoot) throw new Error('Project file access is unavailable outside a workspace.');
+    if (!workspaceRoot) {
+        throw new Error(requested
+            ? `Project file access refused: ${requested} is not open in this window.`
+            : 'Project file access requires the project the editor is open in.');
+    }
     return workspaceRoot;
 }
 
@@ -63,12 +70,12 @@ export async function registerHistoryHandlers() {
     // Age and per-file retention: after first-usable, then daily while open.
     scheduleDailyMaintenance('document-history-retention', () => historyManager.cleanup());
 
-    safeHandle('project-fs:read', async (event, paths: string[]) => {
-        return projectFiles.read(getAuthorizedWorkspaceRoot(event), paths);
+    safeHandle('project-fs:read', async (event, paths: string[], workspacePath?: string) => {
+        return projectFiles.read(getAuthorizedWorkspaceRoot(event, workspacePath), paths);
     });
 
-    safeHandle('project-fs:write', async (event, edit: ProjectFileEdit) => {
-        const workspaceRoot = getAuthorizedWorkspaceRoot(event);
+    safeHandle('project-fs:write', async (event, edit: ProjectFileEdit, workspacePath?: string) => {
+        const workspaceRoot = getAuthorizedWorkspaceRoot(event, workspacePath);
         const receipt = await projectFiles.write(workspaceRoot, edit);
         broadcastProjectFileWrite(workspaceRoot, receipt);
         return receipt;

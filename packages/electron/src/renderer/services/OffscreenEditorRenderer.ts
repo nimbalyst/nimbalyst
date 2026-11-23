@@ -381,6 +381,7 @@ class OffscreenEditorRendererImpl {
        * the offscreen path made `fs` impossible; it was simply never wired.
        */
       fs: createProjectFileSystemHost({
+        workspacePath,
         // Nothing on screen to refresh: this host exists to render once.
         onAfterWrite: async () => {},
       }),

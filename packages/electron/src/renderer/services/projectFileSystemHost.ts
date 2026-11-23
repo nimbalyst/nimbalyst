@@ -11,6 +11,8 @@
 import type { EditorHostFileSystem, ProjectFileWriteReceipt } from '@nimbalyst/runtime';
 
 interface ProjectFileSystemHostOptions {
+  /** The project the editor's tab is open in; main checks the window has it open (#1299). */
+  workspacePath: string;
   /** Refresh the currently open file after a write lands, so the editor doesn't show stale content. */
   onAfterWrite: (receipt: ProjectFileWriteReceipt) => Promise<void>;
 }
@@ -19,10 +21,10 @@ export function createProjectFileSystemHost(
   options: ProjectFileSystemHostOptions
 ): EditorHostFileSystem {
   return {
-    read: (paths: string[]) => window.electronAPI.invoke('project-fs:read', paths),
+    read: (paths: string[]) => window.electronAPI.invoke('project-fs:read', paths, options.workspacePath),
 
     write: async (edit) => {
-      const receipt = await window.electronAPI.invoke('project-fs:write', edit) as ProjectFileWriteReceipt;
+      const receipt = await window.electronAPI.invoke('project-fs:write', edit, options.workspacePath) as ProjectFileWriteReceipt;
       await options.onAfterWrite(receipt);
       return receipt;
     },

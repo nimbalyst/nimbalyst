@@ -89,7 +89,8 @@ A window can have several projects open in its rail, so the on-screen project is
 - `callBackendTool` requires `workspacePath`. Main refuses an unnamed call, except from the hidden screenshot capture window, whose one mounted file fixes the project.
 - Inside an AI tool handler, `context.extensionContext.services` is tied to the calling session's project (`scopeContextToProject` in `ExtensionAIToolsBridge.ts`): relative file paths resolve against it, `findFiles` searches it, and `callBackendTool`/`sendPrompt` default to it. A tool call with no project refuses relative paths instead of guessing.
 - Editors get their tab's local project from `EditorHost.workspacePath`. For a shared document `workspaceId` is an opaque collaboration scope key, not a path; never pass it as a project.
-- Non-tool extension code resolves a relative path against the window's on-screen project, asked of main per call (`extensions:get-active-project-path`). Never cache a project path in the renderer; the rail changes it.
+- Editors get file access for their own project through `EditorHost.fs`, which sends the tab's project; main accepts it only if the window has that project open.
+- Non-tool extension code resolves a relative path against the window's on-screen project, asked of main per call (`extensions:get-active-project-path`). That is wrong for an editor whose tab is in another rail project, because `services.filesystem` is shared by all of an extension's editors and cannot tell which one is calling. Editor and panel code passes absolute paths built from `host.workspacePath`. Never cache a project path in the renderer; the rail changes it.
 - Work that runs per project on a timer uses `filesystem.listProjectPaths()`, which lists each open project in exactly one window, and `findFiles(pattern, rootDir)`.
 
 Direct UI actions (a dialog, a settings picker) may still use the on-screen project.

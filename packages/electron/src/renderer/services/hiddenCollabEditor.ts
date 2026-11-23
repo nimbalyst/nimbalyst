@@ -51,6 +51,7 @@ export async function prepareHiddenCollabEditor(
       fileName: `${document.title}${fileExtension ?? ''}`,
       isActive: false,
       workspaceId: workspacePath,
+      workspacePath,
       activeConfig: collabConfig,
       collaboration,
       getTheme: () => store.get(themeIdAtom),

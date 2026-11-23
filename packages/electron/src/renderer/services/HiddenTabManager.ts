@@ -532,6 +532,7 @@ class HiddenTabManager {
       get theme() { return getCurrentTheme(); },
       isActive: false,
       workspaceId: workspacePath,
+      workspacePath,
 
       async loadContent(): Promise<string> {
         const result = await electronAPI.readFileContent(filePath);
@@ -647,6 +648,7 @@ class HiddenTabManager {
        * the offscreen path made `fs` impossible; it was simply never wired.
        */
       fs: createProjectFileSystemHost({
+        workspacePath,
         // Nothing on screen to refresh: this host exists to render once.
         onAfterWrite: async () => {},
       }),

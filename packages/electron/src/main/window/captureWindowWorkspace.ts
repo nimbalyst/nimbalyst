@@ -18,7 +18,7 @@
  * active project and falls back to the capture window's current mount.
  */
 
-import { resolveActiveWorkspacePathForWindowId } from './windowState';
+import { resolveActiveWorkspacePathForWindowId, resolveRequestWorkspacePath, windowStates } from './windowState';
 
 /**
  * webContents id -> mounted file path -> workspace path.
@@ -101,4 +101,29 @@ export function resolveBackendToolCallWorkspacePath(call: {
     webContentsId?: number | null;
 }): string | undefined {
     return call.requested || getCaptureWindowWorkspacePath(call.webContentsId);
+}
+
+/**
+ * The project root an editor's file access is authorized for (#1299). The
+ * editor's tab names its project, and main accepts it only from its own
+ * records: a project open in the sender window, or a project the capture
+ * window has a file mounted from. A real window must name one; the on-screen
+ * project is never substituted, because the tab may be in another rail project.
+ */
+export function resolveProjectFileRoot(sender: {
+    windowId?: number | null;
+    webContentsId?: number | null;
+    requested: string | undefined;
+}): string | undefined {
+    const state = sender.windowId === null || sender.windowId === undefined
+        ? undefined
+        : windowStates.get(sender.windowId);
+    if (state) {
+        return sender.requested ? resolveRequestWorkspacePath(state, sender.requested) ?? undefined : undefined;
+    }
+    if (sender.webContentsId === null || sender.webContentsId === undefined) return undefined;
+    const mounts = captureMounts.get(sender.webContentsId);
+    if (!mounts || mounts.size === 0) return undefined;
+    if (!sender.requested) return getCaptureWindowWorkspacePath(sender.webContentsId);
+    return [...mounts.values()].includes(sender.requested) ? sender.requested : undefined;
 }

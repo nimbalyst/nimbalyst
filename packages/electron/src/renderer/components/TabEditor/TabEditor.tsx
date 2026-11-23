@@ -2913,6 +2913,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
 
       ...(workspaceId && !filePath.startsWith('virtual://') ? {
         fs: createProjectFileSystemHost({
+          workspacePath: workspaceId,
           onAfterWrite: refreshCurrentFileAfterProjectWrite,
         }) satisfies EditorHostFileSystem,
       } : {}),
