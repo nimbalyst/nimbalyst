@@ -71,6 +71,12 @@ import { registerShellCommandHandlers } from './shellCommand/shellCommandActions
 import { resolveLaunchTarget, statPathKind, userArgsStart, type LaunchTarget } from './shellCommand/launchTarget';
 import { markSingleInstanceLockLost, ownerOnly, ownsAppLifecycle } from './singleInstance/lifecycleOwnership';
 import { planLosingInstance } from './singleInstance/losingInstancePlan';
+import {
+    consumeLaunchSignals,
+    isLaunchSignalFilename,
+    relayAppleEventThenQuit,
+    relayFileToLockOwner,
+} from './singleInstance/launchRelay';
 import { registerGitHandlers } from './ipc/GitHandlers';
 import { registerProjectSelectionHandlers } from './ipc/ProjectSelectionHandlers';
 import { registerProjectAppearanceHandlers } from './ipc/ProjectAppearanceHandlers';
@@ -755,7 +761,6 @@ if (!allowMultipleInstances) {
         // or run the quit cleanup (#1188, #1070). Recorded before any
         // app.quit(), which emits before-quit synchronously.
         markSingleInstanceLockLost();
-        const pendingOpenFilePath = path.join(app.getPath('userData'), '.pending-open-file');
 
         logger.main.info(`[SingleInstance] Second instance launched. argv=${JSON.stringify(process.argv)}`);
 
@@ -771,7 +776,7 @@ if (!allowMultipleInstances) {
         });
         if (plan.action === 'relay-file-and-quit') {
             logger.main.info(`[SingleInstance] Found file in argv: ${plan.filePath}`);
-            try { writeFileSync(pendingOpenFilePath, plan.filePath, 'utf-8'); } catch (_) {}
+            relayFileToLockOwner(app.getPath('userData'), plan.filePath);
             app.quit();
         } else if (plan.action === 'quit') {
             const why = plan.reason === 'no-target'
@@ -782,33 +787,18 @@ if (!allowMultipleInstances) {
             logger.main.info(`[SingleInstance] Another instance holds the lock and this launch has ${why}, quitting now`);
             app.quit();
         } else {
-            // macOS only: when the OS launches the packaged app to open a
-            // file, the path comes via Apple Events, which Electron delivers
-            // as open-file once the event loop is running. Quitting
-            // synchronously would lose it, so wait, relay the path via the
+            // macOS only: when the OS launches the packaged app to open a file
+            // or a nimbalyst:// link, it arrives as an Apple Event (open-file
+            // or open-url) once the event loop is running, never in argv.
+            // Quitting synchronously would lose it, so wait, relay it via a
             // signal file, then quit.
-            logger.main.info('[SingleInstance] Waiting for open-file');
-            let gotFile = false;
-            app.on('open-file', (event, filePath) => {
-                event.preventDefault();
-                gotFile = true;
-                logger.main.info(`[SingleInstance] Second instance received open-file: ${filePath}`);
-                try {
-                    writeFileSync(pendingOpenFilePath, filePath, 'utf-8');
-                    logger.main.info(`[SingleInstance] Wrote signal file: ${pendingOpenFilePath}`);
-                } catch (err) {
-                    logger.main.error('[SingleInstance] Failed to write signal file:', err);
-                }
-                app.quit();
+            logger.main.info('[SingleInstance] Waiting for open-file or open-url');
+            relayAppleEventThenQuit({
+                app,
+                userDataPath: app.getPath('userData'),
+                timeoutMs: plan.timeoutMs,
+                quit: () => app.quit(),
             });
-
-            // Fallback timeout -- if open-file never fires, quit anyway
-            setTimeout(() => {
-                if (!gotFile) {
-                    logger.main.info('[SingleInstance] No open-file after timeout, quitting');
-                    app.quit();
-                }
-            }, plan.timeoutMs);
         }
     } else {
         // We are the primary instance. When a second instance tries to launch,
@@ -845,64 +835,57 @@ if (!allowMultipleInstances) {
     }
 }
 
-// Watch for pending open-file signals from other instances.
-// On macOS, when the packaged app is launched to open a file but a dev instance
-// holds the single-instance lock, the file path is lost because macOS delivers
-// file paths via Apple Events (not argv), and the second instance quits before
-// its event loop processes the Apple Event. In production this isn't an issue
-// because the packaged app IS the primary instance.
-//
-// Workaround for dev mode: watch a signal file that the second instance writes.
-// Currently only works for CLI invocations where the path is in argv.
-// For Finder double-click during dev, quit the packaged app first.
+// Track pending deep link URL. Declared before the signal check below, which
+// can queue one before the app is ready.
+let pendingDeepLinkUrl: string | null = null;
+
+// Watch for launch signals from a second instance that lost the lock: a file
+// named in its argv, or on macOS an open-file or open-url Apple Event, which
+// never reaches this process's second-instance argv. See launchRelay.ts.
 // Only the lock owner watches: a second instance would consume the signal it
 // just wrote, or one meant for the primary, and open the file itself (#1188).
 if (ownsAppLifecycle()) {
-    const pendingOpenFilePath = path.join(app.getPath('userData'), '.pending-open-file');
+    const userDataPath = app.getPath('userData');
 
-    // Check for a stale signal file on startup (second instance may have written
-    // it before we started watching)
-    const checkPendingFile = () => {
-        try {
-            if (existsSync(pendingOpenFilePath)) {
-                const filePath = fs.readFileSync(pendingOpenFilePath, 'utf-8').trim();
-                unlinkSync(pendingOpenFilePath);
-                if (filePath && existsSync(filePath)) {
-                    logger.main.info(`[SingleInstance] Opening file from signal: ${filePath}`);
-                    if (app.isReady()) {
-                        openFileWithWorkspaceDetection(filePath);
-                    } else {
-                        pendingFilePath = filePath;
-                    }
-                }
+    // A second instance may have written a signal before we started watching.
+    const checkPendingSignals = () => consumeLaunchSignals(userDataPath, {
+        openFile: (filePath) => {
+            if (app.isReady()) {
+                openFileWithWorkspaceDetection(filePath);
+            } else {
+                pendingFilePath = filePath;
             }
-        } catch (_) {}
-    };
+        },
+        openUrl: (url) => {
+            if (app.isReady()) {
+                handleDeepLink(url);
+            } else {
+                pendingDeepLinkUrl = url;
+            }
+        },
+    });
 
     // Check immediately
-    checkPendingFile();
+    checkPendingSignals();
 
-    // Watch the userData directory for the signal file
+    // Watch the userData directory for the signal files
     try {
-        const userDataPath = app.getPath('userData');
         const signalWatcher = fs.watch(userDataPath, (eventType, filename) => {
-            if (filename === '.pending-open-file') {
+            if (isLaunchSignalFilename(filename)) {
                 // Small delay to ensure the file is fully written
-                setTimeout(checkPendingFile, 50);
+                setTimeout(checkPendingSignals, 50);
             }
         });
         // Without a listener an async watch error (EMFILE once the process
         // is out of descriptors) is an uncaught exception (#1779).
         signalWatcher.on('error', (err) => {
-            logger.main.warn('[SingleInstance] Open-file signal watcher error:', err);
+            logger.main.warn('[SingleInstance] Launch signal watcher error:', err);
         });
     } catch (err) {
-        logger.main.warn('[SingleInstance] Failed to watch for open-file signals:', err);
+        logger.main.warn('[SingleInstance] Failed to watch for launch signals:', err);
     }
 }
 
-// Track pending deep link URL
-let pendingDeepLinkUrl: string | null = null;
 
 // Shared-document, shared-folder and feedback-request links: queues, notices
 // for links that cannot be routed, and the routing itself.
