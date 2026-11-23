@@ -180,9 +180,10 @@ describe('diffTrees pair budget', () => {
       return root(children);
     };
 
-    const started = Date.now();
-    const ops = diffTrees(labelledDoc(0), labelledDoc(1), ROOT_MATCHER_OPTS);
-    const elapsedMs = Date.now() - started;
+    // The guard is the work done, not wall-clock time, so a loaded machine
+    // cannot fail it. The fixed matcher charges ~7.7K cells here; without the
+    // lower-bound skip it charges ~1.6M. diffTrees throws past the budget.
+    const ops = diffTrees(labelledDoc(0), labelledDoc(1), {...ROOT_MATCHER_OPTS, maxPairEvaluations: 50_000});
 
     const changedItems = ops.filter((op) => op.op !== 'equal' && 'aPath' in op && op.aPath.length === 2);
     expect(changedItems).toHaveLength(8 * 30);
@@ -190,7 +191,6 @@ describe('diffTrees pair budget', () => {
       expect(op.op).toBe('replace');
       expect((op as {bPath: number[]}).bPath).toEqual((op as {aPath: number[]}).aPath);
     }
-    expect(elapsedMs).toBeLessThan(2000);
   });
 });
 
