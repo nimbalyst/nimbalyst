@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.84.4] - 2026-11-23
+
+
+### Added
+<!-- New features go here -->
 - Phase toggles in the agent mode session list can hide sessions by phase, such as Complete; all phases are shown until you turn one off.
 
 ### Changed
@@ -28,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - If the database worker crashes again right after Nimbalyst restarts it, Nimbalyst now tries again instead of leaving every database action failing until you restart the app.
 - Launching Nimbalyst while it is already running now brings its window back, or opens the Project Manager, even when the only window left is a hidden background one. On Windows and Linux, closing the Project Manager with no project open and no other window visible now quits the app instead of leaving it running with no window, which made later launches open and close again.
 - While an agent reply streams, scrolling up in the transcript (with the wheel, keys, scrollbar or touch) now keeps you where you scrolled instead of pulling you back to the bottom as the reply grows, and returning to the bottom after jumping to a search result, message or prompt follows the reply again.
+- A session that spawns child sessions now appears in the Files-mode chat panel's session dropdown and auto-select; only workstream containers and empty parent roots are skipped (#1737).
+- The @-mention file picker now lists all recent files, and a file opened in a side-rail project is recorded under the project on screen instead of the window's first project (#303).
+- `tracker_get` reports archive state and comments, and `nim tracker show` prints comments in the record instead of as a raw JSON line (#1225).
+- An agent waiting on your answer to an interactive prompt is no longer woken by finished background tasks, which closed its MCP connection before the answer arrived; results are held and delivered after you answer (#1557).
 
 ### Removed
 <!-- Removed features go here -->
