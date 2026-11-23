@@ -123,3 +123,58 @@ describe('LiveGateway tracker list adaptation', () => {
     expect(callTool).toHaveBeenCalledWith('/ws', 'tracker_list', { inbox: true, full: true });
   });
 });
+
+// MUL-26: `tracker_get` used to omit `archived` entirely, and the `?? false`
+// below turned the absent key into a confident `false` -- so an archived item
+// read back as active through `nim tracker get --json` permanently. Comments
+// arrive as a top-level key (not in the customFields bag), so they need their
+// own mapping or they land nowhere.
+describe('LiveGateway tracker get adaptation', () => {
+  function makeGetGateway(item: Record<string, unknown>) {
+    return makeGateway(async () => ({
+      isError: false,
+      summary: 'retrieved',
+      structured: { action: 'retrieved', item },
+      raw: {},
+    }));
+  }
+
+  it('carries archive and sync state through to the record', async () => {
+    const gateway = makeGetGateway({
+      id: 'bug-1',
+      type: 'bug',
+      title: 'Probe',
+      archived: true,
+      archivedAt: '2026-08-10T16:38:19.899Z',
+      syncStatus: 'synced',
+    });
+
+    const record = await gateway.getTracker('/ws', 'bug-1');
+
+    expect(record?.archived).toBe(true);
+    expect(record?.syncStatus).toBe('synced');
+  });
+
+  it('maps top-level comments into the record fields', async () => {
+    const gateway = makeGetGateway({
+      id: 'bug-1',
+      type: 'bug',
+      title: 'Probe',
+      comments: [{ id: 'comment_1', body: 'PROBE-XYZZY', deleted: false }],
+    });
+
+    const record = await gateway.getTracker('/ws', 'bug-1');
+
+    expect(record?.fields.comments).toEqual([
+      { id: 'comment_1', body: 'PROBE-XYZZY', deleted: false },
+    ]);
+  });
+
+  it('leaves comments unset when the item carries none', async () => {
+    const gateway = makeGetGateway({ id: 'bug-1', type: 'bug', title: 'Probe', comments: [] });
+
+    const record = await gateway.getTracker('/ws', 'bug-1');
+
+    expect(record?.fields.comments).toBeUndefined();
+  });
+});
