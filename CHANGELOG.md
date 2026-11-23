@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- An answer to a permission prompt or a question that you give on another device, such as your phone, now reaches the waiting desktop session even when the session has more than 50 messages. Before, the desktop never saw the answer and the prompt waited until it timed out.
 
 ### Removed
 <!-- Removed features go here -->
