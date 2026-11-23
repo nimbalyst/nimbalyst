@@ -27,6 +27,10 @@ vi.mock('fs', () => ({
   statSync: mocks.statSync,
 }));
 
+// The handlers file now imports BrowserWindow. The shared electron stub needs the real `fs`,
+// which this test replaces, so give it a small stand-in. The login handler never uses it.
+vi.mock('electron', () => ({ BrowserWindow: { getAllWindows: () => [] } }));
+
 vi.mock('../../utils/ipcRegistry', () => ({
   safeHandle: (channel: string, fn: (event: any, ...args: any[]) => Promise<any>) => {
     mocks.handlers.set(channel, fn);

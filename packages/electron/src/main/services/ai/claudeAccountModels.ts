@@ -36,8 +36,20 @@ const MAX_CONTEXT_WINDOW = 10_000_000;
  */
 const MODEL_ID_PATTERN = /^(?!-)[A-Za-z0-9._[\]-]{1,128}$/;
 
-/** Model lines that already map to a built-in variant. Any other line behaves like Opus. */
-const KNOWN_LINES: readonly ClaudeCodeVariant[] = ['opus', 'sonnet', 'haiku', 'fable'];
+/**
+ * Which built-in variant each model line behaves like. A line not named here gets no
+ * `behavesAs`. A `Map`, so a line called "constructor" is read as plain text.
+ *
+ * `mythos` behaves like Opus. That was the plan's decision: on 2026-11-22 the Mythos
+ * `capabilities` object was identical to the one for `claude-opus-5-5`.
+ */
+const LINE_BEHAVES_LIKE = new Map<string, ClaudeCodeVariant>([
+  ['opus', 'opus'],
+  ['sonnet', 'sonnet'],
+  ['haiku', 'haiku'],
+  ['fable', 'fable'],
+  ['mythos', 'opus'],
+]);
 
 /** Error codes the user can see, one per failure kind. */
 export type AccountModelsErrorCode = 'not-signed-in' | 'sign-in-expired' | 'network' | 'bad-response';
@@ -106,21 +118,21 @@ export function parseAccountModelRows(rows: readonly unknown[]): AccountModel[] 
  * Turn the account list into picker options. A model that already has a built-in row
  * (its id is a pinned SDK id) is dropped, and so is a retired model. The API order stays.
  *
- * A model on a line the app knows behaves like that line's current model. Any other line
- * (today: `mythos`) behaves like Opus, because on 2026-11-22 the Mythos `capabilities`
- * object was identical to the one for `claude-opus-5-5`.
+ * A model on a line in `LINE_BEHAVES_LIKE` behaves like that line's current model. A model
+ * on any other line, or on no line, gets no `behavesAs`: the app then does not guess its
+ * effort or thinking support, and the context window comes from the account list.
  */
 export function toDiscoveredOptions(models: AccountModel[]): ClaudeCustomModelOption[] {
   const builtInIds = new Set(Object.values(CLAUDE_CODE_PINNED_SDK_MODELS));
   const options: ClaudeCustomModelOption[] = [];
   for (const model of models) {
     if (builtInIds.has(model.id) || model.lifecycle === 'retired') continue;
-    const lineVariant = KNOWN_LINES.find((variant) => variant === model.line);
+    const variant = model.line === undefined ? undefined : LINE_BEHAVES_LIKE.get(model.line);
     options.push({
       model: model.id,
       label: model.displayName,
       contextWindow: model.maxInputTokens,
-      behavesAs: CLAUDE_CODE_PINNED_SDK_MODELS[lineVariant ?? 'opus'],
+      ...(variant ? { behavesAs: CLAUDE_CODE_PINNED_SDK_MODELS[variant] } : {}),
     });
   }
   return options;
@@ -187,19 +199,39 @@ async function readAccountModelRows(deps: DetectAccountModelsDeps, token: string
   });
 
   const rows: unknown[] = [];
-  for await (const row of client.models.list({ limit: MAX_ROWS })) {
+  // The SDK reads ANTHROPIC_CUSTOM_HEADERS on its own, and that variable could add an x-api-key
+  // or replace Authorization. Request headers are applied last, and the SDK treats header names
+  // without regard to letter case, so these two win however the variable spells them. `null`
+  // removes a header. The next pages of the list reuse the same options.
+  const ownAuth = { 'x-api-key': null, Authorization: `Bearer ${token}` };
+  for await (const row of client.models.list({ limit: MAX_ROWS }, { headers: ownAuth })) {
     rows.push(row);
     if (rows.length >= MAX_ROWS) break;
   }
   return rows;
 }
 
+/** The run that is going now, or null. A call made while it goes joins it. */
+let runInFlight: Promise<DetectAccountModelsResult> | null = null;
+
 /**
  * Ask Anthropic which models the signed-in account can use and save the ones the built-in
  * list lacks. `save` and `clearModelCache` run only when the whole run succeeded, so a
  * failed run never wipes a list saved earlier.
+ *
+ * Only one run goes at a time. A second call (from another window, for example) gets the
+ * result of the run that is going, so an older answer can never overwrite a newer one.
  */
-export async function detectAccountModels(deps: DetectAccountModelsDeps): Promise<DetectAccountModelsResult> {
+export function detectAccountModels(deps: DetectAccountModelsDeps): Promise<DetectAccountModelsResult> {
+  if (runInFlight) return runInFlight;
+  const run = runDetection(deps).finally(() => {
+    if (runInFlight === run) runInFlight = null;
+  });
+  runInFlight = run;
+  return run;
+}
+
+async function runDetection(deps: DetectAccountModelsDeps): Promise<DetectAccountModelsResult> {
   const token = await deps.getToken();
   if (!token) return failure('not-signed-in');
 

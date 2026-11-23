@@ -90,6 +90,27 @@ describe('toDiscoveredOptions', () => {
     expect(options[2].behavesAs).toBe('claude-opus-5-5');
   });
 
+  it('gives a model on an unknown line, or on no line, no behavesAs, so the app does not treat it as Opus', () => {
+    const [unknownLine, noLine] = toDiscoveredOptions([
+      { id: 'claude-zeta-1', displayName: 'Claude Zeta 1', line: 'zeta', maxInputTokens: 500_000 },
+      { id: 'claude-plain-1', displayName: 'Claude Plain 1' },
+    ]);
+    expect(unknownLine).toMatchObject({ model: 'claude-zeta-1', label: 'Claude Zeta 1', contextWindow: 500_000 });
+    expect(unknownLine).not.toHaveProperty('behavesAs');
+    expect(noLine).not.toHaveProperty('behavesAs');
+  });
+
+  it('reads a line name as plain text, so a name such as "constructor" is not a known line', () => {
+    const rows = ['constructor', '__proto__', 'toString', 'hasOwnProperty'].map((line) => ({
+      id: `claude-${line.toLowerCase()}`,
+      displayName: line,
+      line,
+    }));
+    for (const option of toDiscoveredOptions(rows)) {
+      expect(option).not.toHaveProperty('behavesAs');
+    }
+  });
+
   it('drops retired models', () => {
     const retired = toDiscoveredOptions([{ id: 'claude-old-1', displayName: 'Old', lifecycle: 'retired' }]);
     expect(retired).toEqual([]);
@@ -208,6 +229,36 @@ describe('detectAccountModels', () => {
     }
   });
 
+  describe('the shell can add request headers, but only our sign-in token is sent', () => {
+    // The Anthropic SDK reads ANTHROPIC_CUSTOM_HEADERS on its own. Header names do not care
+    // about letter case, so each case below uses a different spelling of the same names.
+    it.each([
+      ['the same spelling as the SDK sends', 'x-api-key: bad\nAuthorization: Bearer other'],
+      ['another spelling', 'X-Api-Key: bad\nauthorization: Bearer other'],
+    ])('ignores a key and a token from the variable (%s)', async (_name, customHeaders) => {
+      vi.stubEnv('ANTHROPIC_CUSTOM_HEADERS', customHeaders);
+      try {
+        // Two pages, so the second request is checked as well.
+        const pages = [
+          { data: [{ id: 'model-a' }], has_more: true, first_id: 'model-a', last_id: 'model-a' },
+          { data: [{ id: 'model-b' }], has_more: false, first_id: 'model-b', last_id: 'model-b' },
+        ];
+        let call = 0;
+        const fetchImpl = vi.fn(async () => jsonResponse(200, pages[call++])) as unknown as typeof fetch;
+        await detectAccountModels(setup(fetchImpl).deps);
+
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+        for (const index of [0, 1]) {
+          const { headers } = sentRequest(fetchImpl, index);
+          expect(headers.get('x-api-key')).toBeNull();
+          expect(headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+        }
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+  });
+
   it('lists only models that the last saved list lacked', async () => {
     const { deps } = setup(answer(200));
     const result = await detectAccountModels({
@@ -293,6 +344,56 @@ describe('detectAccountModels', () => {
     expect(result).toMatchObject({ ok: false, error: 'bad-response' });
     expect(save).not.toHaveBeenCalled();
     expect(clearModelCache).not.toHaveBeenCalled();
+  });
+
+  describe('two runs at the same time', () => {
+    /** An answer that waits until the test lets it go, so a run stays in flight. */
+    const heldAnswer = () => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const fetchImpl = vi.fn(async () => {
+        await gate;
+        return jsonResponse(200, FIXTURE);
+      }) as unknown as typeof fetch;
+      return { fetchImpl, release };
+    };
+
+    it('makes one request, saves once, and gives both callers the same result', async () => {
+      const { fetchImpl, release } = heldAnswer();
+      const { deps, save, clearModelCache } = setup(fetchImpl);
+
+      const first = detectAccountModels(deps);
+      const second = detectAccountModels(deps);
+      release();
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(save).toHaveBeenCalledTimes(1);
+      expect(clearModelCache).toHaveBeenCalledTimes(1);
+      expect(firstResult.ok).toBe(true);
+      expect(secondResult).toBe(firstResult);
+    });
+
+    it('starts a new request for a call made after the run has finished', async () => {
+      const fetchImpl = answer(200);
+      const { deps } = setup(fetchImpl);
+
+      await detectAccountModels(deps);
+      await detectAccountModels(deps);
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it('starts a new request after a run that failed', async () => {
+      const failing = answer(500, {});
+      await detectAccountModels(setup(failing).deps);
+
+      const working = answer(200);
+      const result = await detectAccountModels(setup(working).deps);
+
+      expect(result.ok).toBe(true);
+      expect(working).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('the token goes to one address only', () => {

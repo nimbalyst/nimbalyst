@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 /**
  * Checks how `claude-code:detect-account-models` wires its real pieces: the saved list is
  * read (so a model saved earlier is not reported as added), the new list is saved, and the
- * model cache is cleared only after a successful run.
+ * model cache is cleared only after a successful run. The open windows are told to reload
+ * their model pickers after the cache is cleared, and only after a successful run.
  */
 const mocks = vi.hoisted(() => {
   const handlers = new Map<string, (event: unknown) => Promise<unknown>>();
@@ -14,8 +15,13 @@ const mocks = vi.hoisted(() => {
     getClaudeCodeDiscoveredModels: vi.fn(),
     setClaudeCodeDiscoveredModels: vi.fn(),
     clearCache: vi.fn(),
+    getAllWindows: vi.fn(),
   };
 });
+
+vi.mock('electron', () => ({
+  BrowserWindow: { getAllWindows: mocks.getAllWindows },
+}));
 
 vi.mock('../../utils/ipcRegistry', () => ({
   safeHandle: (channel: string, fn: (event: unknown) => Promise<unknown>) => {
@@ -80,6 +86,7 @@ describe('claude-code:detect-account-models', () => {
     mocks.handlers.clear();
     vi.clearAllMocks();
     mocks.getAccessTokenForApi.mockResolvedValue(TOKEN);
+    mocks.getAllWindows.mockReturnValue([]);
     registerClaudeCodeHandlers();
   });
 
@@ -119,5 +126,56 @@ describe('claude-code:detect-account-models', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(mocks.setClaudeCodeDiscoveredModels).not.toHaveBeenCalled();
     expect(mocks.clearCache).not.toHaveBeenCalled();
+  });
+
+  describe('telling open windows to reload their model pickers', () => {
+    /** A stand-in window that records what main sends to it. */
+    const fakeWindow = (destroyed = false) => ({
+      isDestroyed: () => destroyed,
+      webContents: { send: vi.fn(), isDestroyed: () => destroyed },
+    });
+
+    it('sends the change signal to every open window after a successful run, once the cache is cleared', async () => {
+      const first = fakeWindow();
+      const second = fakeWindow();
+      mocks.getAllWindows.mockReturnValue([first, second]);
+      mocks.getClaudeCodeDiscoveredModels.mockReturnValue([]);
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(ACCOUNT_LIST), { status: 200, headers: { 'content-type': 'application/json' } })));
+      // The windows read the list again at once, so the cache has to be empty by then.
+      let cacheClearsWhenSent = -1;
+      first.webContents.send.mockImplementation(() => {
+        cacheClearsWhenSent = mocks.clearCache.mock.calls.length;
+      });
+
+      await invokeDetect();
+
+      expect(cacheClearsWhenSent).toBe(1);
+
+      expect(first.webContents.send).toHaveBeenCalledWith('claude-code:account-models-changed');
+      expect(second.webContents.send).toHaveBeenCalledWith('claude-code:account-models-changed');
+    });
+
+    it('skips a window that is already closed', async () => {
+      const closed = fakeWindow(true);
+      const open = fakeWindow();
+      mocks.getAllWindows.mockReturnValue([closed, open]);
+      mocks.getClaudeCodeDiscoveredModels.mockReturnValue([]);
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(ACCOUNT_LIST), { status: 200, headers: { 'content-type': 'application/json' } })));
+
+      await invokeDetect();
+
+      expect(closed.webContents.send).not.toHaveBeenCalled();
+      expect(open.webContents.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends nothing when the run fails', async () => {
+      const win = fakeWindow();
+      mocks.getAllWindows.mockReturnValue([win]);
+      mocks.getAccessTokenForApi.mockResolvedValue(null);
+
+      await invokeDetect();
+
+      expect(win.webContents.send).not.toHaveBeenCalled();
+    });
   });
 });
