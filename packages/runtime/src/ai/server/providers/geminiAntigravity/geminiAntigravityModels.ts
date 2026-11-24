@@ -66,6 +66,12 @@ function flashGeneration(displayName: string): [number, number] | null {
 }
 
 /**
+ * Lookalike non-agent Gemini products that should stay hidden from the agent
+ * model picker even when present in the live catalog.
+ */
+const EXCLUDED_NON_AGENT_LABEL = /\b(?:Flash Lite|Flash Image|Image|Embedding)\b/i;
+
+/**
  * True when `displayName` is a Flash agent at or above `MIN_FLASH_GENERATION`.
  *
  * Compared component-wise rather than as a decimal so a future "Gemini 3.10
@@ -80,23 +86,40 @@ export function isOfferedFlashModel(displayName: string): boolean {
 }
 
 /**
- * Fallback catalog, used only until the language server has been reached once.
+ * True when `displayName` is an eligible Google Gemini agent model to offer in
+ * the picker.
  *
- * Seeded with 3.7 rather than the newer 3.8 on purpose: this list is what a
- * user sees before discovery has run, so it has to be a generation every
- * entitled account can actually serve, and 3.7 Flash is the one the backend
- * itself names in the #1519 error. Discovery adds 3.8 as soon as the server is
- * reachable.
+ * Keeps the retired-Flash floor (`MIN_FLASH_GENERATION`, see #1519) and
+ * excludes non-agent lookalikes (Flash Lite, Flash Image), while allowing all
+ * entitled non-Flash Gemini families (e.g. Gemini 4 Neon / Carbon / Argon /
+ * Hydrogen, Gemini Pro).
+ */
+export function isOfferedGeminiModel(displayName: string): boolean {
+  if (!/^Gemini /i.test(displayName)) return false;
+  if (EXCLUDED_NON_AGENT_LABEL.test(displayName)) return false;
+  const flashGen = flashGeneration(displayName);
+  if (flashGen !== null) {
+    return isOfferedFlashModel(displayName);
+  }
+  return true;
+}
+
+/**
+ * Fallback catalog, used when neither `agy models` nor a running Antigravity
+ * language server is reachable.
  */
 export const SEED_GEMINI_MODELS: ReadonlyArray<{ key: string; displayName: string }> =
   Object.freeze([
+    { key: 'gemini-4-neon-high', displayName: 'Gemini 4 Neon (High)' },
+    { key: 'gemini-4-neon-medium', displayName: 'Gemini 4 Neon (Medium)' },
+    { key: 'gemini-4-neon-low', displayName: 'Gemini 4 Neon (Low)' },
     { key: 'gemini-3.7-flash-high', displayName: 'Gemini 3.7 Flash (High)' },
     { key: 'gemini-3.7-flash-low', displayName: 'Gemini 3.7 Flash (Low)' },
     { key: 'gemini-3.7-flash-medium', displayName: 'Gemini 3.7 Flash (Medium)' },
   ]);
 
 /** Default model key for a new Gemini session. */
-export const DEFAULT_GEMINI_MODEL_KEY = 'gemini-3.7-flash-medium';
+export const DEFAULT_GEMINI_MODEL_KEY = 'gemini-4-neon-high';
 
 /**
  * Strip the `antigravity-gemini-agent:` namespace off a stored model id.
@@ -139,7 +162,7 @@ export function selectGeminiModels(
     // An unlabelled entry is an internal/experimental slot (the server returns
     // several with no displayName). Nothing useful to show the user.
     if (!info.displayName) continue;
-    if (!isOfferedFlashModel(info.displayName)) continue;
+    if (!isOfferedGeminiModel(info.displayName)) continue;
     out.push({ key: info.key, displayName: info.displayName });
   }
   return out.sort((a, b) => a.displayName.localeCompare(b.displayName));
@@ -166,7 +189,10 @@ export function entitledModelEnums(userStatus: unknown): Set<string> {
 export async function discoverGeminiModels(
   server: AntigravityServerManager,
 ): Promise<Array<{ key: string; displayName: string }>> {
-  const endpoint = server.currentEndpoint();
+  const endpoint =
+    server.currentEndpoint()
+    ?? (await server.findRunningEndpoint?.().catch(() => null))
+    ?? null;
   if (!endpoint) return [...SEED_GEMINI_MODELS];
   try {
     const [catalog, userStatus] = await Promise.all([

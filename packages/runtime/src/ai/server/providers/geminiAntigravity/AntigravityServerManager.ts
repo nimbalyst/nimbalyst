@@ -197,6 +197,20 @@ export class AntigravityServerManager {
     return this.endpoint;
   }
 
+  /**
+   * Return the cached endpoint or attach to an already-running Antigravity hub
+   * without spawning a standalone server. Returns null if Antigravity is not
+   * currently running.
+   */
+  async findRunningEndpoint(): Promise<AntigravityEndpoint | null> {
+    if (this.endpoint) return this.endpoint;
+    const attached = await this.discoverRunningHub();
+    if (attached) {
+      this.endpoint = attached;
+    }
+    return attached;
+  }
+
   /** Stop the server if we own it. No-op when attached to the IDE's hub. */
   stop(): void {
     if (this.child && !this.child.killed) {

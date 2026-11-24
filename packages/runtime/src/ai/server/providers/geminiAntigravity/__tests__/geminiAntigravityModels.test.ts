@@ -1,13 +1,15 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   DEFAULT_GEMINI_MODEL_KEY,
   SEED_GEMINI_MODELS,
+  discoverGeminiModels,
   isOfferedFlashModel,
+  isOfferedGeminiModel,
   selectGeminiModels,
 } from '../geminiAntigravityModels';
-import type { AntigravityModelInfo } from '../AntigravityServerManager';
+import type { AntigravityModelInfo, AntigravityServerManager } from '../AntigravityServerManager';
 
 function model(overrides: Partial<AntigravityModelInfo>): AntigravityModelInfo {
   return {
@@ -84,6 +86,54 @@ describe('selectGeminiModels', () => {
 
     expect(selectGeminiModels(catalog, new Set(['MODEL_SOMETHING_ELSE']))).toEqual([]);
   });
+
+  it('offers entitled non-Flash Google Gemini families such as Gemini 4 Neon while excluding non-agent lookalikes', () => {
+    const catalog = catalogOf(
+      ['gemini-4-neon-high', 'Gemini 4 Neon (High)'],
+      ['gemini-4-carbon-high', 'Gemini 4 Carbon (High)'],
+      ['gemini-3.5-flash-lite', 'Gemini 3.5 Flash Lite'],
+      ['gemini-3.1-flash-image', 'Gemini 3.1 Flash Image'],
+      ['gemini-3.5-flash-low', 'Gemini 3.5 Flash (Low)'],
+    );
+    const entitled = new Set([...catalog.values()].map((m) => m.enum));
+
+    expect(selectGeminiModels(catalog, entitled)).toEqual([
+      { key: 'gemini-4-carbon-high', displayName: 'Gemini 4 Carbon (High)' },
+      { key: 'gemini-4-neon-high', displayName: 'Gemini 4 Neon (High)' },
+    ]);
+  });
+});
+
+describe('isOfferedGeminiModel', () => {
+  it('accepts Gemini 4 families and current Flash tiers', () => {
+    expect(isOfferedGeminiModel('Gemini 4 Neon (XHigh)')).toBe(true);
+    expect(isOfferedGeminiModel('Gemini 4 Neon (High)')).toBe(true);
+    expect(isOfferedGeminiModel('Gemini 3.8 Flash (High)')).toBe(true);
+  });
+
+  it('rejects retired Flash tiers and non-agent lookalikes', () => {
+    expect(isOfferedGeminiModel('Gemini 3.5 Flash (High)')).toBe(false);
+    expect(isOfferedGeminiModel('Gemini 3.6 Flash (Medium)')).toBe(false);
+    expect(isOfferedGeminiModel('Gemini 3.5 Flash Lite')).toBe(false);
+    expect(isOfferedGeminiModel('Gemini 3.1 Flash Image')).toBe(false);
+  });
+});
+
+describe('discoverGeminiModels', () => {
+  it('attaches to an already-running hub when no cached endpoint exists yet', async () => {
+    const endpoint = { httpsPort: 1234, csrf: 'tok', owned: false };
+    const catalog = catalogOf(['gemini-4-neon-high', 'Gemini 4 Neon (High)']);
+    const server = {
+      currentEndpoint: vi.fn(() => null),
+      findRunningEndpoint: vi.fn(async () => endpoint),
+      getAvailableModels: vi.fn(async () => catalog),
+      getUserStatus: vi.fn(async () => null),
+    } as unknown as AntigravityServerManager;
+
+    const models = await discoverGeminiModels(server);
+    expect(server.findRunningEndpoint).toHaveBeenCalledTimes(1);
+    expect(models).toEqual([{ key: 'gemini-4-neon-high', displayName: 'Gemini 4 Neon (High)' }]);
+  });
 });
 
 describe('isOfferedFlashModel', () => {
@@ -113,7 +163,7 @@ describe('seed catalog', () => {
 
   it('seeds only models the picker would accept from live discovery', () => {
     for (const { displayName } of SEED_GEMINI_MODELS) {
-      expect(isOfferedFlashModel(displayName)).toBe(true);
+      expect(isOfferedGeminiModel(displayName)).toBe(true);
     }
   });
 });

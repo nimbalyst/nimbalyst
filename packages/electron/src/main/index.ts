@@ -2192,10 +2192,12 @@ app.whenReady().then(ownerOnly('app initialisation', async () => {
     GrokBuildProvider.setEnhancedPathLoader(() => getEnhancedPath());
     CursorAgentProvider.setEnhancedPathLoader(() => getEnhancedPath());
 
-    // Gemini executes its tools in this process. The provider ships in the
-    // runtime package, which cannot import from main, so the executor is
-    // injected rather than imported.
+    // Gemini executes its tools in this process when falling back to the
+    // language server, and prefers the official Antigravity CLI (`agy`) harness
+    // when available (using the login shell environment and enhanced PATH).
     GeminiAntigravityProvider.setToolExecutor(executeGeminiTool);
+    GeminiAntigravityProvider.setShellEnvironmentLoader(() => getShellEnvironment());
+    GeminiAntigravityProvider.setEnhancedPathLoader(() => getEnhancedPath());
     // The Antigravity language server enforces a supported-build floor against
     // --override_ide_version and rejects anything below it. Reading the value
     // from settings means a user hit by a vendor-side bump can raise it without
