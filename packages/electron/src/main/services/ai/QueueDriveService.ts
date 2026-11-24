@@ -28,6 +28,7 @@ export type DriveReason =
   | 'renderer-trigger'
   | 'send-now'
   | 'meta-agent'
+  | 'held-report'
   | 'wakeup'
   | 'agent-wake'
   | 'restart-continuation'
@@ -73,6 +74,7 @@ export interface QueueDriveDeps {
   logWarn(message: string): void;
   logError(message: string, error: unknown): void;
   timers?: QueueDriveTimers;
+  now?(): number;
 }
 
 /**
@@ -82,6 +84,17 @@ export interface QueueDriveDeps {
  */
 export const QUEUE_DRIVE_BACKOFF_MS = [2_000, 5_000, 15_000, 60_000] as const;
 
+/** Fixed from the first held arrival; later reports never extend the window. */
+export const HELD_REPORT_DRIVE_DELAY_MS = 180_000;
+export const HELD_REPORT_SLOW_DRIVE_DELAY_MS = 600_000;
+const REPORT_RATE_WINDOW_MS = 60 * 60_000;
+const SLOW_REPORT_DISPATCH_THRESHOLD = 10;
+
+export type DeferredReportDrive =
+  | { scheduled: true; coalesced: false; delayMs: number }
+  | { scheduled: true; coalesced: true }
+  | { scheduled: false; reason: 'disposed' };
+
 interface SessionDriveState {
   workspacePath: string;
   /** The attempt loop currently running for this session, if any. */
@@ -90,6 +103,10 @@ interface SessionDriveState {
   rerunReason: DriveReason | null;
   backoffIndex: number;
   backoffHandle: unknown | null;
+  reportHandle: unknown | null;
+  reportGeneration: number;
+  reportDispatchTimes: number[];
+  lastReportDelayMs: number;
   /** One subscription per blocked reason, so repeated defers can't stack listeners. */
   wakeSubscriptions: Map<BlockedReason, () => void>;
 }
@@ -105,11 +122,13 @@ const WAKE_REASON: Record<BlockedReason, DriveReason> = {
 export class QueueDriveService {
   private readonly deps: QueueDriveDeps;
   private readonly timers: QueueDriveTimers;
+  private readonly now: () => number;
   private readonly sessions = new Map<string, SessionDriveState>();
   private disposed = false;
 
   constructor(deps: QueueDriveDeps) {
     this.deps = deps;
+    this.now = deps.now ?? Date.now;
     this.timers = deps.timers ?? {
       setTimeout: (fn, ms) => setTimeout(fn, ms),
       clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -124,6 +143,50 @@ export class QueueDriveService {
     void this.drive(sessionId, workspacePath, reason);
   }
 
+  requestDeferredReportDrive(sessionId: string, workspacePath: string): DeferredReportDrive {
+    if (this.disposed) return { scheduled: false, reason: 'disposed' };
+    const state = this.stateFor(sessionId, workspacePath);
+    state.reportGeneration += 1;
+    if (state.reportHandle !== null) return { scheduled: true, coalesced: true };
+    const delayMs = this.reportDelay(sessionId, state);
+    state.reportHandle = this.timers.setTimeout(() => {
+      state.reportHandle = null;
+      if (!this.disposed) this.requestDrive(sessionId, state.workspacePath, 'held-report');
+    }, delayMs);
+    return { scheduled: true, coalesced: false, delayMs };
+  }
+
+  /** Mode is the delay selected for a new report batch, not an idle background state. */
+  private reportDelay(sessionId: string, state: SessionDriveState): number {
+    const cutoff = this.now() - REPORT_RATE_WINDOW_MS;
+    state.reportDispatchTimes = state.reportDispatchTimes.filter((time) => time > cutoff);
+    const slow = state.reportDispatchTimes.length >= SLOW_REPORT_DISPATCH_THRESHOLD;
+    const delayMs = slow ? HELD_REPORT_SLOW_DRIVE_DELAY_MS : HELD_REPORT_DRIVE_DELAY_MS;
+    // Log selection transitions once. An existing timer keeps its deadline;
+    // an inactive session needs no second timer merely to update a log.
+    if (delayMs !== state.lastReportDelayMs) {
+      state.lastReportDelayMs = delayMs;
+      this.deps.logInfo(`[QueueDrive] session ${sessionId}: ${slow ? 'entering' : 'leaving'} slow report batching`);
+    }
+    return delayMs;
+  }
+
+  private stateFor(sessionId: string, workspacePath: string): SessionDriveState {
+    let state = this.sessions.get(sessionId);
+    if (!state) {
+      state = {
+        workspacePath, inFlight: null, rerunReason: null,
+        backoffIndex: 0, backoffHandle: null,
+        reportHandle: null, reportGeneration: 0,
+        reportDispatchTimes: [], lastReportDelayMs: HELD_REPORT_DRIVE_DELAY_MS,
+        wakeSubscriptions: new Map(),
+      };
+      this.sessions.set(sessionId, state);
+    }
+    state.workspacePath = workspacePath;
+    return state;
+  }
+
   /**
    * Same as `requestDrive`, but resolves with the outcome. Only for the few
    * callers that must report back whether the prompt actually went out (the
@@ -135,18 +198,7 @@ export class QueueDriveService {
       return Promise.resolve<DriveOutcome>({ kind: 'nothing-pending' });
     }
 
-    let state = this.sessions.get(sessionId);
-    if (!state) {
-      state = {
-        workspacePath,
-        inFlight: null,
-        rerunReason: null,
-        backoffIndex: 0,
-        backoffHandle: null,
-        wakeSubscriptions: new Map(),
-      };
-      this.sessions.set(sessionId, state);
-    }
+    const state = this.stateFor(sessionId, workspacePath);
 
     // Latest workspacePath wins — a session can move between a project and
     // its worktree, and the newest caller has the better path.
@@ -173,6 +225,7 @@ export class QueueDriveService {
     this.disposed = true;
     for (const sessionId of Array.from(this.sessions.keys())) {
       this.disarm(sessionId);
+      this.clearReportTimer(this.sessions.get(sessionId)!);
     }
     this.sessions.clear();
   }
@@ -189,6 +242,7 @@ export class QueueDriveService {
     // attempts in flight.
     for (;;) {
       state.rerunReason = null;
+      const reportGeneration = state.reportGeneration;
 
       try {
         outcome = await this.deps.attempt({
@@ -205,6 +259,12 @@ export class QueueDriveService {
       }
 
       this.applyOutcome(sessionId, reason, outcome);
+      // An arrival during the attempt owns its own timer. Never cancel it on
+      // behalf of a batch that was already being claimed when it arrived.
+      if (state.reportGeneration === reportGeneration
+        && (outcome.kind === 'dispatched' || outcome.kind === 'nothing-pending' || outcome.kind === 'failed')) {
+        this.clearReportTimer(state);
+      }
 
       if (!state.rerunReason || this.disposed) break;
       reason = state.rerunReason;
@@ -219,6 +279,9 @@ export class QueueDriveService {
 
     switch (outcome.kind) {
       case 'dispatched':
+        if (reason === 'held-report') {
+          state.reportDispatchTimes.push(this.now());
+        }
         this.deps.logInfo(
           `[QueueDrive] ${reason}: dispatched${outcome.promptId ? ` prompt ${outcome.promptId}` : ''} for session ${sessionId}`,
         );
@@ -326,6 +389,13 @@ export class QueueDriveService {
 
     for (const blocked of Array.from(state.wakeSubscriptions.keys())) {
       this.disarmWake(sessionId, blocked);
+    }
+  }
+
+  private clearReportTimer(state: SessionDriveState): void {
+    if (state.reportHandle !== null) {
+      this.timers.clearTimeout(state.reportHandle);
+      state.reportHandle = null;
     }
   }
 }

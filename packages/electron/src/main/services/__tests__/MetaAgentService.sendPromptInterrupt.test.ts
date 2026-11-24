@@ -65,6 +65,7 @@ interface Harness {
   interruptCurrentTurn: ReturnType<typeof vi.fn>;
   driveQueuedPrompts: ReturnType<typeof vi.fn>;
   triggerQueuedPromptProcessingForSession: ReturnType<typeof vi.fn>;
+  requestDeferredReportDrive: ReturnType<typeof vi.fn>;
 }
 
 function setup(row: { status: string; provider?: string }): Harness {
@@ -82,14 +83,16 @@ function setup(row: { status: string; provider?: string }): Harness {
   const interruptCurrentTurn = vi.fn().mockResolvedValue({ success: true, method: 'interrupt' });
   const driveQueuedPrompts = vi.fn().mockResolvedValue({ kind: 'dispatched' });
   const triggerQueuedPromptProcessingForSession = vi.fn().mockResolvedValue(true);
+  const requestDeferredReportDrive = vi.fn().mockReturnValue({ scheduled: true, coalesced: false, delayMs: 180_000 });
   service.aiService = {
     queuePromptForSession: vi.fn().mockResolvedValue({ id: 'queued-1', prompt: 'do the thing' }),
     interruptCurrentTurn,
     driveQueuedPrompts,
     triggerQueuedPromptProcessingForSession,
+    requestDeferredReportDrive,
   };
 
-  return { service, interruptCurrentTurn, driveQueuedPrompts, triggerQueuedPromptProcessingForSession };
+  return { service, interruptCurrentTurn, driveQueuedPrompts, triggerQueuedPromptProcessingForSession, requestDeferredReportDrive };
 }
 
 async function send(h: Harness, interrupt?: boolean) {
@@ -101,6 +104,38 @@ describe('send_prompt interrupt', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.mocked(AISessionsRepository.get).mockReset();
+  });
+
+  it.each(['idle', 'interrupted', 'error'].flatMap((status) => ['report', 'status'].map((kind) => [status, kind])))('schedules %s %s for bounded background delivery', async (status, kind) => {
+    const h = setup({ status });
+    const result = JSON.parse(await h.service.sendPromptToSession('origin', TARGET, WORKSPACE, 'findings', false, kind));
+    expect(h.requestDeferredReportDrive).toHaveBeenCalledExactlyOnceWith(TARGET, WORKSPACE);
+    expect(h.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ processingTriggered: false, heldForNextTurn: true, deferredDriveScheduled: true, deferredDriveDelayMs: 180_000 });
+  });
+
+  it('reports disposal as the only reason a deferred drive is not scheduled', async () => {
+    const h = setup({ status: 'idle' });
+    h.requestDeferredReportDrive.mockReturnValue({ scheduled: false, reason: 'disposed' });
+    const result = JSON.parse(await h.service.sendPromptToSession('origin', TARGET, WORKSPACE, 'findings', false, 'report'));
+    expect(result).toMatchObject({ deferredDriveScheduled: false, deferredDriveHeldReason: 'disposed' });
+    expect(result.deferredDriveDelayMs).toBeUndefined();
+  });
+
+  it('reports the slower batching delay without withholding delivery', async () => {
+    const h = setup({ status: 'idle' });
+    h.requestDeferredReportDrive.mockReturnValue({ scheduled: true, coalesced: false, delayMs: 600_000 });
+    const result = JSON.parse(await h.service.sendPromptToSession('origin', TARGET, WORKSPACE, 'more findings', false, 'report'));
+    expect(result).toMatchObject({ deferredDriveScheduled: true, deferredDriveDelayMs: 600_000 });
+    expect(result.deferredDriveHeldReason).toBeUndefined();
+  });
+
+  it('reports joining an existing batch without claiming a fresh delay', async () => {
+    const h = setup({ status: 'idle' });
+    h.requestDeferredReportDrive.mockReturnValue({ scheduled: true, coalesced: true });
+    const result = JSON.parse(await h.service.sendPromptToSession('origin', TARGET, WORKSPACE, 'more findings', false, 'report'));
+    expect(result).toMatchObject({ deferredDriveScheduled: true, deferredDriveCoalesced: true });
+    expect(result.deferredDriveDelayMs).toBeUndefined();
   });
 
   it('interrupts a running session and drives the queue', async () => {

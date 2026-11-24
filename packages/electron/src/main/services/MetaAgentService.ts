@@ -985,8 +985,7 @@ export class MetaAgentService {
     );
     const status = (statusRow?.status || 'idle') as SessionStatusValue;
     const workspaceForDrive = session.worktreePath || session.workspacePath || workspaceId;
-    // A report never wakes an idle recipient: it waits for that session's next
-    // turn, where drain-time coalescing folds it in with whatever else arrived.
+    // Batch informational arrivals without depending on a mounted transcript.
     const idle = status === 'idle' || status === 'interrupted' || status === 'error';
     const heldForNextTurn = idle && !interrupt && (messageKind === 'report' || messageKind === 'status');
     const idleEnoughToDrive = idle && !heldForNextTurn;
@@ -1000,6 +999,9 @@ export class MetaAgentService {
     let interruptMethod: string | null = null;
     let interruptDeferred: string | null = null;
     let driveOutcome: string | null = null;
+    const deferredDrive = heldForNextTurn
+      ? this.aiService.requestDeferredReportDrive(sessionId, workspaceForDrive)
+      : null;
 
     if (shouldInterrupt) {
       const result = await this.aiService.interruptCurrentTurn(sessionId);
@@ -1033,6 +1035,13 @@ export class MetaAgentService {
       processingTriggered,
       interrupted,
       ...(heldForNextTurn ? { heldForNextTurn } : {}),
+      ...(deferredDrive ? {
+        deferredDriveScheduled: deferredDrive.scheduled,
+        ...(deferredDrive.scheduled
+          ? { deferredDriveCoalesced: deferredDrive.coalesced,
+            ...(!deferredDrive.coalesced ? { deferredDriveDelayMs: deferredDrive.delayMs } : {}) }
+          : { deferredDriveHeldReason: deferredDrive.reason }),
+      } : {}),
       ...(interruptMethod ? { interruptMethod } : {}),
       ...(interruptSkippedReason ? { interruptSkippedReason } : {}),
       ...(interruptDeferred ? { interruptDeferred } : {}),

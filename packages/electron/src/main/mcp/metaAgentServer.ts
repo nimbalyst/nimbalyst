@@ -375,7 +375,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
   {
     name: "send_prompt",
     description:
-      "Queue a follow-up prompt for a session. An instruction to an idle session starts processing immediately; a report or status never wakes it and is read on its next turn. Do not message the session that started you unless it asked for reports.",
+      "Queue a follow-up prompt for a session. An instruction to an idle session starts processing immediately; a report or status is batched and delivered within a few minutes, subject to session admission checks. Sustained report traffic uses a longer batching delay, never a delivery hold. Do not message the session that started you unless it asked for reports.",
     inputSchema: {
       type: "object",
       properties: {
@@ -390,7 +390,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
         messageKind: {
           type: "string",
           enum: ["instruction", "report", "status", "question", "error"],
-          description: "Defaults to instruction. report/status are informational and never wake an idle recipient; never label a request to change work as a report.",
+          description: "Defaults to instruction. report/status are informational and use delayed batched delivery to idle recipients; never label a request to change work as a report.",
         },
         interrupt: {
           type: "boolean",
