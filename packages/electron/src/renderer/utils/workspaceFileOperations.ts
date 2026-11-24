@@ -16,6 +16,7 @@ interface FileSelectOptions {
   tabs: any;
   isInitializedRef: React.MutableRefObject<boolean>;
   isCurrent?: () => boolean;
+  switchToTab?: boolean;
 }
 
 export async function handleWorkspaceFileSelect(options: FileSelectOptions): Promise<boolean> {
@@ -25,6 +26,7 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
     tabs,
     isInitializedRef,
     isCurrent = () => true,
+    switchToTab = true,
   } = options;
 
   // NOTE: autoSaveCancellationRef removed - EditorContainer handles all autosave now
@@ -67,7 +69,7 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
     const isInVisibleTabs2 = tabs.tabs?.some((t: any) => t.id === existingTab2.id);
     if (isInVisibleTabs2) {
       if (LOG_CONFIG.WORKSPACE_FILE_SELECT) console.log('[WORKSPACE_FILE_SELECT] File already open in tab, switching');
-      tabs.switchTab(existingTab2.id);
+      if (switchToTab) tabs.switchTab(existingTab2.id);
       return true;
     }
     // Tab exists in Map but not in tabOrder - fall through to load fresh
@@ -78,7 +80,7 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
   // directly. A custom editor registered for the matching `virtual://…` prefix
   // renders them (e.g. the Browser extension's browser session editor).
   if (filePath.startsWith('virtual://')) {
-    const tabId = tabs.addTab(filePath, '');
+    const tabId = tabs.addTab(filePath, '', switchToTab || !tabs.activeTabId);
     if (!tabId) {
       console.error('[TABS] Failed to add virtual tab:', filePath);
       errorNotificationService.showError('Cannot open file', filePath);

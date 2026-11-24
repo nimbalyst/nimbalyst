@@ -6,6 +6,7 @@ import {
   BROWSER_VIRTUAL_PREFIX,
   createBrowserSession,
   destroyBrowserSession,
+  detachBrowserSession,
   getOrCreateSessionIdForHost,
   goBackBrowserSession,
   goForwardBrowserSession,
@@ -149,7 +150,13 @@ export function BrowserSessionEditor({ host }: EditorHostProps): JSX.Element {
       cancelled = true;
       unsubscribe();
       unsubscribeExternal();
-      void destroyBrowserSession(sessionId);
+      if (virtualRef.current?.isAgent) {
+        // Switching sessions unmounts the editor; detach so the session parks
+        // off-screen and keeps forms, captchas, and agent handles alive.
+        void detachBrowserSession(sessionId);
+      } else {
+        void destroyBrowserSession(sessionId);
+      }
     };
   }, [docLoaded]);
 

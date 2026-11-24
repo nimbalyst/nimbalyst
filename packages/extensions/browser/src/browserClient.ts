@@ -65,6 +65,7 @@ export function parseVirtualBrowserPath(path: string): {
   sessionId: string;
   url: string;
   title: string;
+  isAgent: boolean;
 } {
   const rest = path.slice(BROWSER_VIRTUAL_PREFIX.length);
   const q = rest.indexOf('?');
@@ -72,10 +73,11 @@ export function parseVirtualBrowserPath(path: string): {
   const params = new URLSearchParams(q >= 0 ? rest.slice(q + 1) : '');
   return {
     tabId,
-    // Stable session id derived from the tab id so restore reuses one session.
-    sessionId: `browser-virtual:${tabId}`,
+    // Stable session id derived from the tab id (or explicit promoted `sid`) so restore reuses one session.
+    sessionId: params.get('sid') || `browser-virtual:${tabId}`,
     url: params.get('url') || 'about:blank',
     title: params.get('title') || 'New Tab',
+    isAgent: params.get('agent') === '1',
   };
 }
 

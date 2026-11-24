@@ -41,10 +41,9 @@ export interface BrowserSessionInitOptions {
   /** Initial URL to load. May be a `nim-preview://`, `http(s)://`, or `about:blank` URL. */
   url: string;
   /**
-   * Session partition. Plain names are in-memory and isolated to this app
-   * run; use a `persist:` prefix only when the caller explicitly wants
-   * Chromium storage to survive restarts.
-   * Falls back to the in-memory `'preview'` partition if omitted.
+   * Session partition. Defaults to `'persist:preview'` so logins survive app
+   * restarts; explicit plain names remain in-memory (`browser-<name>`), and
+   * explicit `persist:` names are preserved as-is.
    */
   partition?: string;
   /**
@@ -55,15 +54,27 @@ export interface BrowserSessionInitOptions {
    */
   headless?: boolean;
   /**
-   * Logical viewport for a headless session, in CSS pixels. Defaults to a
-   * desktop preset. Ignored for attached (editor-backed) sessions, whose size
-   * is driven by the editor placeholder's bounds.
+   * Agent-opened visible/background browser tab. Parks in the shared off-screen
+   * host window while hidden or detached so background automation keeps working,
+   * attaches to a visible window when the user views the tab, and is reaped
+   * after idle inactivity only while hidden.
+   */
+  agentOwned?: boolean;
+  /** Owning workspace window for an `agentOwned` tab session (for window-close cleanup). */
+  ownerWindow?: BrowserWindow;
+  /**
+   * Logical viewport for a headless or parked agent session, in CSS pixels.
+   * Defaults to a desktop preset. Ignored while attached to a visible editor
+   * placeholder, whose size is driven by the placeholder's bounds.
    */
   viewport?: { width: number; height: number };
 }
 
 /** Default headless viewport when the caller doesn't specify one. */
 const DEFAULT_HEADLESS_VIEWPORT = { width: 1280, height: 800 };
+
+/** Default viewport for parked agent tabs before they have been attached to a visible pane. */
+const DEFAULT_AGENT_TAB_VIEWPORT = { width: 1280, height: 900 };
 
 /**
  * How long a headless (agent-owned) session may sit unused before we reap it.
@@ -76,6 +87,9 @@ const DEFAULT_HEADLESS_VIEWPORT = { width: 1280, height: 800 };
  * relying on that single defence for days at a time.
  */
 const HEADLESS_IDLE_TTL_MS = 5 * 60 * 1000;
+
+/** How long a hidden/parked agent browser tab may sit unused before reaping. */
+const AGENT_TAB_IDLE_TTL_MS = 60 * 60 * 1000;
 
 /** How often the reaper checks for idle headless sessions. */
 const HEADLESS_REAP_INTERVAL_MS = 60 * 1000;
@@ -115,6 +129,10 @@ interface SessionEntry {
   state: BrowserNavigationState;
   /** Agent-owned session parked in the shared off-screen host window. */
   headless: boolean;
+  /** Agent-opened tab session: re-parks on detach instead of going unparented. */
+  agentOwned: boolean;
+  /** Last known size to use when parking an agent tab off-screen. */
+  parkedSize: { width: number; height: number } | null;
   /**
    * Set while an editor-backed view is moved into the shared off-screen host
    * window because its placeholder lies entirely outside `hostWindow` (e.g. an
@@ -232,7 +250,7 @@ export function isAllowedBrowserUrl(url: string): boolean {
 }
 
 export function resolveBrowserPartitionName(partition?: string): string {
-  const normalized = partition?.trim() || 'preview';
+  const normalized = partition?.trim() || 'persist:preview';
   return normalized.startsWith('persist:') ? normalized : `browser-${normalized}`;
 }
 
@@ -372,15 +390,14 @@ export class BrowserSessionService extends EventEmitter {
     const existing = this.sessions.get(opts.sessionId);
     if (existing) {
       const requestedPartition = resolveBrowserPartitionName(opts.partition);
-      if (
-        existing.state.url !== opts.url ||
-        existing.partitionName !== requestedPartition
-      ) {
+      if (existing.partitionName !== requestedPartition) {
         throw new Error(
           `Browser session ${opts.sessionId} already exists with different configuration`,
         );
       }
-      logger.main.warn(`[BrowserSessionService] Session already exists: ${opts.sessionId}`);
+      // Reuse the live session even when the requested URL differs (e.g. an
+      // agent navigated before the user opened/remounted the browser tab).
+      existing.lastUsedAt = Date.now();
       return { ...existing.state };
     }
     if (!isAllowedBrowserUrl(opts.url)) {
@@ -400,6 +417,7 @@ export class BrowserSessionService extends EventEmitter {
     // (issue #612).
     ensureNimPreviewProtocolForSession(ses);
     const headless = opts.headless === true;
+    const agentOwned = opts.agentOwned === true;
 
     const view = new WebContentsView({
       webPreferences: {
@@ -421,6 +439,8 @@ export class BrowserSessionService extends EventEmitter {
       bounds: null,
       requestedBounds: null,
       headless,
+      agentOwned,
+      parkedSize: opts.viewport ? { ...opts.viewport } : null,
       parkedIn: null,
       lastUsedAt: Date.now(),
       state: {
@@ -446,6 +466,19 @@ export class BrowserSessionService extends EventEmitter {
       const host = this.getOrCreateHeadlessHostWindow(vp);
       this.attachToWindow(opts.sessionId, host, { x: 0, y: 0, width: vp.width, height: vp.height });
       this.startHeadlessReaper();
+    } else if (agentOwned) {
+      const vp = opts.viewport ?? DEFAULT_AGENT_TAB_VIEWPORT;
+      const host = this.getOrCreateHeadlessHostWindow(vp);
+      host.contentView.addChildView(entry.view);
+      entry.parkedIn = host;
+      entry.parkedSize = { width: vp.width, height: vp.height };
+      entry.bounds = { x: 0, y: 0, width: vp.width, height: vp.height };
+      entry.view.setBounds(entry.bounds);
+      if (opts.ownerWindow && !opts.ownerWindow.isDestroyed()) {
+        entry.hostWindow = opts.ownerWindow;
+        this.installWindowCloseListener(opts.ownerWindow, opts.sessionId);
+      }
+      this.startHeadlessReaper();
     }
 
     // Kick off the initial load. We intentionally do not await -- the renderer
@@ -461,6 +494,50 @@ export class BrowserSessionService extends EventEmitter {
     logger.main.info(
       `[BrowserSessionService] Created session ${opts.sessionId} url=${opts.url} partition=${partitionName}`,
     );
+    return { ...entry.state };
+  }
+
+  /**
+   * Promote a live headless session to an agent-owned tab in-place so the
+   * WebContentsView and all in-memory DOM / form / challenge state survive
+   * without a reload.
+   */
+  public promoteToAgentTab(
+    sessionId: string,
+    ownerWindow?: BrowserWindow,
+  ): BrowserNavigationState | null {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) return null;
+    if (entry.headless) {
+      const oldHost = entry.hostWindow;
+      if (oldHost && !oldHost.isDestroyed()) {
+        this.removeWindowCloseListener(oldHost.id, sessionId);
+      }
+      entry.headless = false;
+      entry.agentOwned = true;
+      const vp =
+        entry.bounds && entry.bounds.width > 0 && entry.bounds.height > 0
+          ? { width: entry.bounds.width, height: entry.bounds.height }
+          : DEFAULT_AGENT_TAB_VIEWPORT;
+      entry.parkedSize = vp;
+      if (oldHost && !oldHost.isDestroyed()) {
+        entry.parkedIn = oldHost;
+      } else {
+        const host = this.getOrCreateHeadlessHostWindow(vp);
+        host.contentView.addChildView(entry.view);
+        entry.parkedIn = host;
+        entry.bounds = { x: 0, y: 0, width: vp.width, height: vp.height };
+        entry.view.setBounds(entry.bounds);
+      }
+      entry.hostWindow = ownerWindow && !ownerWindow.isDestroyed() ? ownerWindow : null;
+      if (entry.hostWindow) {
+        this.installWindowCloseListener(entry.hostWindow, sessionId);
+      }
+    } else {
+      entry.agentOwned = true;
+    }
+    entry.lastUsedAt = Date.now();
+    this.startHeadlessReaper();
     return { ...entry.state };
   }
 
@@ -522,6 +599,7 @@ export class BrowserSessionService extends EventEmitter {
     if (hostWindow.isDestroyed()) {
       throw new Error('Host window is destroyed');
     }
+    entry.lastUsedAt = Date.now();
 
     // If we're already attached to a different window, detach first so we
     // never end up parented in two trees simultaneously.
@@ -549,6 +627,34 @@ export class BrowserSessionService extends EventEmitter {
   public detachFromWindow(sessionId: string): void {
     const entry = this.sessions.get(sessionId);
     if (!entry || !entry.hostWindow) return;
+    if (entry.agentOwned && !entry.headless) {
+      const vp =
+        entry.parkedSize && entry.parkedSize.width > 0 && entry.parkedSize.height > 0
+          ? entry.parkedSize
+          : DEFAULT_AGENT_TAB_VIEWPORT;
+      const host = this.getOrCreateHeadlessHostWindow(vp);
+      if (entry.parkedIn !== host) {
+        if (entry.parkedIn) {
+          this.releaseParking(entry);
+        } else if (!entry.hostWindow.isDestroyed()) {
+          try {
+            entry.hostWindow.contentView.removeChildView(entry.view);
+          } catch (err) {
+            logger.main.debug(
+              `[BrowserSessionService] agent detach removeChildView threw for ${sessionId}: ${(err as Error)?.message}`,
+            );
+          }
+        }
+        host.contentView.addChildView(entry.view);
+        entry.parkedIn = host;
+      }
+      entry.requestedBounds = null;
+      entry.bounds = { x: 0, y: 0, width: vp.width, height: vp.height };
+      entry.view.setBounds(entry.bounds);
+      entry.lastUsedAt = Date.now();
+      this.startHeadlessReaper();
+      return;
+    }
     const wasParked = entry.parkedIn !== null;
     this.releaseParking(entry);
     if (!entry.hostWindow.isDestroyed()) {
@@ -582,6 +688,9 @@ export class BrowserSessionService extends EventEmitter {
     }
     const [containerWidth, containerHeight] = entry.hostWindow.getContentSize();
     const clamped = clampBounds(scaled, { width: containerWidth, height: containerHeight });
+    if (clamped.width > 0 && clamped.height > 0) {
+      entry.parkedSize = { width: clamped.width, height: clamped.height };
+    }
     entry.bounds = clamped;
     entry.view.setBounds(clamped);
     if (entry.parkedIn) {
@@ -945,7 +1054,9 @@ export class BrowserSessionService extends EventEmitter {
       (e) => e.headless || (e.parkedIn !== null && !e.parkedIn.isDestroyed()),
     );
     if (stillInUse) return;
-    this.stopHeadlessReaper();
+    if (![...this.sessions.values()].some((e) => e.headless || e.agentOwned)) {
+      this.stopHeadlessReaper();
+    }
     if (!this.headlessHostWindow.isDestroyed()) {
       this.headlessHostWindow.destroy();
     }
@@ -972,24 +1083,31 @@ export class BrowserSessionService extends EventEmitter {
     this.headlessReapTimer = null;
   }
 
-  /** Destroy headless sessions that have gone untouched for the idle TTL. */
+  /** Destroy headless sessions and hidden agent tabs that have gone untouched past their idle TTL. */
   private reapIdleHeadlessSessions(): void {
+    const now = Date.now();
     const expired = selectIdleHeadlessSessions(
       [...this.sessions.values()].map((e) => ({
         sessionId: e.sessionId,
         headless: e.headless,
         lastUsedAt: e.lastUsedAt,
       })),
-      Date.now(),
+      now,
       HEADLESS_IDLE_TTL_MS,
     );
+    for (const e of this.sessions.values()) {
+      if (!e.agentOwned || e.headless) continue;
+      const visibleInWindow =
+        e.hostWindow !== null && !e.hostWindow.isDestroyed() && e.parkedIn === null;
+      if (!visibleInWindow && now - e.lastUsedAt >= AGENT_TAB_IDLE_TTL_MS) {
+        expired.push(e.sessionId);
+      }
+    }
     for (const sessionId of expired) {
-      logger.main.info(
-        `[BrowserSessionService] Reaping idle headless session ${sessionId} (unused for >${HEADLESS_IDLE_TTL_MS}ms)`,
-      );
+      logger.main.info(`[BrowserSessionService] Reaping idle browser session ${sessionId}`);
       this.destroySession(sessionId);
     }
-    if (![...this.sessions.values()].some((e) => e.headless)) {
+    if (![...this.sessions.values()].some((e) => e.headless || e.agentOwned)) {
       this.stopHeadlessReaper();
     }
   }
@@ -1001,6 +1119,21 @@ export class BrowserSessionService extends EventEmitter {
     }
     // Any operation counts as use and pushes back the idle deadline.
     entry.lastUsedAt = Date.now();
+    // Park never-shown editor-backed sessions (e.g. a `.browser.json` tab that
+    // has not been focused yet) at desktop size so capturePage/click/type work.
+    if (
+      !entry.headless &&
+      !entry.hostWindow &&
+      entry.parkedIn === null &&
+      typeof entry.view?.setBounds === 'function'
+    ) {
+      const vp = entry.parkedSize ?? DEFAULT_AGENT_TAB_VIEWPORT;
+      const host = this.getOrCreateHeadlessHostWindow(vp);
+      host.contentView.addChildView(entry.view);
+      entry.parkedIn = host;
+      entry.bounds = { x: 0, y: 0, width: vp.width, height: vp.height };
+      entry.view.setBounds(entry.bounds);
+    }
     return entry;
   }
 

@@ -94,23 +94,33 @@ export const aiTools: ExtensionAITool[] = [
     scope: 'global',
     access: { kind: 'filesystem' } as const,
     description:
-      'Open a new browser session and load a URL. By default the session is headless (agent-owned, rendered off-screen) so you can drive it without a visible tab. Returns the sessionId to use with the other browser tools.',
+      'Open a browser tab in this agent session (in the background by default; logins persist across restarts). Log in yourself using workspace credentials, email verification codes, and consent buttons. Set foreground: true only when the user must act (captcha, passkey, phone/app approval, or unknown credentials), and tell the user which session to open. Never ask the user to open a link, a .browser.json file, or another browser.',
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'http(s):// or nim-preview:// URL to load.' },
+        url: {
+          type: 'string',
+          description:
+            'http(s):// or nim-preview:// URL to load. Optional when bringing an existing sessionId to the foreground.',
+        },
+        foreground: {
+          type: 'boolean',
+          description:
+            'Bring this tab to the front in the agent session editor pane so the user can interact with it (captcha, passkey, phone approval, or unknown password).',
+        },
         headless: {
           type: 'boolean',
-          description: 'Default true. Set false to require an attached editor tab instead.',
+          description:
+            'Default false (opens a background tab in this session). Set true only when no tab is needed.',
         },
         sessionId: {
           type: 'string',
-          description: 'Optional stable id to reuse; auto-generated if omitted.',
+          description:
+            'Optional name for this tab (e.g. "paypal"); reuse the same name with all other browser tools or with foreground: true.',
         },
-        width: { type: 'number', description: 'Viewport width in CSS px (headless only).' },
-        height: { type: 'number', description: 'Viewport height in CSS px (headless only).' },
+        width: { type: 'number', description: 'Initial viewport width in CSS px.' },
+        height: { type: 'number', description: 'Initial viewport height in CSS px.' },
       },
-      required: ['url'],
     },
     handler: async (params) => {
       const url = String(params.url ?? '');

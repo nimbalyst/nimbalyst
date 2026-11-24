@@ -247,6 +247,30 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
       return () => window.removeEventListener(FEEDBACK_REQUEST_OPEN_EVENT, handler);
     }, [workstreamId, tabsActions, revealEditor]);
 
+    // Imperative open for agent-owned browser tabs routed to this workstream.
+    // Background tabs are added without stealing tab focus or revealing the
+    // editor pane; foreground tabs activate the tab and reveal the editor pane.
+    useEffect(() => {
+      const handler = (e: Event) => {
+        const detail = (e as CustomEvent).detail;
+        if (!detail || detail.workstreamId !== workstreamId) return;
+        if (typeof detail.filePath !== 'string') return;
+        e.preventDefault();
+        const existing = tabsActions.findTabByPath(detail.filePath);
+        if (existing) {
+          if (detail.foreground) tabsActions.switchTab(existing.id);
+        } else {
+          const hasAnyTabs = (tabsActions.getSnapshot?.()?.tabOrder?.length ?? 0) > 0;
+          tabsActions.addTab(detail.filePath, '', Boolean(detail.foreground) || !hasAnyTabs);
+        }
+        if (detail.foreground) {
+          revealEditor(workstreamId);
+        }
+      };
+      window.addEventListener('nimbalyst:workstream-open-browser-tab', handler);
+      return () => window.removeEventListener('nimbalyst:workstream-open-browser-tab', handler);
+    }, [workstreamId, tabsActions, revealEditor]);
+
 
     // Subscribe to file-deletion atoms for every currently-open tab path so
     // the workstream tab is closed when a file is deleted on disk. Without
@@ -258,9 +282,10 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
       for (const tab of tabs) {
         const filePath = tab.filePath;
         if (!filePath) continue;
-        // Tracker and feedback-request tabs are not files on disk — no deletion watch.
+        // Tracker, feedback-request, and virtual tabs are not files on disk — no deletion watch.
         if (tab.kind === 'tracker' || isTrackerResourceId(filePath)) continue;
         if (isFeedbackRequestTab(filePath)) continue;
+        if (filePath.startsWith('virtual://')) continue;
         const deletedAtom = fileDeletedAtomFamily(filePath);
         const initial = store.get(deletedAtom);
         const unsub = store.sub(deletedAtom, () => {

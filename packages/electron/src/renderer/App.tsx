@@ -71,6 +71,7 @@ import { DocumentModelRegistry } from './services/document-model/DocumentModelRe
 import {
   addWorkstreamFileAtom,
   addWorkstreamTrackerAtom,
+  fileResource,
   workstreamStateAtom,
 } from './store/atoms/workstreamState';
 import {
@@ -1727,6 +1728,57 @@ export default function App() {
     if (!workspacePath) {
       console.error('[App.handleWorkspaceFileSelect] ERROR: workspacePath is null/undefined! Cannot open file.');
       return;
+    }
+
+    // Route agent-opened browser tabs to the owning workstream's tab strip
+    // (or background tab in Files mode when no workstream id is attached),
+    // without hijacking the user's current mode or active session.
+    if (filePath.startsWith('virtual://com.nimbalyst.browser/')) {
+      const qIdx = filePath.indexOf('?');
+      const qs = new URLSearchParams(qIdx >= 0 ? filePath.slice(qIdx + 1) : '');
+      if (qs.get('agent') === '1') {
+        const foreground = qs.get('foreground') === '1';
+        const targetWorkstreamId = qs.get('session');
+        qs.delete('foreground');
+        const base = qIdx >= 0 ? filePath.slice(0, qIdx) : filePath;
+        const canonicalPath = qs.toString() ? `${base}?${qs.toString()}` : base;
+        if (targetWorkstreamId) {
+          const ev = new CustomEvent('nimbalyst:workstream-open-browser-tab', {
+            detail: { workstreamId: targetWorkstreamId, filePath: canonicalPath, foreground },
+            cancelable: true,
+          });
+          window.dispatchEvent(ev);
+          if (!ev.defaultPrevented) {
+            const wsState = store.get(workstreamStateAtom(targetWorkstreamId));
+            const hasTab = wsState.openResources.some(
+              (t) => t.resource.resourceId === canonicalPath,
+            );
+            const nextResources = hasTab
+              ? wsState.openResources
+              : [...wsState.openResources, { resource: fileResource(canonicalPath) }];
+            if (foreground) {
+              store.set(workstreamStateAtom(targetWorkstreamId), {
+                openResources: nextResources,
+                activeResourceId: canonicalPath,
+              });
+              store.set(revealWorkstreamEditorAtom, targetWorkstreamId);
+            } else {
+              store.set(workstreamStateAtom(targetWorkstreamId), {
+                openResources: nextResources,
+                ...(wsState.activeResourceId ? {} : { activeResourceId: canonicalPath }),
+              });
+            }
+          }
+          return;
+        }
+        if (foreground) {
+          setActiveMode('files');
+        }
+        if (editorModeRef.current) {
+          await editorModeRef.current.selectFile(canonicalPath, { switchToTab: foreground });
+        }
+        return;
+      }
     }
 
     // Reveal Files even when it was already selected behind an extension panel.

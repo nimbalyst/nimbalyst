@@ -2,6 +2,7 @@ import { BrowserWindow } from "electron";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { findWindowIdForWorkspacePath, getAvailableExtensionTools, documentStateBySession } from "../mcpWorkspaceResolver";
 import { requestFromRenderer } from "../rendererRequest";
+import { interceptAgentBrowserTool } from "./agentBrowserTabs";
 
 type McpToolResult = {
   content: Array<{ type: string; text: string }>;
@@ -72,8 +73,20 @@ export async function handleExtensionTool(
     };
   }
 
+  const browserHook = await interceptAgentBrowserTool(
+    extensionTool.name,
+    args,
+    sessionId,
+    workspacePath,
+    targetWindow,
+  );
+  if (browserHook?.handled) {
+    return browserHook.result;
+  }
+  const effectiveArgs = browserHook?.rewrittenArgs ?? args;
+
   // Prefer filePath from tool args (agent targeting a specific file) over session state
-  const activeFilePath = args?.filePath || currentDocState?.filePath;
+  const activeFilePath = effectiveArgs?.filePath || currentDocState?.filePath;
   const TOOL_TIMEOUT_MS = 30000;
 
   // Send IPC to renderer to execute the tool.
@@ -84,7 +97,7 @@ export async function handleExtensionTool(
     "mcp:executeExtensionTool",
     {
       toolName: extensionTool.name,
-      args: args || {},
+      args: effectiveArgs || {},
       context: {
         workspacePath,
         activeFilePath,

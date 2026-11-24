@@ -372,6 +372,51 @@ describe('BrowserSessionService view placement', () => {
     expect(holdersOf(view)).toEqual([]);
     expect(liveHiddenHosts([owner])).toHaveLength(0);
   });
+
+  it('parks an agentOwned tab offscreen on create, reuses on URL mismatch, and re-parks on detach', () => {
+    const owner = newWindow();
+    service().createSession({
+      sessionId: 'browser-virtual:agent-1',
+      url: 'https://example.com/start',
+      agentOwned: true,
+      ownerWindow: owner,
+    });
+    const view = fakes.createdViews[fakes.createdViews.length - 1] as FakeView;
+    const [host] = liveHiddenHosts([owner]);
+    expect(holdersOf(view)).toEqual([host]);
+    expect(view.bounds).toEqual({ x: 0, y: 0, width: 1280, height: 900 });
+
+    // Re-creating with a different URL returns the existing session without throwing.
+    const reused = service().createSession({
+      sessionId: 'browser-virtual:agent-1',
+      url: 'https://example.com/other',
+    });
+    expect(reused.url).toBe('https://example.com/start');
+
+    // Attaching unparks into the visible window and tears down the unused hidden host.
+    service().attachToWindow('browser-virtual:agent-1', owner, onscreen);
+    expect(holdersOf(view)).toEqual([owner]);
+    expect(liveHiddenHosts([owner])).toHaveLength(0);
+
+    // Detaching re-parks in the hidden host at the last known bounds instead of going unparented.
+    service().detachFromWindow('browser-virtual:agent-1');
+    const [hostAfterDetach] = liveHiddenHosts([owner]);
+    expect(holdersOf(view)).toEqual([hostAfterDetach]);
+    expect(view.bounds).toEqual({ x: 0, y: 0, width: onscreen.width, height: onscreen.height });
+  });
+
+  it('promotes a live headless session to an agentOwned tab in-place', () => {
+    const owner = newWindow();
+    service().createSession({ sessionId: 'hl-promote', url: 'https://example.com', headless: true });
+    const view = fakes.createdViews[fakes.createdViews.length - 1] as FakeView;
+
+    const promoted = service().promoteToAgentTab('hl-promote', owner);
+    expect(promoted?.url).toBe('https://example.com');
+
+    service().attachToWindow('hl-promote', owner, onscreen);
+    expect(holdersOf(view)).toEqual([owner]);
+    expect(liveHiddenHosts([owner])).toHaveLength(0);
+  });
 });
 
 describe('isAllowedBrowserUrl', () => {
@@ -472,8 +517,8 @@ describe('selectIdleHeadlessSessions', () => {
 });
 
 describe('resolveBrowserPartitionName', () => {
-  it('uses an in-memory preview partition by default', () => {
-    expect(resolveBrowserPartitionName()).toBe('browser-preview');
+  it('uses a persistent preview partition by default', () => {
+    expect(resolveBrowserPartitionName()).toBe('persist:preview');
   });
 
   it('keeps plain partition names in-memory', () => {
