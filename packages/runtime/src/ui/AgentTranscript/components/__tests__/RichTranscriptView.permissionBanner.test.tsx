@@ -207,7 +207,7 @@ describe('pending question navigation', () => {
     const { container } = render(view(messages));
     flushFrames();
     expect(vlistState.scrollToIndex).toHaveBeenLastCalledWith(3, { align: 'start' });
-    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(1, { align: 'start' });
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(2, { align: 'start' });
 
     vlistState.scrollToIndex.mockClear();
     setTranscriptVisible(false);
@@ -433,6 +433,8 @@ describe('pending question navigation', () => {
     const { container, rerender } = render(view([]));
     flushFrames();
     setTranscriptVisible(false);
+    rerender(view(askedMessages.slice(0, 2)));
+    flushFrames();
     rerender(view(askedMessages));
     flushFrames();
     setTranscriptVisible(true);
@@ -447,13 +449,87 @@ describe('pending question navigation', () => {
   it('F4: jumps to and holds a question opened after a transcript that mounted empty was returned to', () => {
     mountEmptyThenFill(askedMessages).unmount();
     const { pins, rerender } = returnEmptyThenFill();
-    rerender(view([...askedMessages, question(4), makeMessage(5, { text: 'Asked again' })]));
+    const reasked = [...askedMessages, question(4), makeMessage(5, { text: 'Asked again' })];
+    rerender(view(reasked));
     flushFrames();
     expect(vlistState.scrollToIndex).toHaveBeenCalledWith(5, { align: 'start' });
     const pinsBefore = [...pins];
+    // Output streamed below the question it jumped to does not pull the view away.
+    rerender(view([...reasked, makeMessage(6, { text: 'More output' })]));
+    flushFrames();
     rowsMeasure(4200);
     flushFrames();
     expect(pins).toEqual(pinsBefore);
+  });
+
+  // RemoteSessionTranscript replays a returning session oldest first over
+  // throttled snapshots, so its open question can land after the first fill.
+  const replayEmptyThenFill = (snapshots = [askedMessages.slice(0, 2), askedMessages]) => {
+    vlistState.scrollToIndex.mockClear();
+    vlistState.scrollOffset = 0;
+    vlistState.scrollSize = 3000;
+    const rendered = render(persistedView([]));
+    flushFrames();
+    let pins: number[] = [];
+    snapshots.forEach((messages, index) => {
+      if (index > 0) rowsMeasure(vlistState.scrollSize + 1500);
+      rendered.rerender(persistedView(messages));
+      if (index === 0) pins = instrumentScroller(rendered.container).pins;
+      flushFrames();
+    });
+    return { ...rendered, pins };
+  };
+
+  it('F4b: follows from the end past a seen question that a returning replay brings in a later snapshot', () => {
+    const first = replayEmptyThenFill();
+    // First visit: the new question in the later snapshot gets its jump and holds.
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(3, { align: 'start' });
+    const pinsAtJump = [...first.pins];
+    rowsMeasure(vlistState.scrollSize + 400);
+    flushFrames();
+    expect(first.pins).toEqual(pinsAtJump);
+    first.unmount();
+
+    replayEmptyThenFill();
+    rowsMeasure(vlistState.scrollSize + 400);
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+    expect(distanceFromEnd()).toBe(0);
+  });
+
+  it('F4b: leaves a reader who scrolls up during a returning replay where they scrolled', () => {
+    replayEmptyThenFill().unmount();
+    const { container, rerender } = replayEmptyThenFill([askedMessages.slice(0, 2)]);
+    const scroller = container.querySelector<HTMLElement>('.rich-transcript-vlist')!;
+    fireEvent.wheel(scroller, { deltaY: -400 });
+    act(() => { vlistState.scrollOffset = 1500; vlistState.onScroll?.(1500); });
+    rowsMeasure(vlistState.scrollSize + 1500);
+    rerender(persistedView(askedMessages));
+    flushFrames();
+    rowsMeasure(vlistState.scrollSize + 400);
+    flushFrames();
+    expect(vlistState.scrollOffset).toBe(1500);
+  });
+
+  it('F4b: follows the resumed reply past an abandoned card once the re-asked question is answered', () => {
+    const transcript = (reaskedResult?: string) => [
+      makeMessage(0, { type: 'user_message', text: 'Start' }), question(1),
+      makeMessage(2, { text: 'Asking again' }), question(3, 'AskUserQuestion', reaskedResult),
+      ...(reaskedResult ? [
+        makeMessage(4, { type: 'user_message', text: '[Resuming after answering a question]\n\nContinue?: Yes' }),
+        makeMessage(5, { text: 'Resumed' }),
+      ] : [makeMessage(4, { text: 'Which way?' })]),
+    ];
+    const { container, rerender } = render(view(transcript()));
+    instrumentScroller(container);
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(4, { align: 'start' });
+    rerender(view(transcript('{"answers":{"Continue?":"Yes"}}')));
+    flushFrames();
+    rowsMeasure(3600);
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(2, { align: 'start' });
+    expect(distanceFromEnd()).toBe(0);
   });
 
   it('does not pull the reader back to the question after they return to the end', () => {

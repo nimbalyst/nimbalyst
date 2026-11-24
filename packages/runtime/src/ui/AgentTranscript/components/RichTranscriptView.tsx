@@ -589,10 +589,12 @@ export const RichTranscriptView = React.forwardRef<
     messages, sessionId, vlistRef, scrollContainerRef, ready: isScrollReady && isContainerVisible,
   });
   // Following holds while a question waits above, except past the newest one
-  // when the view pinned to the end after that question was already shown (pane
-  // shown again, session returned to). A newer question or a jump to it holds again.
-  const newestQuestionIdRef = useRef<string | undefined>(undefined);
-  newestQuestionIdRef.current = newestPendingQuestion(pendingQuestions)?.id;
+  // when that question was already shown as the view pinned to the end (pane
+  // shown again, session returned to) or as it became the newest. A newer
+  // question or a jump to it holds again.
+  const newestQuestionId = newestPendingQuestion(pendingQuestions)?.id;
+  const newestQuestionIdRef = useRef(newestQuestionId);
+  newestQuestionIdRef.current = newestQuestionId;
   const followPastQuestionIdRef = useRef<string | undefined>(undefined);
 
   const settings = propsSettings || defaultSettings;
@@ -997,6 +999,15 @@ export const RichTranscriptView = React.forwardRef<
     followPastQuestionIdRef.current = newestQuestionIdRef.current;
     setAtBottomState(true);
   }, [hasMessages]); // On mount or while hidden, the pin above makes the same choice
+
+  // Nor does a question already shown hold the follow when it becomes the
+  // newest later: a returning replay can bring it in a later snapshot, and an
+  // abandoned card is left when the newer one closes. A new question still
+  // holds for its jump, which the hook issued in this commit and has not yet
+  // revealed. Whether to scroll stays with the follow's own checks.
+  useEffect(() => {
+    if (!hasQuestionToReveal()) followPastQuestionIdRef.current = newestQuestionId;
+  }, [newestQuestionId]);
 
   // Auto-scroll to bottom when messages change (if user was at bottom)
   useEffect(() => {
