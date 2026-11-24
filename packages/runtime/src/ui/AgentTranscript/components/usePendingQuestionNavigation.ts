@@ -44,6 +44,23 @@ export function selectAutoJumpQuestion(
   return newest && !revealed.has(newest.id) ? newest : undefined;
 }
 
+// Question ids already shown, per session. Module level because the app remounts
+// the transcript on every session switch, and coming back to a session or pane
+// must not replay a jump the user already scrolled away from. The least recently
+// used sessions are forgotten past the cap.
+const MAX_REVEALED_SESSIONS = 100;
+const revealedQuestionsBySession = new Map<string, Set<string>>();
+
+export function revealedQuestionsFor(sessionId: string): Set<string> {
+  const revealed = revealedQuestionsBySession.get(sessionId) ?? new Set<string>();
+  revealedQuestionsBySession.delete(sessionId);
+  revealedQuestionsBySession.set(sessionId, revealed);
+  if (revealedQuestionsBySession.size > MAX_REVEALED_SESSIONS) {
+    revealedQuestionsBySession.delete(revealedQuestionsBySession.keys().next().value!);
+  }
+  return revealed;
+}
+
 export function usePendingQuestionNavigation({ messages, sessionId, ready, vlistRef, scrollContainerRef }: {
   messages: TranscriptViewMessage[];
   sessionId: string;
@@ -52,15 +69,6 @@ export function usePendingQuestionNavigation({ messages, sessionId, ready, vlist
   scrollContainerRef: RefObject<HTMLDivElement | null>;
 }) {
   const pendingQuestions = useMemo(() => findPendingQuestions(messages), [messages]);
-  // Question ids already shown, per session. Kept across visibility changes and
-  // in-place session switches so coming back to a pane does not replay a jump
-  // the user already scrolled away from.
-  const revealedRef = useRef(new Map<string, Set<string>>());
-  const revealedFor = useCallback((id: string) => {
-    let revealed = revealedRef.current.get(id);
-    if (!revealed) revealedRef.current.set(id, revealed = new Set());
-    return revealed;
-  }, []);
   const frameRef = useRef<number | null>(null);
   const latestRef = useRef({ sessionId, pendingQuestions });
   latestRef.current = { sessionId, pendingQuestions };
@@ -84,7 +92,7 @@ export function usePendingQuestionNavigation({ messages, sessionId, ready, vlist
       if (latest.sessionId !== sessionId || !target || !vlistRef.current) return;
       // Shown once a reveal frame runs; a jump cancelled before this (pane hidden,
       // session switched) leaves the question to auto-jump again.
-      revealedFor(sessionId).add(target.id);
+      revealedQuestionsFor(sessionId).add(target.id);
       const container = scrollContainerRef.current;
       const card = Array.from(container?.querySelectorAll<HTMLElement>('[data-transcript-tool-id]') ?? [])
         .find(element => element.dataset.transcriptToolId === target.id);
@@ -96,19 +104,19 @@ export function usePendingQuestionNavigation({ messages, sessionId, ready, vlist
       }
     };
     frameRef.current = requestAnimationFrame(revealCard);
-  }, [cancelJump, revealedFor, scrollContainerRef, sessionId, vlistRef]);
+  }, [cancelJump, scrollContainerRef, sessionId, vlistRef]);
 
   useEffect(() => {
     if (!ready) {
       cancelJump();
       return;
     }
-    const revealed = revealedFor(sessionId);
+    const revealed = revealedQuestionsFor(sessionId);
     const target = selectAutoJumpQuestion(pendingQuestions, revealed);
     // Older open cards never pull the view, not even after the newest one closes.
     pendingQuestions.forEach(question => { if (question !== target) revealed.add(question.id); });
     if (target) jumpToQuestion(target);
-  }, [pendingQuestions, ready, sessionId, jumpToQuestion, cancelJump, revealedFor]);
+  }, [pendingQuestions, ready, sessionId, jumpToQuestion, cancelJump]);
 
   useEffect(() => cancelJump, [cancelJump, sessionId]);
 
@@ -120,8 +128,8 @@ export function usePendingQuestionNavigation({ messages, sessionId, ready, vlist
   /** Whether the next ready pass will auto-jump, so the caller should not scroll to the bottom first. */
   const hasQuestionToReveal = useCallback(() => {
     const { sessionId: currentSessionId, pendingQuestions: current } = latestRef.current;
-    return selectAutoJumpQuestion(current, revealedFor(currentSessionId)) !== undefined;
-  }, [revealedFor]);
+    return selectAutoJumpQuestion(current, revealedQuestionsFor(currentSessionId)) !== undefined;
+  }, []);
 
   return { pendingQuestions, jumpToNewestQuestion, hasQuestionToReveal };
 }

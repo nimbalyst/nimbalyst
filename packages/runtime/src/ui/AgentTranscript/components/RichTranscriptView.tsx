@@ -12,7 +12,7 @@ import { TranscriptSearchBar } from './TranscriptSearchBar';
 import { setSessionIsAtBottom, getSessionIsAtBottom } from '../../../store/atoms/transcriptScroll';
 import { isAppleMobileWebKit } from '../../../utils/platform';
 import { usePendingPermissionNavigation } from './usePendingPermissionNavigation';
-import { usePendingQuestionNavigation } from './usePendingQuestionNavigation';
+import { newestPendingQuestion, usePendingQuestionNavigation } from './usePendingQuestionNavigation';
 import { useElapsedTimeRef } from './CustomToolWidgets/useElapsedTime';
 import type { SubagentChildContext, TranscriptToolShared } from './TranscriptToolCard';
 import { TranscriptMessageRow, computeTranscriptRowInfos, type TranscriptRowInfo } from './TranscriptMessageRow';
@@ -588,8 +588,12 @@ export const RichTranscriptView = React.forwardRef<
   const { pendingQuestions, jumpToNewestQuestion, hasQuestionToReveal } = usePendingQuestionNavigation({
     messages, sessionId, vlistRef, scrollContainerRef, ready: isScrollReady && isContainerVisible,
   });
-  const hasPendingQuestionsRef = useRef(false);
-  hasPendingQuestionsRef.current = pendingQuestions.length > 0;
+  // Following holds while a question waits above, except past the newest one
+  // when the view pinned to the end after that question was already shown (pane
+  // shown again, session returned to). A newer question or a jump to it holds again.
+  const newestQuestionIdRef = useRef<string | undefined>(undefined);
+  newestQuestionIdRef.current = newestPendingQuestion(pendingQuestions)?.id;
+  const followPastQuestionIdRef = useRef<string | undefined>(undefined);
 
   const settings = propsSettings || defaultSettings;
   const previousRenderRef = useRef<{
@@ -635,7 +639,9 @@ export const RichTranscriptView = React.forwardRef<
   // Keep the end in view while following, except while the reader holds the
   // pointer here (scrollbar, selection, touch) or a question waits above.
   const followEnd = useCallback(() => {
-    if (hasPendingQuestionsRef.current || pointerHeldRef.current) return;
+    const questionWaits = newestQuestionIdRef.current !== undefined &&
+      newestQuestionIdRef.current !== followPastQuestionIdRef.current;
+    if (questionWaits || pointerHeldRef.current) return;
     if (shouldAutoScrollTranscript(getAtBottomState(), hasActiveTranscriptSelection(viewRootRef.current))) {
       scrollToEnd();
     }
@@ -968,6 +974,7 @@ export const RichTranscriptView = React.forwardRef<
     frame = requestAnimationFrame(() => {
       // A question not yet shown positions the list itself once ready.
       if (!hasQuestionToReveal()) {
+        followPastQuestionIdRef.current = newestQuestionIdRef.current;
         setAtBottomState(true);
         scrollToEnd();
       }
@@ -1368,7 +1375,10 @@ export const RichTranscriptView = React.forwardRef<
         {pendingQuestions.length > 0 && (
           <div className="rich-transcript-question-navigation shrink-0 flex justify-end border-t border-[var(--nim-border)] bg-[var(--nim-bg)] px-3 py-2">
             <button
-              onClick={jumpToNewestQuestion}
+              onClick={() => {
+                followPastQuestionIdRef.current = undefined;
+                jumpToNewestQuestion();
+              }}
               aria-label="Jump to question"
               className="rich-transcript-question-button flex items-center gap-1.5 px-3 py-1.5 bg-[var(--nim-primary)] text-[var(--nim-on-primary)] rounded-md text-xs font-medium cursor-pointer border-none hover:brightness-110"
             >

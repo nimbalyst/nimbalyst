@@ -9,6 +9,7 @@ import type { TranscriptViewMessage } from '../../../../ai/server/types';
 import {
   findPendingQuestions,
   newestPendingQuestion,
+  revealedQuestionsFor,
   selectAutoJumpQuestion,
 } from '../usePendingQuestionNavigation';
 
@@ -34,5 +35,18 @@ describe('pending question selection', () => {
 
     const reasked = findPendingQuestions([...transcript, question('reasked'), reply]);
     expect(selectAutoJumpQuestion(reasked, new Set(['stale', 'live']))?.id).toBe('reasked');
+  });
+});
+
+describe('revealed questions per session', () => {
+  it('keeps a session in use and forgets the least recently used ones', () => {
+    revealedQuestionsFor('idle').add('question');
+    revealedQuestionsFor('active').add('question');
+    for (let i = 0; i < 1000; i++) {
+      revealedQuestionsFor(`other-${i}`);
+      revealedQuestionsFor('active');
+    }
+    expect(revealedQuestionsFor('active').has('question')).toBe(true);
+    expect(revealedQuestionsFor('idle').has('question')).toBe(false);
   });
 });
