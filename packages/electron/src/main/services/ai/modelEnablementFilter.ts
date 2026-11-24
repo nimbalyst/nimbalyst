@@ -90,6 +90,11 @@ export function isModelEnabled(
   // its -1m row are hidden independently).
   if (entry.hiddenModels && entry.hiddenModels.includes(model.id)) return false;
 
+  // Gemini uses dynamic model discovery and GeminiPanel exposes no per-model
+  // allowlist checkboxes. Ignore any stale `models` allowlist from older
+  // `ai-settings.json` files so retired Flash IDs cannot hide the live catalog.
+  if (model.provider === 'antigravity-gemini-agent') return true;
+
   const list = entry.models;
   if (list && list.length > 0) {
     if (isClaudeCodeFamily(model.provider)) {

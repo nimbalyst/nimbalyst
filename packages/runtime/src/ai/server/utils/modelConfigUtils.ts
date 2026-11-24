@@ -23,8 +23,17 @@ export function omitModelsField<T extends { models?: any }>(
 
 /**
  * Providers that use dynamic model discovery and should not persist a `models` field.
+ *
+ * `antigravity-gemini-agent` has no per-model allowlist UI (`GeminiPanel` only
+ * exposes an enable toggle); legacy `ai-settings.json` files carrying retired
+ * Flash model IDs in `models` would otherwise filter out the entire live Gemini
+ * catalog.
  */
-const DYNAMIC_MODEL_PROVIDERS = ['openai-codex', 'copilot-cli'] as const;
+const DYNAMIC_MODEL_PROVIDERS = [
+  'openai-codex',
+  'copilot-cli',
+  'antigravity-gemini-agent',
+] as const;
 
 /**
  * Normalizes provider configurations by removing the `models` field from
