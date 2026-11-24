@@ -64,3 +64,35 @@ export function createWorkspaceNativeWatcher(
   if (supportsRecursiveWatch) ready();
   return watcher;
 }
+
+/**
+ * Adds an expanded folder or bypassed file to a Linux chokidar handle.
+ * chokidar 4 counts a path it cannot stat twice toward `ready` (its stat error
+ * handler and `add()` both report it), so adding one while the initial scan
+ * runs fires `ready` before the tree is covered. During a scan such a path gets
+ * the call chokidar itself falls back to, which counts once: watch the nearest
+ * existing ancestor for the path's name.
+ */
+export function addNativeWatchPath(
+  handle: NativeWatchHandle,
+  filePath: string,
+  scanning: boolean
+): void {
+  if (!("add" in handle)) return;
+  if (!scanning || canStat(filePath)) {
+    handle.add(filePath);
+    return;
+  }
+  let dir = path.dirname(filePath);
+  while (!canStat(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+  handle.add(dir, path.basename(filePath));
+}
+
+function canStat(filePath: string): boolean {
+  try {
+    fs.lstatSync(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}

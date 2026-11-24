@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import { RecoveringFileWatcher } from './RecoveringFileWatcher';
-import { createWorkspaceNativeWatcher, drainNativeFileEvents, supportsRecursiveWatch, type NativeWatchHandle } from './WorkspaceNativeWatcher';
+import { addNativeWatchPath, createWorkspaceNativeWatcher, drainNativeFileEvents, supportsRecursiveWatch, type NativeWatchHandle } from './WorkspaceNativeWatcher';
 import { deliverObservedFileEvent, drainRenameEvents } from './WorkspaceEventDelivery';
 import { pathExistsAfterRename } from './pathExistsAfterRename';
 import type { FileWatchHealth } from '../../shared/fileWatchHealth';
@@ -429,6 +429,11 @@ export async function drainWorkspaceEvents(workspace: string): Promise<void> {
   await drainRenameEvents(key);
 }
 
+/** Whether the installed handle's initial scan is still running (Linux). */
+function isScanning(entry: BusEntry): boolean {
+  return entry.lifecycle.health.state === 'starting';
+}
+
 /** Global registry of shared watchers, keyed by normalized workspace path. */
 const busEntries = new Map<string, BusEntry>();
 
@@ -481,8 +486,8 @@ export async function subscribe(
       (type, filePath, observedAt) => deliverNativeEvent(entry, type, filePath, current, observedAt),
       ready,
     );
-    if (watcher && 'add' in watcher) {
-      for (const file of new Set([...entry.expandedPaths, ...entry.gitignoreBypassPaths])) watcher.add(file);
+    for (const file of new Set([...entry.expandedPaths, ...entry.gitignoreBypassPaths])) {
+      addNativeWatchPath(watcher, file, true);
     }
     return watcher;
   }, health => {
@@ -573,9 +578,7 @@ export function addWatchedPath(workspacePath: string, folderPath: string): void 
 
   entry.expandedPaths.add(folderPath);
   const watcher = entry.lifecycle.handle;
-  if (watcher && 'add' in watcher) {
-    watcher.add(folderPath);
-  }
+  if (watcher) addNativeWatchPath(watcher, folderPath, isScanning(entry));
 }
 
 /**
@@ -615,9 +618,7 @@ export function addGitignoreBypass(workspacePath: string, absolutePath: string, 
 
   // On Linux, ensure chokidar watches this specific path
   const watcher = entry.lifecycle.handle;
-  if (!supportsRecursiveWatch && watcher && 'add' in watcher) {
-    watcher.add(absolutePath);
-  }
+  if (!supportsRecursiveWatch && watcher) addNativeWatchPath(watcher, absolutePath, isScanning(entry));
 
   // Replay any recently dropped events for this path
   replayDroppedEvents(entry, normalizedPath);

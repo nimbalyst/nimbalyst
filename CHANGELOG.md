@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
-- Projects with more files than the system can watch no longer keep the app busy re-scanning them every second; it now waits longer between attempts and says which folders to exclude.
+- Projects with more files than the system can watch no longer keep the app busy re-scanning them every second; it now waits longer between attempts and suggests adding large folders to .gitignore.
 
 ### Removed
 <!-- Removed features go here -->
