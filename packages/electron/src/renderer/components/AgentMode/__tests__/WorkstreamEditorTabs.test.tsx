@@ -132,3 +132,39 @@ it("lets the user return from the empty right-side file viewer to edited files",
   fireEvent.click(screen.getByRole("button", { name: "Show edited files" }));
   expect(store.get(workstreamRightPanelModeAtom(id))).toBe("edited-files");
 });
+
+it("adds agent browser tabs in the background without revealing, and focuses/reveals on foreground", () => {
+  initWorkstreamState("/project");
+  const store = createStore();
+  const id = "agent-browser-ws";
+  const bgUri =
+    "virtual://com.nimbalyst.browser/agent-42?url=https%3A%2F%2Fexample.com&title=Test&agent=1&session=agent-browser-ws";
+  const fgUri = `${bgUri}&foreground=1`;
+  render(
+    <Provider store={store}>
+      <WorkstreamEditorTabs workstreamId={id} workspacePath="/project" basePath="/project" />
+    </Provider>
+  );
+
+  const bgEvent = new CustomEvent("nimbalyst:workstream-open-browser", {
+    detail: { workstreamId: id, filePath: bgUri, foreground: false },
+    cancelable: true,
+  });
+  act(() => {
+    window.dispatchEvent(bgEvent);
+  });
+  expect(bgEvent.defaultPrevented).toBe(true);
+  expect(actions.addTab).toHaveBeenCalledWith(bgUri, "", false);
+  expect(store.get(workstreamStateAtom(id)).layoutMode).toBe("transcript");
+
+  const fgEvent = new CustomEvent("nimbalyst:workstream-open-browser", {
+    detail: { workstreamId: id, filePath: fgUri, foreground: true },
+    cancelable: true,
+  });
+  act(() => {
+    window.dispatchEvent(fgEvent);
+  });
+  expect(fgEvent.defaultPrevented).toBe(true);
+  expect(actions.addTab).toHaveBeenCalledWith(fgUri, "", true);
+  expect(store.get(workstreamStateAtom(id)).layoutMode).toBe("split");
+});

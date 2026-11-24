@@ -36,6 +36,11 @@ import {
   feedbackRequestTabUri,
   isFeedbackRequestTab,
 } from '../FeedbackRequest/feedbackRequestTab';
+import {
+  AGENT_BROWSER_OPEN_EVENT,
+  isSameVirtualBrowserTab,
+  type AgentBrowserOpenEventDetail,
+} from '../../utils/agentBrowserTab';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { FilePlacementControl, FilePlacementNotice } from './FilePlacementControl';
 import { agentFilePlacementAtom } from '../../store/atoms/agentFilePlacement';
@@ -246,6 +251,35 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
       window.addEventListener(FEEDBACK_REQUEST_OPEN_EVENT, handler);
       return () => window.removeEventListener(FEEDBACK_REQUEST_OPEN_EVENT, handler);
     }, [workstreamId, tabsActions, revealEditor]);
+
+    // Imperative open for an agent-opened browser tab (issue #1728). Background
+    // opens add the tab silently without switching tabs or revealing the pane;
+    // foreground opens activate the tab (deduped by virtual tab id) and reveal
+    // the editor pane for this workstream only.
+    useEffect(() => {
+      const handler = (e: Event) => {
+        const detail = (e as CustomEvent<AgentBrowserOpenEventDetail>).detail;
+        if (!detail || detail.workstreamId !== workstreamId) return;
+        if (typeof detail.filePath !== 'string' || !detail.filePath) return;
+        e.preventDefault();
+        const existing =
+          tabs.find((t) => isSameVirtualBrowserTab(t.filePath, detail.filePath)) ??
+          tabsActions.findTabByPath(detail.filePath);
+        if (existing) {
+          if (detail.foreground) {
+            tabsActions.switchTab(existing.id);
+            revealEditor(workstreamId);
+          }
+          return;
+        }
+        tabsActions.addTab(detail.filePath, '', detail.foreground);
+        if (detail.foreground) {
+          revealEditor(workstreamId);
+        }
+      };
+      window.addEventListener(AGENT_BROWSER_OPEN_EVENT, handler);
+      return () => window.removeEventListener(AGENT_BROWSER_OPEN_EVENT, handler);
+    }, [workstreamId, tabs, tabsActions, revealEditor]);
 
 
     // Subscribe to file-deletion atoms for every currently-open tab path so

@@ -41,10 +41,9 @@ export interface BrowserSessionInitOptions {
   /** Initial URL to load. May be a `nim-preview://`, `http(s)://`, or `about:blank` URL. */
   url: string;
   /**
-   * Session partition. Plain names are in-memory and isolated to this app
-   * run; use a `persist:` prefix only when the caller explicitly wants
-   * Chromium storage to survive restarts.
-   * Falls back to the in-memory `'preview'` partition if omitted.
+   * Session partition. Defaults to `'persist:preview'` so logins and cookies
+   * survive app restarts. Explicit plain names stay in-memory (`browser-<name>`);
+   * explicit `persist:` prefixes are preserved as-is.
    */
   partition?: string;
   /**
@@ -55,9 +54,17 @@ export interface BrowserSessionInitOptions {
    */
   headless?: boolean;
   /**
-   * Logical viewport for a headless session, in CSS pixels. Defaults to a
-   * desktop preset. Ignored for attached (editor-backed) sessions, whose size
-   * is driven by the editor placeholder's bounds.
+   * Agent-opened browser tab (`browser.open_session`). Starts parked in the
+   * off-screen host window so navigation, screenshots, and CDP input work
+   * before the user clicks the tab, re-parks when detached (e.g. tab or
+   * session switch), and is reaped after idle inactivity while not visibly
+   * attached.
+   */
+  agentOwned?: boolean;
+  /**
+   * Logical viewport for a headless or initially parked agent session, in CSS
+   * pixels. Defaults to a desktop preset. Once attached to an editor tab, the
+   * size is driven by the editor placeholder's bounds.
    */
   viewport?: { width: number; height: number };
 }
@@ -76,6 +83,13 @@ const DEFAULT_HEADLESS_VIEWPORT = { width: 1280, height: 800 };
  * relying on that single defence for days at a time.
  */
 const HEADLESS_IDLE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * How long a hidden agent-opened browser tab may sit unused before we reap it.
+ * Longer than headless sessions so forms/captchas survive switching away to
+ * another session; never reaped while attached to a visible window.
+ */
+export const AGENT_TAB_IDLE_TTL_MS = 60 * 60 * 1000;
 
 /** How often the reaper checks for idle headless sessions. */
 const HEADLESS_REAP_INTERVAL_MS = 60 * 1000;
@@ -115,6 +129,8 @@ interface SessionEntry {
   state: BrowserNavigationState;
   /** Agent-owned session parked in the shared off-screen host window. */
   headless: boolean;
+  /** Agent-opened browser tab that parks off-screen when detached. */
+  agentOwned: boolean;
   /**
    * Set while an editor-backed view is moved into the shared off-screen host
    * window because its placeholder lies entirely outside `hostWindow` (e.g. an
@@ -130,21 +146,31 @@ interface SessionEntry {
 export interface ReapCandidate {
   sessionId: string;
   headless: boolean;
+  agentOwned?: boolean;
+  attachedToVisibleWindow?: boolean;
   lastUsedAt: number;
 }
 
 /**
  * Pure-function reaper policy. Returns the ids of headless sessions that have
- * been idle for at least `ttlMs`. Editor-backed sessions are never reaped --
- * the user owns those, and their host window is a real app window.
+ * been idle for at least `ttlMs`, plus hidden agent-opened tabs idle for at
+ * least `agentTabTtlMs`. Agent tabs currently attached to a visible window and
+ * user-owned editor tabs are never reaped.
  */
 export function selectIdleHeadlessSessions(
   candidates: ReapCandidate[],
   now: number,
   ttlMs: number,
+  agentTabTtlMs: number = AGENT_TAB_IDLE_TTL_MS,
 ): string[] {
   return candidates
-    .filter((c) => c.headless && now - c.lastUsedAt >= ttlMs)
+    .filter((c) => {
+      if (c.headless) return now - c.lastUsedAt >= ttlMs;
+      if (c.agentOwned && !c.attachedToVisibleWindow) {
+        return now - c.lastUsedAt >= agentTabTtlMs;
+      }
+      return false;
+    })
     .map((c) => c.sessionId);
 }
 
@@ -232,7 +258,8 @@ export function isAllowedBrowserUrl(url: string): boolean {
 }
 
 export function resolveBrowserPartitionName(partition?: string): string {
-  const normalized = partition?.trim() || 'preview';
+  const normalized = partition?.trim();
+  if (!normalized) return 'persist:preview';
   return normalized.startsWith('persist:') ? normalized : `browser-${normalized}`;
 }
 
@@ -359,6 +386,10 @@ export class BrowserSessionService extends EventEmitter {
     return this.sessions.has(sessionId);
   }
 
+  public isHeadlessSession(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.headless === true;
+  }
+
   public listSessions(): string[] {
     return [...this.sessions.keys()];
   }
@@ -372,15 +403,17 @@ export class BrowserSessionService extends EventEmitter {
     const existing = this.sessions.get(opts.sessionId);
     if (existing) {
       const requestedPartition = resolveBrowserPartitionName(opts.partition);
-      if (
-        existing.state.url !== opts.url ||
-        existing.partitionName !== requestedPartition
-      ) {
+      if (existing.partitionName !== requestedPartition) {
         throw new Error(
           `Browser session ${opts.sessionId} already exists with different configuration`,
         );
       }
-      logger.main.warn(`[BrowserSessionService] Session already exists: ${opts.sessionId}`);
+      // Return the live session even when only the URL differs: an agent may
+      // have already navigated a tab before its editor component mounts (or
+      // remounts after switching sessions) and calls createSession with the
+      // tab's initial URL.
+      existing.lastUsedAt = Date.now();
+      logger.main.warn(`[BrowserSessionService] Reusing existing session: ${opts.sessionId}`);
       return { ...existing.state };
     }
     if (!isAllowedBrowserUrl(opts.url)) {
@@ -400,6 +433,7 @@ export class BrowserSessionService extends EventEmitter {
     // (issue #612).
     ensureNimPreviewProtocolForSession(ses);
     const headless = opts.headless === true;
+    const agentOwned = !headless && opts.agentOwned === true;
 
     const view = new WebContentsView({
       webPreferences: {
@@ -421,6 +455,7 @@ export class BrowserSessionService extends EventEmitter {
       bounds: null,
       requestedBounds: null,
       headless,
+      agentOwned,
       parkedIn: null,
       lastUsedAt: Date.now(),
       state: {
@@ -445,6 +480,13 @@ export class BrowserSessionService extends EventEmitter {
       const vp = opts.viewport ?? DEFAULT_HEADLESS_VIEWPORT;
       const host = this.getOrCreateHeadlessHostWindow(vp);
       this.attachToWindow(opts.sessionId, host, { x: 0, y: 0, width: vp.width, height: vp.height });
+      this.startHeadlessReaper();
+    } else if (agentOwned) {
+      // Park an agent-opened tab off-screen until its editor tab mounts and
+      // attaches to the real workspace window, so navigation, screenshots, and
+      // CDP input work immediately in the background.
+      const vp = opts.viewport ?? DEFAULT_HEADLESS_VIEWPORT;
+      this.parkDetachedAgentSession(entry, vp);
       this.startHeadlessReaper();
     }
 
@@ -541,6 +583,7 @@ export class BrowserSessionService extends EventEmitter {
       hostWindow.contentView.addChildView(entry.view);
     }
     entry.hostWindow = hostWindow;
+    entry.lastUsedAt = Date.now();
     this.installWindowCloseListener(hostWindow, sessionId);
 
     this.setBounds(sessionId, bounds);
@@ -550,6 +593,7 @@ export class BrowserSessionService extends EventEmitter {
     const entry = this.sessions.get(sessionId);
     if (!entry || !entry.hostWindow) return;
     const wasParked = entry.parkedIn !== null;
+    const lastSize = entry.requestedBounds ?? entry.bounds ?? DEFAULT_HEADLESS_VIEWPORT;
     this.releaseParking(entry);
     if (!entry.hostWindow.isDestroyed()) {
       if (!wasParked) {
@@ -566,6 +610,16 @@ export class BrowserSessionService extends EventEmitter {
     entry.hostWindow = null;
     entry.bounds = null;
     entry.requestedBounds = null;
+    if (entry.agentOwned && !entry.headless) {
+      // Keep an agent-opened tab painting off-screen while hidden or unmounted
+      // across tab/session switches so screenshots and CDP input keep working.
+      this.parkDetachedAgentSession(entry, {
+        width: Math.max(1, Math.floor(lastSize.width)),
+        height: Math.max(1, Math.floor(lastSize.height)),
+      });
+      this.startHeadlessReaper();
+      return;
+    }
     if (wasParked) this.maybeTeardownHeadlessHost();
   }
 
@@ -622,6 +676,26 @@ export class BrowserSessionService extends EventEmitter {
       entry.parkedIn = host;
     }
     entry.bounds = { x: 0, y: 0, ...size };
+    entry.view.setBounds(entry.bounds);
+  }
+
+  /** Parks a detached agent-owned tab view in the shared off-screen host window. */
+  private parkDetachedAgentSession(
+    entry: SessionEntry,
+    viewport: { width: number; height: number },
+  ): void {
+    const size = {
+      width: Math.max(1, Math.floor(viewport.width)),
+      height: Math.max(1, Math.floor(viewport.height)),
+    };
+    const host = this.getOrCreateHeadlessHostWindow(size);
+    if (entry.parkedIn !== host) {
+      if (entry.parkedIn) this.releaseParking(entry);
+      host.contentView.addChildView(entry.view);
+      entry.parkedIn = host;
+    }
+    entry.bounds = { x: 0, y: 0, ...size };
+    entry.requestedBounds = { x: 0, y: 0, ...size };
     entry.view.setBounds(entry.bounds);
   }
 
@@ -972,24 +1046,27 @@ export class BrowserSessionService extends EventEmitter {
     this.headlessReapTimer = null;
   }
 
-  /** Destroy headless sessions that have gone untouched for the idle TTL. */
+  /** Destroy headless sessions and hidden agent tabs that have gone untouched past their idle TTL. */
   private reapIdleHeadlessSessions(): void {
     const expired = selectIdleHeadlessSessions(
       [...this.sessions.values()].map((e) => ({
         sessionId: e.sessionId,
         headless: e.headless,
+        agentOwned: e.agentOwned,
+        attachedToVisibleWindow: e.hostWindow !== null && e.parkedIn === null,
         lastUsedAt: e.lastUsedAt,
       })),
       Date.now(),
       HEADLESS_IDLE_TTL_MS,
+      AGENT_TAB_IDLE_TTL_MS,
     );
     for (const sessionId of expired) {
       logger.main.info(
-        `[BrowserSessionService] Reaping idle headless session ${sessionId} (unused for >${HEADLESS_IDLE_TTL_MS}ms)`,
+        `[BrowserSessionService] Reaping idle agent browser session ${sessionId}`,
       );
       this.destroySession(sessionId);
     }
-    if (![...this.sessions.values()].some((e) => e.headless)) {
+    if (![...this.sessions.values()].some((e) => e.headless || e.agentOwned)) {
       this.stopHeadlessReaper();
     }
   }

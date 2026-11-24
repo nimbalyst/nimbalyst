@@ -78,6 +78,11 @@ import {
   setSelectedWorkstreamAtom,
   initSessionList,
 } from './store/atoms/sessions';
+import { sessionTreeRootId } from './components/AgenticCoding/sessionTreeModel';
+import {
+  openAgentBrowserTabInWorkstream,
+  parseAgentBrowserTabPath,
+} from './utils/agentBrowserTab';
 import { dispatchCreateNewSession, openWorktreeSessionActionAtom } from './store/actions/sessionHistoryActions';
 import { openSessionInOwningProject } from './store/actions/sessionNotificationNavigation';
 import { NavigationGutter } from './components/NavigationGutter';
@@ -1726,6 +1731,34 @@ export default function App() {
     // CRITICAL: If workspacePath is null, something is very wrong
     if (!workspacePath) {
       console.error('[App.handleWorkspaceFileSelect] ERROR: workspacePath is null/undefined! Cannot open file.');
+      return;
+    }
+
+    // Agent-opened browser tabs (issue #1728) route to the calling agent's own
+    // workstream tab strip (when a session id is attached) or open in the
+    // background in Files without stealing the user's mode or active tab.
+    const agentBrowserTab = parseAgentBrowserTabPath(filePath);
+    if (agentBrowserTab) {
+      if (agentBrowserTab.agentSessionId) {
+        const registry = store.get(sessionRegistryAtom);
+        const workstreamId = registry.has(agentBrowserTab.agentSessionId)
+          ? sessionTreeRootId(agentBrowserTab.agentSessionId, registry)
+          : agentBrowserTab.agentSessionId;
+        openAgentBrowserTabInWorkstream({
+          workstreamId,
+          filePath,
+          foreground: agentBrowserTab.foreground,
+        });
+        return;
+      }
+      if (agentBrowserTab.foreground) {
+        setActiveMode('files');
+      }
+      if (editorModeRef.current) {
+        await editorModeRef.current.selectFile(filePath, {
+          switchToTab: agentBrowserTab.foreground,
+        });
+      }
       return;
     }
 

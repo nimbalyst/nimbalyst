@@ -149,7 +149,13 @@ export function BrowserSessionEditor({ host }: EditorHostProps): JSX.Element {
       cancelled = true;
       unsubscribe();
       unsubscribeExternal();
-      void destroyBrowserSession(sessionId);
+      // Agent-opened tabs detach via BrowserSurface and stay parked off-screen
+      // so switching sessions preserves forms, logins, and captchas; the idle
+      // reaper or browser.close_session destroys them. User tabs still tear
+      // down immediately on unmount.
+      if (!virtualRef.current?.isAgent) {
+        void destroyBrowserSession(sessionId);
+      }
     };
   }, [docLoaded]);
 

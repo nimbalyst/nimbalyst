@@ -94,21 +94,28 @@ export const aiTools: ExtensionAITool[] = [
     scope: 'global',
     access: { kind: 'filesystem' } as const,
     description:
-      'Open a new browser session and load a URL. By default the session is headless (agent-owned, rendered off-screen) so you can drive it without a visible tab. Returns the sessionId to use with the other browser tools.',
+      'Open a browser tab for this session and load a URL (cookies/logins persist across restarts via persist:preview). Opens in the background by default so you can drive it without interrupting the user; pass foreground=true only when the user must act directly (captcha, passkey, phone/app approval, or an unknown login) and tell them which session tab to open. Handle normal logins, email verification codes, and consent buttons yourself — never create a .browser.json file or ask the user to open an external browser. Returns the sessionId to use with the other browser tools.',
     inputSchema: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'http(s):// or nim-preview:// URL to load.' },
+        foreground: {
+          type: 'boolean',
+          description:
+            'Default false. Set true only when human interaction is required (captcha, passkey, phone approval, or unknown login) to bring the tab to the front in this session (also reuses an existing sessionId or promotes a headless session).',
+        },
         headless: {
           type: 'boolean',
-          description: 'Default true. Set false to require an attached editor tab instead.',
+          description:
+            'Default false (opens an agent browser tab). Set true to keep the session off-screen without a tab (ignored when foreground is true).',
         },
         sessionId: {
           type: 'string',
-          description: 'Optional stable id to reuse; auto-generated if omitted.',
+          description:
+            'Optional name for this tab (e.g. "paypal-connect"); reuse the same name with the other browser.* tools.',
         },
-        width: { type: 'number', description: 'Viewport width in CSS px (headless only).' },
-        height: { type: 'number', description: 'Viewport height in CSS px (headless only).' },
+        width: { type: 'number', description: 'Initial viewport width in CSS px.' },
+        height: { type: 'number', description: 'Initial viewport height in CSS px.' },
       },
       required: ['url'],
     },
