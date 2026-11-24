@@ -179,18 +179,33 @@ class GeminiUsageServiceImpl {
 
   /**
    * Ask the language server for a usage snapshot. Never throws and never
-   * spawns: with no live endpoint this resolves to an unavailable result and
-   * the caller renders the muted chip.
+   * spawns: if no endpoint is cached yet, tries a read-only attachment to an
+   * already-running Antigravity hub (`findRunningEndpoint()`). On an RPC error
+   * (for example if the hub restarted on a new port), clears the stale endpoint
+   * and retries hub discovery once before reporting unavailable.
    */
   private async fetchSnapshot(): Promise<GeminiUsageSnapshotResult> {
     const server = AntigravityServerManager.shared();
     if (server.currentEndpoint() === null) {
-      return { available: false, notStarted: true, error: GEMINI_NOT_STARTED_MESSAGE };
+      const hub = await server.findRunningEndpoint().catch(() => null);
+      if (!hub) {
+        return { available: false, notStarted: true, error: GEMINI_NOT_STARTED_MESSAGE };
+      }
     }
     try {
       const snapshot = await new AntigravityUsageMeter(server).getSnapshot();
       return { available: true, snapshot };
     } catch (error) {
+      server.clearEndpoint();
+      const retryHub = await server.findRunningEndpoint().catch(() => null);
+      if (retryHub) {
+        try {
+          const snapshot = await new AntigravityUsageMeter(server).getSnapshot();
+          return { available: true, snapshot };
+        } catch {
+          /* fall through to report the original error */
+        }
+      }
       return {
         available: false,
         error: error instanceof Error ? error.message : 'Unknown error reading Gemini usage',
