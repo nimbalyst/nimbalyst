@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type { ChatAttachment } from '../../types';
+import { syncMcpServersToAgy, type AgyMcpConfigLoader } from './agyMcpSync';
 
 const GEMINI_TEXT_ATTACHMENT_EXT_RE =
   /\.(txt|md|markdown|json|jsonl|yaml|yml|toml|csv|tsv|xml|html|htm|css|scss|less|js|mjs|cjs|ts|tsx|jsx|py|rb|go|rs|java|kt|swift|c|cpp|h|hpp|cs|php|sh|bash|zsh|fish|sql|log|ini|cfg|conf|env|dockerfile|makefile|graphql|prisma|svelte|vue)$/i;
@@ -67,6 +68,7 @@ export interface AgyTurnOptions {
   abortSignal?: AbortSignal;
   pathLoader?: AgyPathLoader | null;
   envLoader?: AgyEnvLoader | null;
+  mcpConfigLoader?: AgyMcpConfigLoader | null;
   /** Optional fingerprint (e.g. synced MCP config hash); respawn warm session if it changes. */
   configFingerprint?: string;
   /** Optional resolved binary override (used by caller/tests). */
@@ -493,7 +495,8 @@ export class AgySessionManager {
       abortSignal,
       pathLoader,
       envLoader,
-      configFingerprint = '',
+      mcpConfigLoader,
+      configFingerprint: explicitFingerprint,
       agyBinPath,
     } = options;
 
@@ -502,6 +505,11 @@ export class AgySessionManager {
     if (!agyBin) {
       throw new Error('Antigravity CLI (agy) not found.');
     }
+
+    const syncedFingerprint = mcpConfigLoader
+      ? await syncMcpServersToAgy(workspacePath, sessionId, mcpConfigLoader)
+      : '';
+    const configFingerprint = explicitFingerprint ?? syncedFingerprint;
 
     const convMap = await this.loadConvMap();
     const existingConvId = convMap[sessionId] ?? null;

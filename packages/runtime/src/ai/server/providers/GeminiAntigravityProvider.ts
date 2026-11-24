@@ -59,6 +59,7 @@ import {
   type AgyEnvLoader,
   type AgyPathLoader,
 } from './geminiAntigravity/AgyCliHarness';
+import type { AgyMcpConfigLoader } from './geminiAntigravity/agyMcpSync';
 import type { ProviderSessionData } from './ProviderSessionManager';
 import type {
   AgentToolDefinition,
@@ -132,6 +133,7 @@ export class GeminiAntigravityProvider extends BaseAgentProvider {
   private static serverConfigLoader: (() => GeminiServerConfig) | null = null;
   private static shellEnvironmentLoader: AgyEnvLoader | null = null;
   private static enhancedPathLoader: AgyPathLoader | null = null;
+  private static mcpConfigLoader: AgyMcpConfigLoader | null = null;
 
   private readonly sessionStates = new Map<string, SessionState>();
   private readonly server: AntigravityServerManager;
@@ -264,6 +266,7 @@ export class GeminiAntigravityProvider extends BaseAgentProvider {
           abortSignal: abortController.signal,
           pathLoader: GeminiAntigravityProvider.enhancedPathLoader,
           envLoader: GeminiAntigravityProvider.shellEnvironmentLoader,
+          mcpConfigLoader: GeminiAntigravityProvider.mcpConfigLoader,
           agyBinPath,
         })) {
           if (abortController.signal.aborted) break;
@@ -582,6 +585,10 @@ export class GeminiAntigravityProvider extends BaseAgentProvider {
 
   static setEnhancedPathLoader(loader: AgyPathLoader | null): void {
     GeminiAntigravityProvider.enhancedPathLoader = loader;
+  }
+
+  static setMcpConfigLoader(loader: AgyMcpConfigLoader | null): void {
+    GeminiAntigravityProvider.mcpConfigLoader = loader;
   }
 
   // --- Detection and catalog ----------------------------------------------
