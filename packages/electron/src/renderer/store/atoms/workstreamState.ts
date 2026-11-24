@@ -291,7 +291,7 @@ function createDefaultState(id: string): WorkstreamState {
     treeExpanded: null,
     layoutMode: 'transcript', // Start with transcript maximized
     splitRatio: 0.5,
-    filesSidebarVisible: true,
+    filesSidebarVisible: false,
     rightPanelMode: 'edited-files',
     lastAuxiliaryPanelMode: 'edited-files',
     fileViewerWidth: null,
@@ -1197,7 +1197,7 @@ export const transferSessionStateToWrapperAtom = atom(
       worktreePath: null,
       layoutMode: 'transcript',
       splitRatio: 0.5,
-      filesSidebarVisible: true,
+      filesSidebarVisible: false,
       rightPanelMode: 'edited-files',
       lastAuxiliaryPanelMode: 'edited-files',
       fileViewerWidth: null,
