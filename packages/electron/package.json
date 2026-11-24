@@ -109,7 +109,6 @@
     "json-schema-to-ts": "^3.1.1",
     "libheif-js": "1.19.8",
     "marked": "^16.4.0",
-    "mcp-remote": "^0.1.38",
     "mermaid": "11.17.2",
     "minimatch": "^10.2.5",
     "monaco-editor": "^0.55.1",
@@ -396,6 +395,10 @@
       {
         "from": "resources/codex-pre-edit-hook.mjs",
         "to": "codex-pre-edit-hook.mjs"
+      },
+      {
+        "from": "resources/mcp-gateway-stdio.mjs",
+        "to": "mcp-gateway-stdio.mjs"
       },
       {
         "from": "resources/codex-shell-hook.cjs",

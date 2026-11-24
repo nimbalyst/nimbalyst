@@ -36,7 +36,17 @@ class FakeOAuthChild extends EventEmitter {
   }
 }
 
-describe('triggerMcpRemoteOAuth', () => {
+// Only stdio commands the user wrote themselves (`npx mcp-remote <url>`) still
+// run mcp-remote; every other remote server uses Nimbalyst's own OAuth client
+// (covered in services/mcpOAuth/__tests__).
+const USER_COMMAND = {
+  type: 'stdio' as const,
+  command: 'npx',
+  // `--ignore-tool` is not reproduced by the gateway, so this stays on mcp-remote.
+  args: ['mcp-remote', 'https://mcp.example.test', '--ignore-tool', 'delete_*'],
+};
+
+describe('triggerMcpRemoteOAuth for a user-written mcp-remote command', () => {
   let authDir: string;
   let child: FakeOAuthChild;
 
@@ -56,7 +66,7 @@ describe('triggerMcpRemoteOAuth', () => {
 
   it('reports an abandoned browser flow as timed out instead of rejected', async () => {
     vi.useFakeTimers();
-    const resultPromise = triggerMcpRemoteOAuth('https://mcp.example.test');
+    const resultPromise = triggerMcpRemoteOAuth(USER_COMMAND);
     child.stderr.write('Authentication required. Waiting for authorization...');
 
     // The default flow deadline is generous so real consent + MFA flows are not
@@ -77,7 +87,7 @@ describe('triggerMcpRemoteOAuth', () => {
   it('uses the token cache as the authoritative success signal', async () => {
     vi.useFakeTimers();
     const serverUrl = 'https://mcp.example.test';
-    const resultPromise = triggerMcpRemoteOAuth(serverUrl);
+    const resultPromise = triggerMcpRemoteOAuth(USER_COMMAND);
     const versionDir = path.join(authDir, 'mcp-remote-test');
     const serverHash = crypto.createHash('md5').update(serverUrl).digest('hex');
     await fs.mkdir(versionDir, { recursive: true });
@@ -86,7 +96,7 @@ describe('triggerMcpRemoteOAuth', () => {
       JSON.stringify({ access_token: 'test-token' }),
       'utf8'
     );
-    await expect(checkMcpRemoteAuthStatus(serverUrl)).resolves.toMatchObject({
+    await expect(checkMcpRemoteAuthStatus(USER_COMMAND)).resolves.toMatchObject({
       authorized: true,
     });
     await vi.advanceTimersByTimeAsync(2_000);
@@ -99,7 +109,7 @@ describe('triggerMcpRemoteOAuth', () => {
   });
 
   it('does not treat a zero exit code without tokens as authorization success', async () => {
-    const resultPromise = triggerMcpRemoteOAuth('https://mcp.example.test');
+    const resultPromise = triggerMcpRemoteOAuth(USER_COMMAND);
 
     child.emit('close', 0);
 
@@ -111,7 +121,7 @@ describe('triggerMcpRemoteOAuth', () => {
   });
 
   it('returns only a bounded provider-rejection category and safe message', async () => {
-    const resultPromise = triggerMcpRemoteOAuth('https://mcp.example.test');
+    const resultPromise = triggerMcpRemoteOAuth(USER_COMMAND);
     child.stderr.write(
       'access_denied https://provider.example/callback?code=secret /Users/name/auth.json'
     );

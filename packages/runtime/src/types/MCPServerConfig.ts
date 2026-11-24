@@ -19,16 +19,16 @@ export interface MCPServerEnv {
  * Two fields here look interchangeable and are not. They select WHO performs
  * the authorization, which is the difference that matters:
  *
- * - `staticClientInfo` -> Nimbalyst authorizes, via its own `mcp-remote` child
- *   process. The Authorize button works and tokens land in `~/.mcp-auth`.
+ * - `staticClientInfo` -> Nimbalyst authorizes with its own OAuth client in
+ *   the main process. The Authorize button works and tokens are stored in
+ *   Nimbalyst's encrypted credential store (docs/MCP_OAUTH.md).
  * - `clientId` / `clientSecret` -> the downstream CLI owns this server's auth
- *   and Nimbalyst stays out of it. `usesNativeRemoteOAuth` reads these two, and
- *   it also suppresses the `mcp-remote` wrapper and the OAuth probe, so setting
- *   them replaces the Authorize button with "authorize from a Claude or Codex
- *   session".
+ *   and Nimbalyst stays out of it for CLIs that can run it (Claude Code).
+ *   `usesNativeRemoteOAuth` reads these two; setting them replaces the
+ *   Authorize button with "authorize from a Claude or Codex session".
  *
- * Everything else maps to `mcp-remote` flags for servers that need OAuth
- * instead of an API key, a fixed callback port, or explicit client metadata.
+ * The other fields configure Nimbalyst's OAuth client: callback port and host,
+ * redirect URI, resource, upstream transport, timeout, client metadata.
  */
 export interface MCPServerOAuthConfig {
   /** Fixed local callback port for OAuth redirects. */
@@ -37,37 +37,40 @@ export interface MCPServerOAuthConfig {
   /** Hostname to register in the OAuth callback URL (defaults to localhost). */
   host?: string;
 
+  /**
+   * Exact OAuth redirect URI a pre-registered client was registered with, for
+   * example `http://localhost:8765/oauth/callback`. Nimbalyst sends it
+   * unchanged. Leave unset to use `http://<host>:<callbackPort>/oauth/callback`.
+   */
+  redirectUri?: string;
+
   /** Resource parameter passed during OAuth authorization, when required by the server. */
   resource?: string;
 
-  /** Transport preference for mcp-remote when talking to the remote server. */
+  /** Upstream transport the gateway uses to reach the remote server. Defaults to `http-first`. */
   transportStrategy?: 'http-first' | 'sse-first' | 'http-only' | 'sse-only';
 
   /** OAuth callback timeout in seconds. */
   authTimeoutSeconds?: number;
 
   /**
-   * Pre-registered OAuth client that NIMBALYST authorizes with, passed to
-   * `mcp-remote` as `--static-oauth-client-info`. Use this for providers that
-   * refuse RFC 7591 dynamic client registration -- without it `mcp-remote`
-   * attempts registration, the provider rejects it, and the helper dies before
-   * a browser opens (`dynamic_registration_unsupported`).
+   * Pre-registered OAuth client that NIMBALYST authorizes with. Use this for
+   * providers that refuse RFC 7591 dynamic client registration; without it the
+   * registration is rejected before a browser opens
+   * (`dynamic_registration_unsupported`).
    *
    * Example: { client_id: 'abc' }
    *
-   * Prefer a public client: `mcp-remote` already uses PKCE, and a `client_secret`
-   * here lands in the MCP config JSON and on the helper's argv. If a confidential
-   * client is unavoidable, `mcp-remote` also accepts `@/path/to/file.json` to read
-   * the value off disk instead -- but note `safeJsonParse` in MCPRemoteOAuth.ts
-   * deliberately ignores `@`-prefixed values when parsing a command line back
-   * into a descriptor, so that form does not round-trip today.
+   * Prefer a public client: Nimbalyst always uses PKCE, and a `client_secret`
+   * here lands in the MCP config JSON (Nimbalyst keeps it out of the configs it
+   * generates for CLIs).
    */
   staticClientInfo?: Record<string, string>;
 
   /**
    * Pre-registered OAuth client that THE DOWNSTREAM CLI authorizes with. Setting
    * this hands the server's auth to Claude/Codex entirely: Nimbalyst stops
-   * wrapping it in `mcp-remote`, stops probing it for OAuth, and hides its own
+   * routing it through its gateway, stops probing it for OAuth, and hides its own
    * Authorize button. This is not the field for making the Authorize button work
    * against a no-DCR provider -- that is `staticClientInfo`.
    */

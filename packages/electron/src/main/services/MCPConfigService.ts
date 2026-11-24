@@ -20,10 +20,11 @@ import {
   type ClaudeSettingsShape,
 } from './mcp/claudeCodeDisabledServers';
 import {
-  buildMcpRemoteArgs,
   checkMcpRemoteAuthStatus,
   discoverMcpRemoteOAuthRequirement,
+  expandRemoteServerVariables,
   extractMcpRemoteConfig,
+  isBridgeableMcpRemoteCommand,
   usesNativeRemoteOAuth,
 } from './MCPRemoteOAuth';
 import {
@@ -32,6 +33,11 @@ import {
   type McpRemoteRequirementOptions,
 } from './mcpRemoteRequirement';
 import { normalizeProjectPathKey, resolveProjectConfigKey } from './mcpProjectKey';
+import { GATEWAY_PATH_PREFIX, getMcpRemoteGateway, getMcpRemoteGatewayEndpoint } from './mcpOAuth';
+import { MCP_GATEWAY_TOKEN_ENV, resolveMcpGatewayShimPath } from './mcpOAuth/shimPath';
+import { gatewayRouteToken } from './mcpOAuth/gatewayRoute';
+import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 /**
  * Service for managing MCP server configurations.
@@ -135,7 +141,9 @@ export async function loadTrustGatedMcpServers({
         log.info(`[MCP] Skipping unauthorized OAuth server for ${displayName}: ${name}`);
         continue;
       }
-      enabledServers[name] = service.processServerConfigForRuntime(config);
+      enabledServers[name] = service.processServerConfigForRuntime(config, {
+        useMcpRemoteForNativeOAuth: true,
+      });
     }
     return enabledServers;
   } catch (error) {
@@ -1010,39 +1018,75 @@ export class MCPConfigService {
   }
 
   /**
-   * Convert HTTP transport to stdio with mcp-remote wrapper.
-   * This allows users to configure HTTP servers in the UI while we transparently
-   * use mcp-remote for OAuth and connection management.
+   * Route a remote server through Nimbalyst's loopback gateway when it needs
+   * the bridge (see mcpRemoteRequirement.ts). The gateway holds the server's
+   * OAuth credential or static headers; the CLI only gets a loopback URL and
+   * a bearer derived from the per-launch token that opens only that route.
    *
-   * Headers are passed as --header arguments to mcp-remote.
+   * `output: 'http'` gives a Streamable HTTP entry, for CLIs that speak HTTP.
+   * `output: 'stdio'` gives the first-party stdio shim, for CLIs that only
+   * launch local processes. It runs on Electron's own Node, so no system Node
+   * or npm download is involved.
    */
-  private convertHttpToStdio(
+  private convertForRemoteBridge(
     serverConfig: MCPServerConfig,
     options: McpRemoteRequirementOptions = {},
+    output: 'http' | 'stdio' = options.nativeHttpSupported ? 'http' : 'stdio',
   ): MCPServerConfig {
-    // A CLI that speaks HTTP natively does not need the wrapper for a server
-    // that uses no OAuth. Wrapping it costs a process tree and puts the token
-    // on the command line.
     if (!requiresMcpRemote(serverConfig, options)) {
       return serverConfig;
     }
-
-    const remoteConfig = extractMcpRemoteConfig(serverConfig);
-    if (serverConfig.type !== 'http' || !remoteConfig) {
+    // A bridgeable `npx mcp-remote <url>` entry arrives as stdio; mcp-remote's
+    // default upstream transport is http-first, which the route reproduces.
+    const upstreamType: 'http' | 'sse' = serverConfig.type === 'sse' ? 'sse' : 'http';
+    const descriptor = extractMcpRemoteConfig(serverConfig, { useMcpRemoteForNativeOAuth: true });
+    if (!descriptor || descriptor.source === 'user-command') {
       return serverConfig;
     }
+    const endpoint = getMcpRemoteGatewayEndpoint();
+    if (!endpoint) {
+      logger.mcp.warn('[MCP] Remote MCP gateway is not running; passing the server to the CLI unbridged');
+      return serverConfig;
+    }
+    const routeKey = getMcpRemoteGateway().registerRoute(descriptor, upstreamType);
+    const url = `http://127.0.0.1:${endpoint.port}${GATEWAY_PATH_PREFIX}${routeKey}`;
+    // Scoped to this route only; see gatewayRouteToken.
+    const routeToken = gatewayRouteToken(endpoint.token, routeKey);
 
-    const args = buildMcpRemoteArgs(remoteConfig);
+    if (output === 'http') {
+      return {
+        type: 'http',
+        url,
+        headers: { Authorization: `Bearer ${routeToken}` },
+        disabled: serverConfig.disabled,
+      };
+    }
 
-    // Convert HTTP config to stdio with mcp-remote
-    // Using bundled mcp-remote from node_modules (managed as a package.json dependency)
+    const shimPath = resolveMcpGatewayShimPath();
+    if (!shimPath) {
+      logger.mcp.warn('[MCP] Remote MCP gateway stdio bridge is missing; passing the server to the CLI unbridged');
+      return serverConfig;
+    }
     return {
       type: 'stdio',
-      command: 'npx',
-      args,
-      env: serverConfig.env,
-      disabled: serverConfig.disabled
+      command: process.execPath,
+      args: [shimPath, url],
+      env: {
+        ELECTRON_RUN_AS_NODE: '1',
+        [MCP_GATEWAY_TOKEN_ENV]: routeToken,
+      },
+      disabled: serverConfig.disabled,
     };
+  }
+
+  /** True for a config produced by `convertForRemoteBridge` with `output: 'stdio'`. */
+  private static isGatewayShimConfig(config: MCPServerConfig): boolean {
+    return config.type === 'stdio'
+      && config.command === process.execPath
+      && Boolean(config.env && MCP_GATEWAY_TOKEN_ENV in config.env)
+      && Array.isArray(config.args)
+      && typeof config.args[1] === 'string'
+      && config.args[1].includes(GATEWAY_PATH_PREFIX);
   }
 
   /**
@@ -1184,12 +1228,23 @@ export class MCPConfigService {
     serverConfig: MCPServerConfig,
     options: McpRemoteRequirementOptions = {},
   ): MCPServerConfig {
-    // First, convert HTTP to stdio with mcp-remote wrapper (unless the target
-    // CLI speaks HTTP natively and the server needs no OAuth)
-    let config = this.normalizeTransportFields(this.convertHttpToStdio(serverConfig, options));
+    // First, route the server through the gateway if it needs Nimbalyst's
+    // bridge (unless the target CLI speaks HTTP natively and the server needs
+    // no OAuth).
+    // `${VAR}` in a remote URL or header resolves from the server's own `env`
+    // here, whichever way the server is handed to the CLI. The old mcp-remote
+    // wrapper did this; a CLI's own expansion only sees its process
+    // environment, not the server's `env` block.
+    const expanded = expandRemoteServerVariables(serverConfig);
+    let config = this.normalizeTransportFields(this.convertForRemoteBridge(expanded, options));
 
     // Only process stdio servers with a command
-    if (config.type === 'sse' || !config.command) {
+    if (config.type === 'sse' || config.type === 'http' || !config.command) {
+      return config;
+    }
+
+    // The gateway shim already names Electron's own binary.
+    if (MCPConfigService.isGatewayShimConfig(config)) {
       return config;
     }
 
@@ -1291,9 +1346,10 @@ export class MCPConfigService {
           throw new Error(`Invalid MCP config for server "${serverName}": url is required for ${transportLabel} transport`);
         }
 
-        // Validate URL format
+        // Validate URL format. `${VAR}` resolves from the server's own `env`
+        // first, as it will at runtime (expandRemoteServerVariables).
         try {
-          new URL(serverConfig.url);
+          new URL(expandRemoteServerVariables({ ...serverConfig, type: transportType }).url ?? '');
         } catch {
           throw new Error(`Invalid MCP config for server "${serverName}": url must be a valid URL`);
         }
@@ -1419,7 +1475,8 @@ export class MCPConfigService {
    * Test an MCP server connection.
    * For stdio: attempts to spawn and communicate with the process.
    * For SSE: attempts to connect to the URL endpoint.
-   * For HTTP: converts to mcp-remote wrapper and tests stdio (since HTTP uses OAuth via mcp-remote).
+   * For HTTP, and for an `npx mcp-remote <url>` entry the gateway reproduces:
+   * connects through the gateway route a session would use.
    */
   async testServerConnection(
     config: MCPServerConfig,
@@ -1451,11 +1508,11 @@ export class MCPConfigService {
         return await this.testHTTPConnection(config, transportType === 'sse' ? 'sse' : 'http');
       }
 
-      // For HTTP transport, convert to mcp-remote wrapper and test as stdio
-      // This ensures we test with OAuth tokens managed by mcp-remote
-      if (transportType === 'http') {
-        const wrappedConfig = this.convertHttpToStdio(config);
-        return await this.testStdioConnection(wrappedConfig, onProgress);
+      // HTTP servers are tested through the same gateway route a session uses,
+      // so the test exercises the stored credential and static headers exactly
+      // as the CLI will see them.
+      if (transportType === 'http' || isBridgeableMcpRemoteCommand(config)) {
+        return await this.testGatewayConnection(config);
       } else if (transportType === 'sse') {
         return await this.testHTTPConnection(config, transportType);
       } else {
@@ -1464,6 +1521,41 @@ export class MCPConfigService {
     } catch (error: any) {
       logger.mcp.error('MCP server test error:', error);
       return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Connect to an HTTP server through the gateway with an MCP client:
+   * initialize, then list tools. In process; no helper is spawned.
+   */
+  private async testGatewayConnection(
+    config: MCPServerConfig,
+  ): Promise<{ success: boolean; error?: string }> {
+    const bridged = this.convertForRemoteBridge(config, {}, 'http');
+    if (bridged === config || !bridged.url) {
+      return { success: false, error: 'The Nimbalyst MCP gateway is not running. Restart Nimbalyst and try again.' };
+    }
+    const client = new McpClient({ name: 'nimbalyst-connection-test', version: '1.0.0' });
+    const transport = new StreamableHTTPClientTransport(new URL(bridged.url), {
+      requestInit: { headers: bridged.headers },
+    });
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        (async () => {
+          await client.connect(transport);
+          await client.listTools();
+        })(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Connection timed out')), this.CONNECTION_TIMEOUT_MS);
+        }),
+      ]);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: describeGatewayTestError(error) };
+    } finally {
+      if (timer) clearTimeout(timer);
+      await client.close().catch(() => undefined);
     }
   }
 
@@ -1887,4 +1979,28 @@ export class MCPConfigService {
   private getCommandNotFoundHelp(command: string): { message: string; helpUrl?: string } {
     return getCommandNotFoundHelp(command);
   }
+}
+
+/**
+ * The SDK reports a gateway refusal as `Error POSTing to endpoint (HTTP 503):
+ * {json-rpc error}`. Surface the gateway's own message, which is written for
+ * the user, and nothing else from the response.
+ */
+function describeGatewayTestError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const json = message.indexOf('{');
+  if (json !== -1) {
+    try {
+      const parsed = JSON.parse(message.slice(json));
+      if (typeof parsed?.error?.message === 'string') {
+        return parsed.error.message;
+      }
+    } catch {
+      // Fall through.
+    }
+  }
+  if (/timed out/i.test(message)) {
+    return 'Connection timed out.';
+  }
+  return 'Could not connect to the MCP server.';
 }

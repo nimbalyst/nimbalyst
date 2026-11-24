@@ -1112,38 +1112,18 @@ export class CodexACPProtocol implements AgentProtocol {
         const url = cfg.url as string;
         const headers = Object.entries(((cfg.headers ?? cfg.http_headers ?? {}) as Record<string, string>));
 
-        // Codex ACP only supports stdio MCP servers natively for the most
-        // reliable case. Bridge SSE/HTTP servers via mcp-remote spawned as
-        // a stdio process.
-        //
-        // process.execPath inside Electron is the Electron binary itself --
-        // spawning it without ELECTRON_RUN_AS_NODE=1 would launch a fresh
-        // GUI app per MCP server (one bouncing dock icon each). The env var
-        // makes Electron run as a headless Node process.
-        const mcpRemotePath = CodexACPProtocol.resolveMcpRemoteProxy();
-        if (mcpRemotePath) {
-          const args = [mcpRemotePath, url, '--allow-http'];
-          for (const [headerName, value] of headers) {
-            args.push('--header', `${headerName}: ${value}`);
-          }
-          servers.push({
-            name,
-            command: process.execPath,
-            args,
-            env: [{ name: 'ELECTRON_RUN_AS_NODE', value: '1' }],
-          } as McpServer);
+        // Servers that need Nimbalyst's OAuth or a stdio bridge arrive already
+        // converted (to the gateway's stdio shim) by the main process; any URL
+        // server reaching this point is passed to the agent as a remote server.
+        const transport = ((cfg.type ?? cfg.transport ?? '')).toString().toLowerCase();
+        const headerArray = headers.map(([headerName, value]) => ({
+          name: headerName,
+          value,
+        }));
+        if (transport === 'sse') {
+          servers.push({ type: 'sse', name, url, headers: headerArray } as McpServer);
         } else {
-          // Fallback: pass as SSE/HTTP and hope the agent supports it
-          const transport = ((cfg.type ?? cfg.transport ?? '')).toString().toLowerCase();
-          const headerArray = headers.map(([headerName, value]) => ({
-            name: headerName,
-            value,
-          }));
-          if (transport === 'sse') {
-            servers.push({ type: 'sse', name, url, headers: headerArray } as McpServer);
-          } else {
-            servers.push({ type: 'http', name, url, headers: headerArray } as McpServer);
-          }
+          servers.push({ type: 'http', name, url, headers: headerArray } as McpServer);
         }
         continue;
       }
@@ -1162,19 +1142,6 @@ export class CodexACPProtocol implements AgentProtocol {
     }
 
     return servers;
-  }
-
-  /**
-   * Resolve the mcp-remote proxy script, which bridges SSE/HTTP MCP servers
-   * to stdio for agents that only support stdio transport (like Codex ACP).
-   */
-  private static resolveMcpRemoteProxy(): string | undefined {
-    try {
-      const require = createRequire(import.meta.url);
-      return require.resolve('mcp-remote/dist/proxy.js');
-    } catch {
-      return undefined;
-    }
   }
 
   private selectPermissionOption(

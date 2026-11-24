@@ -1,5 +1,4 @@
 // @vitest-environment node
-import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -7,6 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { requiresMcpRemote, resolveMcpRemoteRequirementOptions } from '../mcpRemoteRequirement';
 import { MCPConfigService } from '../MCPConfigService';
 import type { MCPServerConfig } from '@nimbalyst/runtime/types/MCPServerConfig';
+import { McpOAuthCredentialStore } from '../mcpOAuth/credentialStore';
+import { McpOAuthManager } from '../mcpOAuth/McpOAuthManager';
+import { McpRemoteGateway } from '../mcpOAuth/gateway';
+import { setMcpOAuthForTest } from '../mcpOAuth';
+import { setMcpGatewayShimPathForTest } from '../mcpOAuth/shimPath';
+import { __setShellEnvironmentForTest } from '../shellEnvironment';
+import type { McpOAuthBinding } from '../mcpOAuth/types';
 
 const discoverMcpRemoteOAuthRequirement = vi.fn(async () => true);
 const checkMcpRemoteAuthStatus = vi.fn(async () => ({ authorized: false }));
@@ -93,60 +99,145 @@ describe('requiresMcpRemote', () => {
 
 describe('Codex and Claude Code reach the same credential (NIM-2433)', () => {
   // Both CLIs speak Streamable HTTP natively. A server whose only credential is
-  // a cached mcp-remote token must still use the wrapper on both paths.
+  // one Nimbalyst holds must still go through Nimbalyst's gateway on both paths.
   const service = new MCPConfigService();
-  let authDir: string;
+  let tempRoot: string;
+  let manager: McpOAuthManager;
+  const LAUNCH_TOKEN = 'launch-token';
+  const SHIM = '/app/resources/mcp-gateway-stdio.mjs';
 
   beforeEach(async () => {
-    authDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'nim-mcp-auth-'));
-    process.env.MCP_REMOTE_CONFIG_DIR = authDir;
-    // The real disk lookup, so a hashing change that stops matching token files
-    // fails here instead of silently disabling the fix.
+    tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'nim-mcp-auth-'));
+    manager = new McpOAuthManager({
+      store: new McpOAuthCredentialStore(path.join(tempRoot, 'store'), {
+        isEncryptionAvailable: () => true,
+        encryptString: (plain) => Buffer.from(plain),
+        decryptString: (encrypted) => encrypted.toString(),
+      }),
+      openExternal: async () => undefined,
+      legacyAuthDir: () => path.join(tempRoot, 'mcp-auth'),
+    });
+    setMcpOAuthForTest({
+      manager,
+      gateway: new McpRemoteGateway(manager),
+      endpoint: { port: 4567, getToken: () => LAUNCH_TOKEN },
+    });
+    setMcpGatewayShimPathForTest(SHIM);
+    // The real status lookup, so a key change that stops matching stored
+    // credentials fails here instead of silently disabling the fix.
     checkMcpRemoteAuthStatus.mockImplementation(
       actualOAuth.checkMcpRemoteAuthStatus as unknown as typeof checkMcpRemoteAuthStatus
     );
   });
 
   afterEach(async () => {
-    delete process.env.MCP_REMOTE_CONFIG_DIR;
+    setMcpOAuthForTest({ manager: null, gateway: null, endpoint: null });
+    setMcpGatewayShimPathForTest(null);
     checkMcpRemoteAuthStatus.mockImplementation(async () => ({ authorized: false }));
-    await fs.promises.rm(authDir, { recursive: true, force: true });
+    await fs.promises.rm(tempRoot, { recursive: true, force: true });
   });
 
-  const writeCachedToken = async (url: string): Promise<void> => {
-    const versionDir = path.join(authDir, 'mcp-remote-0.1.37');
-    await fs.promises.mkdir(versionDir, { recursive: true });
-    const hash = crypto.createHash('md5').update(url).digest('hex');
-    await fs.promises.writeFile(
-      path.join(versionDir, `${hash}_tokens.json`),
-      JSON.stringify({ access_token: 'cached-by-mcp-remote' })
-    );
+  const storeCredential = async (config: MCPServerConfig): Promise<void> => {
+    const descriptor = actualOAuth.extractMcpRemoteConfig(config, { useMcpRemoteForNativeOAuth: true })!;
+    const key = manager.bindingKeyFor(descriptor);
+    const issuer = 'https://auth.example.com/';
+    const binding: McpOAuthBinding = {
+      version: 1,
+      bindingKey: key,
+      serverUrl: descriptor.serverUrl,
+      issuer,
+      asMetadata: {
+        issuer,
+        authorization_endpoint: `${issuer}authorize`,
+        token_endpoint: `${issuer}token`,
+        response_types_supported: ['code'],
+      },
+      client: { client_id: 'c1', redirect_uri: 'http://localhost:1/oauth/callback', redirect_uris: [], redirectUriConfirmed: true, source: 'dcr', issuer },
+      tokens: { access_token: 'remote-access-secret', refresh_token: 'remote-refresh-secret', expires_at: Date.now() + 3_600_000, issuer },
+      state: 'active',
+      origin: 'authorized',
+      generation: 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    const store = (manager as unknown as { store: McpOAuthCredentialStore }).store;
+    expect(await store.saveIfGeneration(binding, 0)).toBe(true);
   };
 
   /** Where the CLI will actually get its credential for this server. */
   const credentialSource = async (
     config: MCPServerConfig,
     options: { nativeHttpSupported?: boolean }
-  ): Promise<'mcp-remote-cache' | 'declared-config-only'> => {
+  ): Promise<'nimbalyst-gateway' | 'declared-config-only'> => {
     const resolved = await resolveMcpRemoteRequirementOptions(config, options);
     const runtime = service.processServerConfigForRuntime(config, resolved);
-    const wrapped = runtime.type === 'stdio'
-      && (runtime.args ?? []).some((arg) => arg === 'mcp-remote' || arg.startsWith('mcp-remote@'));
-    return wrapped ? 'mcp-remote-cache' : 'declared-config-only';
+    return (runtime.url ?? '').includes('/mcp-remote/') || (runtime.args ?? []).some((arg) => arg.includes('/mcp-remote/'))
+      ? 'nimbalyst-gateway'
+      : 'declared-config-only';
   };
 
-  it('routes a cached-token http server through mcp-remote on BOTH paths', async () => {
+  it('routes a server with a stored credential through the gateway on BOTH paths', async () => {
     const config = http();
-    await writeCachedToken(config.url!);
+    await storeCredential(config);
 
     const codex = await credentialSource(config, { nativeHttpSupported: true });
     const claudeCode = await credentialSource(config, { nativeHttpSupported: true });
 
     expect(claudeCode).toBe(codex);
-    expect(claudeCode).toBe('mcp-remote-cache');
+    expect(claudeCode).toBe('nimbalyst-gateway');
   });
 
-  it('keeps the native-HTTP passthrough when no token was ever cached', async () => {
+  it('N13: the generated entries carry only the loopback token, never the remote credential', async () => {
+    const config = http({ oauth: {} });
+    await storeCredential(config);
+
+    const httpEntry = service.processServerConfigForRuntime(config, { nativeHttpSupported: true });
+    const stdioEntry = service.processServerConfigForRuntime(config, {});
+
+    expect(httpEntry).toMatchObject({
+      type: 'http',
+      url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:4567\/mcp-remote\/[a-f0-9]+$/),
+      headers: { Authorization: expect.stringMatching(/^Bearer [a-f0-9]{64}$/) },
+    });
+    expect(stdioEntry).toMatchObject({
+      type: 'stdio',
+      command: process.execPath,
+      args: [SHIM, expect.stringContaining('/mcp-remote/')],
+      env: { ELECTRON_RUN_AS_NODE: '1', NIMBALYST_MCP_GATEWAY_TOKEN: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    });
+    // The route token rides in env, not argv, where process listings show it,
+    // and neither entry carries the launch token, which opens every server.
+    expect(JSON.stringify(stdioEntry.args)).not.toContain(stdioEntry.env!.NIMBALYST_MCP_GATEWAY_TOKEN);
+    expect(JSON.stringify([httpEntry, stdioEntry])).not.toContain(LAUNCH_TOKEN);
+    for (const entry of [httpEntry, stdioEntry]) {
+      const serialized = JSON.stringify(entry);
+      expect(serialized).not.toContain('remote-access-secret');
+      expect(serialized).not.toContain('remote-refresh-secret');
+      expect(serialized).not.toContain('npx');
+      expect(serialized).not.toContain('mcp-remote@');
+    }
+  });
+
+  it('keeps static API keys out of argv for CLIs that need the stdio bridge', async () => {
+    const config = http({ headers: { Authorization: 'Bearer ghp_static_secret' } });
+
+    const stdioEntry = service.processServerConfigForRuntime(config, {});
+
+    expect(stdioEntry.type).toBe('stdio');
+    expect(JSON.stringify(stdioEntry)).not.toContain('ghp_static_secret');
+  });
+
+  it('routes a native-OAuth server through the gateway only for callers that cannot run its OAuth', async () => {
+    const config = http({ oauth: { clientId: 'cli-owned' } });
+
+    const claude = service.processServerConfigForRuntime(config, { nativeHttpSupported: true });
+    const codex = service.processServerConfigForRuntime(config, { nativeHttpSupported: true, useMcpRemoteForNativeOAuth: true });
+
+    expect(claude.url).toBe(config.url);
+    expect(codex.url).toContain('/mcp-remote/');
+  });
+
+  it('keeps the native-HTTP passthrough when no credential was ever stored', async () => {
     // The savings the native-HTTP change bought (~15 processes / 516 MB per
     // session) come entirely from this case, so it must not regress into a wrap.
     const config = http({ headers: { Authorization: 'Bearer ghp_static' } });
@@ -168,6 +259,132 @@ describe('Codex and Claude Code reach the same credential (NIM-2433)', () => {
 
     expect(runtime).toEqual(config);
     expect(runtime.command).toBeUndefined();
+  });
+
+  describe('stored npx mcp-remote entries', () => {
+    const routes = (): Map<string, { descriptor: { serverUrl: string; headers: Record<string, string> } }> =>
+      (currentGateway as unknown as { routes: Map<string, { descriptor: { serverUrl: string; headers: Record<string, string> } }> }).routes;
+    let currentGateway: McpRemoteGateway;
+
+    beforeEach(() => {
+      currentGateway = new McpRemoteGateway(manager);
+      setMcpOAuthForTest({ gateway: currentGateway });
+    });
+
+    const keyOf = (url: string | undefined): string => (url ?? '').split('/mcp-remote/')[1] ?? '';
+
+    it('bridges a template-style entry on every caller, with no npx in the result', () => {
+      const config = {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', 'mcp-remote', 'https://mcp.linear.app/mcp'],
+        oauth: {},
+      } as MCPServerConfig;
+
+      const claude = service.processServerConfigForRuntime(config, { nativeHttpSupported: true });
+      const codex = service.processServerConfigForRuntime(config, { nativeHttpSupported: true, useMcpRemoteForNativeOAuth: true });
+      const stdioOnly = service.processServerConfigForRuntime(config, {});
+
+      expect(claude).toMatchObject({ type: 'http', url: expect.stringContaining('/mcp-remote/') });
+      expect(codex).toMatchObject({ type: 'http', url: claude.url });
+      expect(stdioOnly).toMatchObject({ type: 'stdio', command: process.execPath, args: [SHIM, claude.url] });
+      for (const entry of [claude, codex, stdioOnly]) {
+        expect(JSON.stringify(entry)).not.toContain('npx');
+      }
+      expect(routes().get(keyOf(claude.url))?.descriptor.serverUrl).toBe('https://mcp.linear.app/mcp');
+    });
+
+    it('resolves ${VAR} from the server env into the gateway route, not the CLI entry', () => {
+      const config = {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', 'mcp-remote@latest', 'https://api.githubcopilot.com/mcp/', '--header', 'Authorization:Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}'],
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'ghp_from_server_env' },
+      } as MCPServerConfig;
+
+      const entry = service.processServerConfigForRuntime(config, { nativeHttpSupported: true });
+
+      expect(entry.url).toContain('/mcp-remote/');
+      expect(JSON.stringify(entry)).not.toContain('ghp_from_server_env');
+      expect(routes().get(keyOf(entry.url))?.descriptor.headers).toEqual({ Authorization: 'Bearer ghp_from_server_env' });
+    });
+
+    it('keeps running mcp-remote when the command uses an option the gateway does not implement', () => {
+      const config = {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', 'mcp-remote', 'https://mcp.example.com/mcp', '--ignore-tool', 'delete_*'],
+      } as MCPServerConfig;
+
+      const entry = service.processServerConfigForRuntime(config, { nativeHttpSupported: true });
+
+      expect(entry.type).toBe('stdio');
+      expect(entry.args).toEqual(config.args);
+      expect(routes().size).toBe(0);
+    });
+
+    it('keeps running mcp-remote when a ${VAR} has no value in the server env', () => {
+      // mcp-remote would have read it from the environment it inherited;
+      // Nimbalyst does not consult its own process environment for it.
+      const config = {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', 'mcp-remote', 'https://mcp.example.com/mcp', '--header', 'Authorization:Bearer ${UNSET_TOKEN}'],
+        env: { UNSET_TOKEN: '' },
+      } as MCPServerConfig;
+
+      const entry = service.processServerConfigForRuntime(config, { nativeHttpSupported: true });
+
+      expect(entry.type).toBe('stdio');
+      expect(entry.args).toEqual(config.args);
+    });
+
+    it('resolves a ${VAR} defined only in the login shell into the gateway route, as mcp-remote did', () => {
+      __setShellEnvironmentForTest({ SHELL_ONLY_KEY: 'key-from-login-shell' });
+      try {
+        const httpConfig = http({ headers: { Authorization: 'Bearer ${SHELL_ONLY_KEY}' }, oauth: {} });
+        const command = {
+          type: 'stdio',
+          command: 'npx',
+          args: ['-y', 'mcp-remote', 'https://mcp.other.example/mcp', '--header', 'X-Api-Key:${SHELL_ONLY_KEY}'],
+        } as MCPServerConfig;
+
+        const httpEntry = service.processServerConfigForRuntime(httpConfig, { nativeHttpSupported: true });
+        const commandEntry = service.processServerConfigForRuntime(command, { nativeHttpSupported: true });
+
+        expect(routes().get(keyOf(httpEntry.url))?.descriptor.headers).toEqual({ Authorization: 'Bearer key-from-login-shell' });
+        expect(routes().get(keyOf(commandEntry.url))?.descriptor.headers).toEqual({ 'X-Api-Key': 'key-from-login-shell' });
+        for (const entry of [httpEntry, commandEntry]) {
+          expect(JSON.stringify(entry)).not.toContain('key-from-login-shell');
+        }
+      } finally {
+        __setShellEnvironmentForTest(null);
+      }
+    });
+
+    it('resolves ${VAR} in a direct HTTP header from the server env for a native-HTTP CLI', () => {
+      // A CLI's own expansion only sees its process environment, never the
+      // server's env block, so the template's key would otherwise go out literally.
+      const config = http({
+        headers: { Authorization: 'Bearer ${CORRIDOR_API_KEY}' },
+        env: { CORRIDOR_API_KEY: 'corridor-key' },
+      });
+
+      const entry = service.processServerConfigForRuntime(config, { nativeHttpSupported: true });
+
+      expect(entry.url).toBe(config.url);
+      expect(entry.headers).toEqual({ Authorization: 'Bearer corridor-key' });
+    });
+
+    it('validates a ${VAR} URL against the server env, as it will be used', () => {
+      const validate = (config: MCPServerConfig) =>
+        (service as unknown as { validateConfig(c: unknown): void }).validateConfig({ mcpServers: { zapier: config } });
+      const zapier = (value: string) =>
+        ({ type: 'http', url: '${ZAPIER_MCP_URL}', env: { ZAPIER_MCP_URL: value } }) as MCPServerConfig;
+
+      expect(() => validate(zapier('https://mcp.zapier.com/api/mcp/s/abc/mcp'))).not.toThrow();
+      expect(() => validate(zapier(''))).toThrow(/url must be a valid URL/);
+    });
   });
 });
 

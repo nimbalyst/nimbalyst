@@ -1172,27 +1172,16 @@ describe('OpenAICodexProvider', () => {
     expect(mcpServers.Customer_io_2).toEqual({
       url: 'https://mcp.customer.io/alternate',
     });
+    // In the app, Nimbalyst points OAuth servers at its own gateway before
+    // they get here. A config arriving unconverted is handed to Codex as plain
+    // Streamable HTTP; no OAuth helper is launched and no client secret is
+    // emitted into the Codex config or a command line.
     expect(mcpServers.slack_oauth).toEqual({
-      command: 'npx',
-      args: [
-        '-y',
-        'mcp-remote',
-        'https://mcp.slack.com/mcp',
-        '3118',
-        '--transport',
-        'http-only',
-        '--resource',
-        'https://slack.com',
-        '--auth-timeout',
-        '60',
-        '--header',
-        'X-Tenant:workspace-1',
-        '--static-oauth-client-metadata',
-        '{"scope":"channels:history chat:write"}',
-        '--static-oauth-client-info',
-        '{"client_id":"slack-client-id","client_secret":"slack-client-secret"}',
-      ],
+      url: 'https://mcp.slack.com/mcp',
+      http_headers: { 'X-Tenant': 'workspace-1' },
     });
+    expect(JSON.stringify(mcpServers)).not.toContain('slack-client-secret');
+    expect(JSON.stringify(mcpServers)).not.toContain('mcp-remote');
   });
 
   it('emits tool_call chunks from streamed MCP tool events', async () => {

@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Remote MCP servers that need OAuth are now signed in by Nimbalyst itself instead of the third-party `mcp-remote` helper, so they no longer need Node.js installed or an `npx` download. Sign-ins are stored encrypted in Nimbalyst's own storage, existing `mcp-remote` sign-ins are imported once, and Codex, Copilot and other agents reach these servers through a local gateway that keeps the tokens out of their configuration. Saved `npx mcp-remote <url>` servers that use only supported options are routed the same way without changing the saved config.
+- The Linear, GitHub, PostHog, Atlassian, Notion, Asana and Zapier server templates now add HTTP servers. The Asana template uses Asana's v2 endpoint, which needs an OAuth client ID; the v1 endpoint the template used before has been shut down.
 
 ### Fixed
 <!-- Bug fixes go here -->

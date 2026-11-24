@@ -188,6 +188,7 @@ import { onWorkspaceUsageChanged } from './file/GitWatcherLifecycle';
 // as standalone HTTP servers; their tool dispatch + schemas are imported by the
 // unified httpServer instead. Nothing to start/shutdown from here.
 import { generateMcpAuthToken, getMcpAuthToken } from './mcp/mcpAuth';
+import { configureMcpRemoteGatewayEndpoint } from './services/mcpOAuth';
 import {
   registerNimAssetSchemeAsPrivileged,
   registerNimAssetProtocolHandler,
@@ -1906,9 +1907,9 @@ app.whenReady().then(ownerOnly('app initialisation', async () => {
         for (const [name, config] of Object.entries(allServers)) {
             if (isMCPServerEnabledForProvider(config as MCPServerConfig, MCP_PROVIDER_IDS.CLAUDE_AGENT)) {
                 // Claude Code speaks HTTP natively, so a server with no OAuth is
-                // passed through instead of being wrapped in npx mcp-remote.
-                // A server holding an mcp-remote token still gets the wrapper --
-                // the config alone cannot tell those two apart (NIM-2433).
+                // passed through instead of being routed through the gateway.
+                // A server Nimbalyst holds a credential for still goes through
+                // it -- the config alone cannot tell those two apart (NIM-2433).
                 const claudeHttp = await mcpConfigService.resolveMcpRemoteOptions(
                     config as MCPServerConfig,
                     { nativeHttpSupported: true }
@@ -1942,7 +1943,7 @@ app.whenReady().then(ownerOnly('app initialisation', async () => {
         for (const [name, config] of Object.entries(allServers)) {
             if (isMCPServerEnabledForProvider(config as MCPServerConfig, MCP_PROVIDER_IDS.CODEX)) {
                 // Codex speaks Streamable HTTP natively. Rewriting a server that is
-                // also present in ~/.codex/config.toml to an mcp-remote stdio entry
+                // also present in ~/.codex/config.toml to a stdio entry
                 // makes Codex deep-merge `command` with the persisted `url`, which
                 // is an invalid mixed-transport configuration.
                 const codexHttp = await mcpConfigService.resolveMcpRemoteOptions(
@@ -1959,7 +1960,7 @@ app.whenReady().then(ownerOnly('app initialisation', async () => {
                 }
                 enabledServers[name] = mcpConfigService.processServerConfigForRuntime(
                     config as MCPServerConfig,
-                    codexHttp
+                    { ...codexHttp, useMcpRemoteForNativeOAuth: true }
                 );
             }
         }
@@ -1984,7 +1985,9 @@ app.whenReady().then(ownerOnly('app initialisation', async () => {
                     logger.mcp.info(`[MCP] Skipping unauthorized OAuth server for Codex ACP: ${name}`);
                     continue;
                 }
-                enabledServers[name] = mcpConfigService.processServerConfigForRuntime(config as any);
+                enabledServers[name] = mcpConfigService.processServerConfigForRuntime(config as any, {
+                    useMcpRemoteForNativeOAuth: true,
+                });
             }
         }
         return enabledServers;
@@ -2040,7 +2043,9 @@ app.whenReady().then(ownerOnly('app initialisation', async () => {
                     logger.mcp.info(`[MCP] Skipping unauthorized OAuth server for Copilot: ${name}`);
                     continue;
                 }
-                enabledServers[name] = mcpConfigService.processServerConfigForRuntime(config as any);
+                enabledServers[name] = mcpConfigService.processServerConfigForRuntime(config as any, {
+                    useMcpRemoteForNativeOAuth: true,
+                });
             }
         }
         return enabledServers;
@@ -2106,7 +2111,7 @@ app.whenReady().then(ownerOnly('app initialisation', async () => {
         for (const [name, config] of Object.entries(allServers)) {
             if (isMCPServerEnabledForProvider(config as MCPServerConfig, MCP_PROVIDER_IDS.CLAUDE_AGENT)) {
                 // Same as the Agent path: the CLI speaks HTTP natively, but a
-                // server with a cached mcp-remote token still needs the wrapper.
+                // server Nimbalyst holds a credential for still needs the gateway.
                 const claudeHttp = await mcpConfigService.resolveMcpRemoteOptions(
                     config as MCPServerConfig,
                     { nativeHttpSupported: true }
@@ -2740,6 +2745,9 @@ app.whenReady().then(ownerOnly('app initialisation', async () => {
 
         // Store the actual port for providers to use
         (global as any).mcpServerPort = result.port;
+        // Remote MCP servers reach their credentials through the gateway on
+        // this same server (docs/MCP_OAUTH.md).
+        configureMcpRemoteGatewayEndpoint({ port: result.port, getToken: getMcpAuthToken });
 
         // MCP consolidation: all internal MCP-server enablement (port, per-ext
         // servers, tracker opt-out) goes through the shared registry once —

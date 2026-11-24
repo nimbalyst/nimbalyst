@@ -376,6 +376,11 @@ export async function initEnhancedPath(): Promise<void> {
   }
 }
 
+/** Test-only: seed the cached login-shell environment. */
+export function __setShellEnvironmentForTest(env: Record<string, string> | null): void {
+  cachedShellEnvironment = env;
+}
+
 /** Test-only: seed the detection cache without spawning a login shell. */
 export function __setDetectedPathsForTest(detected: DetectedPaths | null): void {
   cachedDetectedPaths = detected;

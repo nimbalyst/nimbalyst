@@ -20,3 +20,20 @@ describe('withStaticClientId', () => {
       .toEqual({ callbackPort: 3118, staticClientInfo: undefined });
   });
 });
+
+describe('withRedirectUri', () => {
+  it('drops the oauth block when clearing the only setting, so a static-key server is not bridged', async () => {
+    const { withRedirectUri } = await import('./mcpStaticClientId');
+    expect(withRedirectUri({ redirectUri: 'http://localhost:4000/cb' }, ' ')).toBeUndefined();
+    expect(withRedirectUri({ staticClientInfo: { client_id: 'abc' } }, 'http://localhost:4000/cb'))
+      .toEqual({ staticClientInfo: { client_id: 'abc' }, redirectUri: 'http://localhost:4000/cb' });
+  });
+
+  it('accepts only http URIs with a port, which the local callback listener can serve', async () => {
+    const { isUsableRedirectUri } = await import('./mcpStaticClientId');
+    expect(isUsableRedirectUri('http://localhost:8765/oauth/callback')).toBe(true);
+    expect(isUsableRedirectUri('https://localhost:8765/oauth/callback')).toBe(false);
+    expect(isUsableRedirectUri('http://localhost/oauth/callback')).toBe(false);
+    expect(isUsableRedirectUri('not a url')).toBe(false);
+  });
+});

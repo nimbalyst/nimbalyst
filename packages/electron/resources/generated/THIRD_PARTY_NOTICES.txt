@@ -3,12 +3,12 @@ Nimbalyst Third-Party Notices
 This file aggregates license and notice texts for third-party packages reachable
 from the Electron app, runtime package, and built-in extensions.
 
-Package count: 1008
+Package count: 971
 Packages requiring manual review: 0
 Approved exceptions (non-permissive licenses, manually reviewed): 3
 
 Approved exceptions:
-- @anthropic-ai/claude-agent-sdk@0.3.321 (Anthropic Commercial): Anthropic commercial license (https://code.claude.com/docs/en/legal-and-compliance). Permits use by developers writing code locally, which is exactly how Nimbalyst integrates the SDK. Used unmodified.
+- @anthropic-ai/claude-agent-sdk@0.3.329 (Anthropic Commercial): Anthropic commercial license (https://code.claude.com/docs/en/legal-and-compliance). Permits use by developers writing code locally, which is exactly how Nimbalyst integrates the SDK. Used unmodified.
 - elkjs@0.11.1 (EPL-2.0): Eclipse Public License 2.0. Bundled unmodified as a JavaScript library. EPL-2.0 is a file-level weak copyleft that permits this without affecting Nimbalyst's licensing; only modifications to elkjs itself would need to be released under EPL-2.0.
 - libheif-js@1.19.8 (LGPL-3.0): GNU Lesser GPL 3.0. Bundled unmodified as a JavaScript module loaded at runtime from node_modules; users can substitute their own build. License text is included in THIRD_PARTY_NOTICES.txt. No copyleft contagion to Nimbalyst's source.
 
@@ -241,7 +241,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-@anthropic-ai/claude-agent-sdk@0.3.321
+@anthropic-ai/claude-agent-sdk@0.3.329
 Selected license: Unknown
 Declared license: SEE LICENSE IN README.md
 Install paths: node_modules/@anthropic-ai/claude-agent-sdk
@@ -316,9 +316,9 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 @braintree/sanitize-url@6.0.2
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@braintree/sanitize-url
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@braintree/sanitize-url
 
---- LICENSE (node_modules/@braintree/sanitize-url/LICENSE) ---
+--- LICENSE (node_modules/@excalidraw/excalidraw/node_modules/@braintree/sanitize-url/LICENSE) ---
 MIT License
 
 Copyright (c) 2017 Braintree
@@ -4592,7 +4592,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-@openai/codex@0.167.0
+@openai/codex@0.171.0
 Selected license: Apache-2.0
 Declared license: Apache-2.0
 Install paths: node_modules/@openai/codex
@@ -4601,7 +4601,7 @@ Issues: No license file found in package directory
 No license file found.
 
 ================================================================================
-@openai/codex-sdk@0.167.0
+@openai/codex-sdk@0.171.0
 Selected license: Apache-2.0
 Declared license: Apache-2.0
 Install paths: node_modules/@openai/codex-sdk
@@ -5508,7 +5508,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 @radix-ui/primitive@1.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/primitive, node_modules/@radix-ui/react-roving-focus/node_modules/@radix-ui/primitive
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/primitive
 Issues: No license file found in package directory
 
 No license file found.
@@ -5535,7 +5535,7 @@ No license file found.
 @radix-ui/react-collection@1.0.1
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-collection
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-roving-focus/node_modules/@radix-ui/react-collection
 Issues: No license file found in package directory
 
 No license file found.
@@ -5544,7 +5544,7 @@ No license file found.
 @radix-ui/react-compose-refs@1.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-compose-refs, node_modules/@radix-ui/react-collection/node_modules/@radix-ui/react-compose-refs, node_modules/@radix-ui/react-roving-focus/node_modules/@radix-ui/react-compose-refs
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-presence/node_modules/@radix-ui/react-compose-refs, node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-primitive/node_modules/@radix-ui/react-slot/node_modules/@radix-ui/react-compose-refs, node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-roving-focus/node_modules/@radix-ui/react-compose-refs
 Issues: No license file found in package directory
 
 No license file found.
@@ -5562,7 +5562,7 @@ No license file found.
 @radix-ui/react-context@1.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-context
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-context
 Issues: No license file found in package directory
 
 No license file found.
@@ -5580,7 +5580,7 @@ No license file found.
 @radix-ui/react-direction@1.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-direction
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-direction
 Issues: No license file found in package directory
 
 No license file found.
@@ -5616,7 +5616,7 @@ No license file found.
 @radix-ui/react-id@1.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-id
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-id
 Issues: No license file found in package directory
 
 No license file found.
@@ -5661,7 +5661,7 @@ No license file found.
 @radix-ui/react-presence@1.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-presence
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-presence
 Issues: No license file found in package directory
 
 No license file found.
@@ -5679,7 +5679,7 @@ No license file found.
 @radix-ui/react-primitive@1.0.1
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-primitive, node_modules/@radix-ui/react-collection/node_modules/@radix-ui/react-primitive, node_modules/@radix-ui/react-roving-focus/node_modules/@radix-ui/react-primitive
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-primitive
 Issues: No license file found in package directory
 
 No license file found.
@@ -5697,7 +5697,7 @@ No license file found.
 @radix-ui/react-roving-focus@1.0.2
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-roving-focus
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-roving-focus
 Issues: No license file found in package directory
 
 No license file found.
@@ -5706,7 +5706,7 @@ No license file found.
 @radix-ui/react-slot@1.0.1
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-slot, node_modules/@radix-ui/react-collection/node_modules/@radix-ui/react-slot, node_modules/@radix-ui/react-roving-focus/node_modules/@radix-ui/react-slot
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-primitive/node_modules/@radix-ui/react-slot, node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-roving-focus/node_modules/@radix-ui/react-collection/node_modules/@radix-ui/react-slot
 Issues: No license file found in package directory
 
 No license file found.
@@ -5724,7 +5724,7 @@ No license file found.
 @radix-ui/react-tabs@1.0.2
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-tabs
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs
 Issues: No license file found in package directory
 
 No license file found.
@@ -5733,7 +5733,7 @@ No license file found.
 @radix-ui/react-use-callback-ref@1.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-roving-focus/node_modules/@radix-ui/react-use-callback-ref, node_modules/@radix-ui/react-use-controllable-state/node_modules/@radix-ui/react-use-callback-ref
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-roving-focus/node_modules/@radix-ui/react-use-callback-ref, node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-use-controllable-state/node_modules/@radix-ui/react-use-callback-ref
 Issues: No license file found in package directory
 
 No license file found.
@@ -5751,7 +5751,7 @@ No license file found.
 @radix-ui/react-use-controllable-state@1.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-use-controllable-state
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-use-controllable-state
 Issues: No license file found in package directory
 
 No license file found.
@@ -5778,7 +5778,7 @@ No license file found.
 @radix-ui/react-use-layout-effect@1.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/@radix-ui/react-id/node_modules/@radix-ui/react-use-layout-effect, node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-use-layout-effect
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-id/node_modules/@radix-ui/react-use-layout-effect, node_modules/@excalidraw/excalidraw/node_modules/@radix-ui/react-tabs/node_modules/@radix-ui/react-presence/node_modules/@radix-ui/react-use-layout-effect
 Issues: No license file found in package directory
 
 No license file found.
@@ -8375,37 +8375,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-accepts@1.3.8
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/accepts
-
---- LICENSE (node_modules/mcp-remote/node_modules/accepts/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2014 Jonathan Ong <me@jongleberry.com>
-Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com>
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 accepts@2.0.0
 Selected license: MIT
 Declared license: MIT
@@ -8795,9 +8764,9 @@ IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 argparse@1.0.10
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/argparse
+Install paths: node_modules/front-matter/node_modules/argparse
 
---- LICENSE (node_modules/argparse/LICENSE) ---
+--- LICENSE (node_modules/front-matter/node_modules/argparse/LICENSE) ---
 (The MIT License)
 
 Copyright (C) 2012 by Vitaly Puzrin
@@ -9108,35 +9077,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-array-flatten@1.1.1
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/array-flatten
-
---- LICENSE (node_modules/array-flatten/LICENSE) ---
-The MIT License (MIT)
-
-Copyright (c) 2014 Blake Embrey (hello@blakeembrey.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-================================================================================
 asynckit@0.4.0
 Selected license: MIT
 Declared license: MIT
@@ -9396,37 +9336,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-================================================================================
-body-parser@1.20.9
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/body-parser
-
---- LICENSE (node_modules/mcp-remote/node_modules/body-parser/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2014 Jonathan Ong <me@jongleberry.com>
-Copyright (c) 2014-2015 Douglas Christopher Wilson <doug@somethingdoug.com>
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 body-parser@2.4.0
@@ -9819,23 +9728,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-bundle-name@4.1.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/bundle-name
-
---- license (node_modules/bundle-name/license) ---
-MIT License
-
-Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 bytes@3.1.2
 Selected license: MIT
 Declared license: MIT
@@ -10004,9 +9896,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 character-entities@1.2.4
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/character-entities
+Install paths: node_modules/refractor/node_modules/character-entities
 
---- license (node_modules/character-entities/license) ---
+--- license (node_modules/refractor/node_modules/character-entities/license) ---
 (The MIT License)
 
 Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>
@@ -10094,9 +9986,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 character-entities-legacy@1.1.4
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/parse-entities/node_modules/character-entities-legacy
+Install paths: node_modules/refractor/node_modules/character-entities-legacy
 
---- license (node_modules/parse-entities/node_modules/character-entities-legacy/license) ---
+--- license (node_modules/refractor/node_modules/character-entities-legacy/license) ---
 (The MIT License)
 
 Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>
@@ -10154,9 +10046,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 character-reference-invalid@1.1.4
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/character-reference-invalid
+Install paths: node_modules/refractor/node_modules/character-reference-invalid
 
---- license (node_modules/character-reference-invalid/license) ---
+--- license (node_modules/refractor/node_modules/character-reference-invalid/license) ---
 (The MIT License)
 
 Copyright (c) 2015 Titus Wormer <tituswormer@gmail.com>
@@ -10475,9 +10367,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SO
 chokidar@3.6.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/chokidar
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/chokidar
 
---- LICENSE (node_modules/chokidar/LICENSE) ---
+--- LICENSE (node_modules/@excalidraw/excalidraw/node_modules/chokidar/LICENSE) ---
 The MIT License (MIT)
 
 Copyright (c) 2012-2019 Paul Miller (https://paulmillr.com), Elan Shanker
@@ -10692,9 +10584,9 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 clsx@1.1.1
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/clsx
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/clsx
 
---- license (node_modules/clsx/license) ---
+--- license (node_modules/@excalidraw/excalidraw/node_modules/clsx/license) ---
 MIT License
 
 Copyright (c) Luke Edwards <luke.edwards05@gmail.com> (lukeed.com)
@@ -11140,36 +11032,6 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-content-disposition@0.5.4
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/content-disposition
-
---- LICENSE (node_modules/mcp-remote/node_modules/content-disposition/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2014-2017 Douglas Christopher Wilson
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 content-disposition@1.1.0
 Selected license: MIT
 Declared license: MIT
@@ -11319,15 +11181,6 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
-cookie-signature@1.0.7
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/cookie-signature
-Issues: No license file found in package directory
-
-No license file found.
 
 ================================================================================
 cookie-signature@1.2.2
@@ -12728,32 +12581,6 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-debug@2.6.9
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/debug
-
---- LICENSE (node_modules/mcp-remote/node_modules/debug/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2014 TJ Holowaychuk <tj@vision-media.ca>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software 
-and associated documentation files (the 'Software'), to deal in the Software without restriction, 
-including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, 
-and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial 
-portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT 
-LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. 
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, 
-WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE 
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 debug@4.4.3
 Selected license: MIT
 Declared license: MIT
@@ -12900,40 +12727,6 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-default-browser@5.5.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/default-browser
-
---- license (node_modules/default-browser/license) ---
-MIT License
-
-Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
-default-browser-id@5.0.1
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/default-browser-id
-
---- license (node_modules/default-browser-id/license) ---
-MIT License
-
-Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 define-data-property@1.1.4
 Selected license: MIT
 Declared license: MIT
@@ -12961,23 +12754,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-================================================================================
-define-lazy-prop@3.0.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/define-lazy-prop
-
---- license (node_modules/define-lazy-prop/license) ---
-MIT License
-
-Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 define-properties@1.2.1
@@ -13098,37 +12874,6 @@ Install paths: node_modules/dequal
 The MIT License (MIT)
 
 Copyright (c) Luke Edwards <luke.edwards05@gmail.com> (lukeed.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-================================================================================
-destroy@1.2.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/destroy
-
---- LICENSE (node_modules/destroy/LICENSE) ---
-
-The MIT License (MIT)
-
-Copyright (c) 2014 Jonathan Ong me@jongleberry.com
-Copyright (c) 2015-2022 Douglas Christopher Wilson doug@somethingdoug.com
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -15524,38 +15269,6 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-express@4.22.3
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/express
-
---- LICENSE (node_modules/mcp-remote/node_modules/express/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2009-2014 TJ Holowaychuk <tj@vision-media.ca>
-Copyright (c) 2013-2014 Roman Shtylman <shtylman+expressjs@gmail.com>
-Copyright (c) 2014-2015 Douglas Christopher Wilson <doug@somethingdoug.com>
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 express@5.2.1
 Selected license: MIT
 Declared license: MIT
@@ -15990,36 +15703,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ================================================================================
-finalhandler@1.3.2
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/finalhandler
-
---- LICENSE (node_modules/mcp-remote/node_modules/finalhandler/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2014-2022 Douglas Christopher Wilson <doug@somethingdoug.com>
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 finalhandler@2.1.1
 Selected license: MIT
 Declared license: MIT
@@ -16053,9 +15736,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 find-up@3.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/find-up
+Install paths: node_modules/pkg-up/node_modules/find-up
 
---- license (node_modules/find-up/license) ---
+--- license (node_modules/pkg-up/node_modules/find-up/license) ---
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com)
@@ -16686,37 +16369,6 @@ express Statement of Purpose.
     this CC0 or use of the Work.
 
 ================================================================================
-fresh@0.5.2
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/fresh
-
---- LICENSE (node_modules/mcp-remote/node_modules/fresh/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2012 TJ Holowaychuk <tj@vision-media.ca>
-Copyright (c) 2016-2017 Douglas Christopher Wilson <doug@somethingdoug.com>
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 fresh@2.0.0
 Selected license: MIT
 Declared license: MIT
@@ -16768,9 +16420,9 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 fs-extra@10.1.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/fs-extra
+Install paths: node_modules/electron-updater/node_modules/fs-extra
 
---- LICENSE (node_modules/fs-extra/LICENSE) ---
+--- LICENSE (node_modules/electron-updater/node_modules/fs-extra/LICENSE) ---
 (The MIT License)
 
 Copyright (c) 2011-2017 JP Richardson
@@ -17153,9 +16805,9 @@ software or this license, under any kind of legal claim.***
 glob-parent@5.1.2
 Selected license: ISC
 Declared license: ISC
-Install paths: node_modules/glob-parent
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/glob-parent
 
---- LICENSE (node_modules/glob-parent/LICENSE) ---
+--- LICENSE (node_modules/@excalidraw/excalidraw/node_modules/glob-parent/LICENSE) ---
 The ISC License
 
 Copyright (c) 2015, 2019 Elan Shanker
@@ -17761,9 +17413,33 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 hast-util-parse-selector@4.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/hastscript/node_modules/hast-util-parse-selector
+Install paths: node_modules/hast-util-from-dom/node_modules/hast-util-parse-selector, node_modules/hast-util-from-parse5/node_modules/hast-util-parse-selector
 
---- license (node_modules/hastscript/node_modules/hast-util-parse-selector/license) ---
+--- license (node_modules/hast-util-from-dom/node_modules/hast-util-parse-selector/license) ---
+(The MIT License)
+
+Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+--- license (node_modules/hast-util-from-parse5/node_modules/hast-util-parse-selector/license) ---
 (The MIT License)
 
 Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
@@ -17941,9 +17617,33 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 hastscript@9.0.1
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/hastscript
+Install paths: node_modules/hast-util-from-dom/node_modules/hastscript, node_modules/hast-util-from-parse5/node_modules/hastscript
 
---- license (node_modules/hastscript/license) ---
+--- license (node_modules/hast-util-from-dom/node_modules/hastscript/license) ---
+(The MIT License)
+
+Copyright (c) Titus Wormer <tituswormer@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+--- license (node_modules/hast-util-from-parse5/node_modules/hastscript/license) ---
 (The MIT License)
 
 Copyright (c) Titus Wormer <tituswormer@gmail.com>
@@ -17980,9 +17680,40 @@ No license file found.
 highlight.js@10.7.3
 Selected license: BSD-3-Clause
 Declared license: BSD-3-Clause
-Install paths: node_modules/highlight.js
+Install paths: node_modules/react-syntax-highlighter/node_modules/highlight.js, node_modules/lowlight/node_modules/highlight.js
 
---- LICENSE (node_modules/highlight.js/LICENSE) ---
+--- LICENSE (node_modules/react-syntax-highlighter/node_modules/highlight.js/LICENSE) ---
+BSD 3-Clause License
+
+Copyright (c) 2006, Ivan Sagalaev.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the copyright holder nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--- LICENSE (node_modules/lowlight/node_modules/highlight.js/LICENSE) ---
 BSD 3-Clause License
 
 Copyright (c) 2006, Ivan Sagalaev.
@@ -18264,34 +17995,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ================================================================================
-iconv-lite@0.4.24
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/iconv-lite
-
---- LICENSE (node_modules/mcp-remote/node_modules/iconv-lite/LICENSE) ---
-Copyright (c) 2011 Alexander Shtuchkin
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 iconv-lite@0.6.3
 Selected license: MIT
 Declared license: MIT
@@ -18513,9 +18216,9 @@ All rights reserved. (MIT Licensed)
 immediate@3.0.6
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/immediate
+Install paths: node_modules/lie/node_modules/immediate
 
---- LICENSE.txt (node_modules/immediate/LICENSE.txt) ---
+--- LICENSE.txt (node_modules/lie/node_modules/immediate/LICENSE.txt) ---
 Copyright (c) 2012 Barnesandnoble.com, llc, Donavon West, Domenic Denicola, Brian Cavalier
 
 Permission is hereby granted, free of charge, to any person obtaining
@@ -18570,9 +18273,9 @@ SOFTWARE.
 immer@11.1.8
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/immer
+Install paths: node_modules/@reduxjs/toolkit/node_modules/immer
 
---- LICENSE (node_modules/immer/LICENSE) ---
+--- LICENSE (node_modules/@reduxjs/toolkit/node_modules/immer/LICENSE) ---
 MIT License
 
 Copyright (c) 2017 Michel Weststrate
@@ -18599,9 +18302,9 @@ SOFTWARE.
 immutable@4.3.9
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/immutable
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/immutable
 
---- LICENSE (node_modules/immutable/LICENSE) ---
+--- LICENSE (node_modules/@excalidraw/excalidraw/node_modules/immutable/LICENSE) ---
 MIT License
 
 Copyright (c) 2014-present, Lee Byron and other contributors.
@@ -18743,9 +18446,9 @@ THE SOFTWARE.
 is-alphabetical@1.0.4
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/is-alphabetical
+Install paths: node_modules/refractor/node_modules/is-alphabetical
 
---- license (node_modules/is-alphabetical/license) ---
+--- license (node_modules/refractor/node_modules/is-alphabetical/license) ---
 (The MIT License)
 
 Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
@@ -18803,9 +18506,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 is-alphanumerical@1.0.4
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/is-alphanumerical
+Install paths: node_modules/refractor/node_modules/is-alphanumerical
 
---- license (node_modules/is-alphanumerical/license) ---
+--- license (node_modules/refractor/node_modules/is-alphanumerical/license) ---
 (The MIT License)
 
 Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
@@ -18880,9 +18583,9 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 is-decimal@1.0.4
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/is-decimal
+Install paths: node_modules/refractor/node_modules/is-decimal
 
---- license (node_modules/is-decimal/license) ---
+--- license (node_modules/refractor/node_modules/is-decimal/license) ---
 (The MIT License)
 
 Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
@@ -18935,23 +18638,6 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
-is-docker@3.0.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/is-docker
-
---- license (node_modules/is-docker/license) ---
-MIT License
-
-Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 is-extglob@2.1.1
@@ -19032,9 +18718,9 @@ THE SOFTWARE.
 is-hexadecimal@1.0.4
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/is-hexadecimal
+Install paths: node_modules/refractor/node_modules/is-hexadecimal
 
---- license (node_modules/is-hexadecimal/license) ---
+--- license (node_modules/refractor/node_modules/is-hexadecimal/license) ---
 (The MIT License)
 
 Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
@@ -19087,23 +18773,6 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
-is-inside-container@1.0.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/is-inside-container
-
---- license (node_modules/is-inside-container/license) ---
-MIT License
-
-Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 is-number@7.0.0
@@ -19196,27 +18865,10 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ================================================================================
-is-wsl@3.1.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/is-wsl
-
---- license (node_modules/is-wsl/license) ---
-MIT License
-
-Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 isarray@1.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/isarray
+Install paths: node_modules/jszip/node_modules/isarray
 Issues: No license file found in package directory
 
 No license file found.
@@ -20985,9 +20637,9 @@ The above copyright notice and this permission notice shall be included in all c
 locate-path@3.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/locate-path
+Install paths: node_modules/pkg-up/node_modules/locate-path
 
---- license (node_modules/locate-path/license) ---
+--- license (node_modules/pkg-up/node_modules/locate-path/license) ---
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com)
@@ -21648,9 +21300,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 lru-cache@11.5.1
 Selected license: BlueOak-1.0.0
 Declared license: BlueOak-1.0.0
-Install paths: node_modules/lru-cache
+Install paths: node_modules/path-scurry/node_modules/lru-cache
 
---- LICENSE.md (node_modules/lru-cache/LICENSE.md) ---
+--- LICENSE.md (node_modules/path-scurry/node_modules/lru-cache/LICENSE.md) ---
 # Blue Oak Model License
 
 Version 1.0.0
@@ -22088,35 +21740,6 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-
-================================================================================
-mcp-remote@0.1.38
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote
-
---- LICENSE (node_modules/mcp-remote/LICENSE) ---
-MIT License
-
-Copyright (c) 2025 Cloudflare, Inc.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 
 ================================================================================
 mdast-util-find-and-replace@3.0.2
@@ -22600,36 +22223,6 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-media-typer@0.3.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/media-typer
-
---- LICENSE (node_modules/mcp-remote/node_modules/media-typer/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2014 Douglas Christopher Wilson
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 media-typer@1.1.0
 Selected license: MIT
 Declared license: MIT
@@ -22639,37 +22232,6 @@ Install paths: node_modules/media-typer
 (The MIT License)
 
 Copyright (c) 2014-2017 Douglas Christopher Wilson
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
-merge-descriptors@1.0.3
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/merge-descriptors
-
---- LICENSE (node_modules/mcp-remote/node_modules/merge-descriptors/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2013 Jonathan Ong <me@jongleberry.com>
-Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com>
 
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the
@@ -22737,37 +22299,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-================================================================================
-methods@1.1.2
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/methods
-
---- LICENSE (node_modules/methods/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2013-2014 TJ Holowaychuk <tj@vision-media.ca>
-Copyright (c) 2015-2016 Douglas Christopher Wilson <doug@somethingdoug.com>
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 micromark@4.0.2
@@ -23640,35 +23171,6 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-mime@1.6.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/mime
-
---- LICENSE (node_modules/mcp-remote/node_modules/mime/LICENSE) ---
-The MIT License (MIT)
-
-Copyright (c) 2010 Benjamin Thomas, Robert Kieffer
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-================================================================================
 mime@3.0.0
 Selected license: MIT
 Declared license: MIT
@@ -23701,9 +23203,9 @@ THE SOFTWARE.
 mime-db@1.52.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/mime-db
+Install paths: node_modules/form-data/node_modules/mime-db
 
---- LICENSE (node_modules/mime-db/LICENSE) ---
+--- LICENSE (node_modules/form-data/node_modules/mime-db/LICENSE) ---
 (The MIT License)
 
 Copyright (c) 2014 Jonathan Ong <me@jongleberry.com>
@@ -23763,34 +23265,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 mime-types@2.1.35
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/form-data/node_modules/mime-types, node_modules/mcp-remote/node_modules/mime-types
+Install paths: node_modules/form-data/node_modules/mime-types
 
 --- LICENSE (node_modules/form-data/node_modules/mime-types/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2014 Jonathan Ong <me@jongleberry.com>
-Copyright (c) 2015 Douglas Christopher Wilson <doug@somethingdoug.com>
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
---- LICENSE (node_modules/mcp-remote/node_modules/mime-types/LICENSE) ---
 (The MIT License)
 
 Copyright (c) 2014 Jonathan Ong <me@jongleberry.com>
@@ -24128,35 +23605,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-ms@2.0.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/debug/node_modules/ms
-
---- license.md (node_modules/mcp-remote/node_modules/debug/node_modules/ms/license.md) ---
-The MIT License (MIT)
-
-Copyright (c) 2016 Zeit, Inc.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
 ms@2.1.3
 Selected license: MIT
 Declared license: MIT
@@ -24218,9 +23666,31 @@ THE SOFTWARE.
 nanoid@3.3.18
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/nanoid
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/nanoid, node_modules/postcss/node_modules/nanoid
 
---- LICENSE (node_modules/nanoid/LICENSE) ---
+--- LICENSE (node_modules/@excalidraw/excalidraw/node_modules/nanoid/LICENSE) ---
+The MIT License (MIT)
+
+Copyright 2017 Andrey Sitnik <andrey@sitnik.ru>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+--- LICENSE (node_modules/postcss/node_modules/nanoid/LICENSE) ---
 The MIT License (MIT)
 
 Copyright 2017 Andrey Sitnik <andrey@sitnik.ru>
@@ -24293,38 +23763,6 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-negotiator@0.6.3
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/negotiator
-
---- LICENSE (node_modules/mcp-remote/node_modules/negotiator/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2012-2014 Federico Romero
-Copyright (c) 2012-2014 Isaac Z. Schlueter
-Copyright (c) 2014-2015 Douglas Christopher Wilson
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 negotiator@1.0.0
 Selected license: MIT
 Declared license: MIT
@@ -24360,9 +23798,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 node-addon-api@7.1.1
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/node-addon-api
+Install paths: node_modules/node-pty/node_modules/node-addon-api
 
---- LICENSE.md (node_modules/node-addon-api/LICENSE.md) ---
+--- LICENSE.md (node_modules/node-pty/node_modules/node-addon-api/LICENSE.md) ---
 The MIT License (MIT)
 
 Copyright (c) 2017 [Node.js API collaborators](https://github.com/nodejs/node-addon-api#collaborators)
@@ -24841,23 +24279,6 @@ Issues: No license file found in package directory
 No license file found.
 
 ================================================================================
-open@10.2.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/open
-
---- license (node_modules/open/license) ---
-MIT License
-
-Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 open-color@1.9.1
 Selected license: MIT
 Declared license: MIT
@@ -25308,9 +24729,9 @@ Install paths: node_modules/openai
 p-limit@2.3.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/p-locate/node_modules/p-limit, node_modules/qrcode/node_modules/p-limit
+Install paths: node_modules/pkg-up/node_modules/p-limit, node_modules/qrcode/node_modules/p-limit
 
---- license (node_modules/p-locate/node_modules/p-limit/license) ---
+--- license (node_modules/pkg-up/node_modules/p-limit/license) ---
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com)
@@ -25336,9 +24757,9 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 p-locate@3.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/p-locate
+Install paths: node_modules/pkg-up/node_modules/p-locate
 
---- license (node_modules/p-locate/license) ---
+--- license (node_modules/pkg-up/node_modules/p-locate/license) ---
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com)
@@ -25638,9 +25059,9 @@ OR OTHER DEALINGS IN THE SOFTWARE.
 parse-entities@2.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/parse-entities
+Install paths: node_modules/refractor/node_modules/parse-entities
 
---- license (node_modules/parse-entities/license) ---
+--- license (node_modules/refractor/node_modules/parse-entities/license) ---
 (The MIT License)
 
 Copyright (c) 2015 Titus Wormer <mailto:tituswormer@gmail.com>
@@ -25786,9 +25207,9 @@ SOFTWARE.
 path-exists@3.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/locate-path/node_modules/path-exists
+Install paths: node_modules/pkg-up/node_modules/path-exists
 
---- license (node_modules/locate-path/node_modules/path-exists/license) ---
+--- license (node_modules/pkg-up/node_modules/path-exists/license) ---
 The MIT License (MIT)
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (sindresorhus.com)
@@ -25907,35 +25328,6 @@ No contributor can revoke this license.
 without any warranty or condition, and no contributor
 will be liable to anyone for any damages related to this
 software or this license, under any kind of legal claim.***
-
-================================================================================
-path-to-regexp@0.1.13
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/path-to-regexp
-
---- LICENSE (node_modules/mcp-remote/node_modules/path-to-regexp/LICENSE) ---
-The MIT License (MIT)
-
-Copyright (c) 2014 Blake Embrey (hello@blakeembrey.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
 
 ================================================================================
 path-to-regexp@8.4.2
@@ -26345,7 +25737,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 picomatch@2.3.2
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/anymatch/node_modules/picomatch, node_modules/readdirp/node_modules/picomatch
+Install paths: node_modules/anymatch/node_modules/picomatch, node_modules/@excalidraw/excalidraw/node_modules/picomatch
 
 --- LICENSE (node_modules/anymatch/node_modules/picomatch/LICENSE) ---
 The MIT License (MIT)
@@ -26370,7 +25762,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
---- LICENSE (node_modules/readdirp/node_modules/picomatch/LICENSE) ---
+--- LICENSE (node_modules/@excalidraw/excalidraw/node_modules/picomatch/LICENSE) ---
 The MIT License (MIT)
 
 Copyright (c) 2017-present, Jon Schlinkert.
@@ -26688,9 +26080,9 @@ THE SOFTWARE.
 pngjs@6.0.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/pngjs
+Install paths: node_modules/pixelmatch/node_modules/pngjs
 
---- LICENSE (node_modules/pngjs/LICENSE) ---
+--- LICENSE (node_modules/pixelmatch/node_modules/pngjs/LICENSE) ---
 pngjs2 original work Copyright (c) 2015 Luke Page & Original Contributors
 pngjs derived work Copyright (c) 2012 Kuba Niegowski
 
@@ -33972,43 +33364,6 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-qs@6.16.2
-Selected license: BSD-3-Clause
-Declared license: BSD-3-Clause
-Install paths: node_modules/mcp-remote/node_modules/qs
-
---- LICENSE.md (node_modules/mcp-remote/node_modules/qs/LICENSE.md) ---
-BSD 3-Clause License
-
-Copyright (c) 2014, Nathan LaFreniere and other [contributors](https://github.com/ljharb/qs/graphs/contributors)
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice, this
-   list of conditions and the following disclaimer.
-
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-
-3. Neither the name of the copyright holder nor the names of its
-   contributors may be used to endorse or promote products derived from
-   this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-================================================================================
 qs@6.17.1
 Selected license: BSD-3-Clause
 Declared license: BSD-3-Clause
@@ -34104,36 +33459,6 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
-raw-body@2.5.3
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/raw-body
-
---- LICENSE (node_modules/mcp-remote/node_modules/raw-body/LICENSE) ---
-The MIT License (MIT)
-
-Copyright (c) 2013-2014 Jonathan Ong <me@jongleberry.com>
-Copyright (c) 2014-2022 Douglas Christopher Wilson <doug@somethingdoug.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
 
 ================================================================================
 raw-body@3.0.2
@@ -34496,9 +33821,9 @@ SOFTWARE.
 readable-stream@2.3.8
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/readable-stream
+Install paths: node_modules/jszip/node_modules/readable-stream
 
---- LICENSE (node_modules/readable-stream/LICENSE) ---
+--- LICENSE (node_modules/jszip/node_modules/readable-stream/LICENSE) ---
 Node.js is licensed for use as follows:
 
 """
@@ -34551,9 +33876,9 @@ IN THE SOFTWARE.
 readdirp@3.6.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/readdirp
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/readdirp
 
---- LICENSE (node_modules/readdirp/LICENSE) ---
+--- LICENSE (node_modules/@excalidraw/excalidraw/node_modules/readdirp/LICENSE) ---
 MIT License
 
 Copyright (c) 2012-2019 Thorsten Lorenz, Paul Miller (https://paulmillr.com)
@@ -35896,23 +35221,6 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-run-applescript@7.1.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/run-applescript
-
---- license (node_modules/run-applescript/license) ---
-MIT License
-
-Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
 rw@1.3.3
 Selected license: BSD-3-Clause
 Declared license: BSD-3-Clause
@@ -35950,38 +35258,9 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 safe-buffer@5.1.2
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/safe-buffer
+Install paths: node_modules/jszip/node_modules/safe-buffer
 
---- LICENSE (node_modules/safe-buffer/LICENSE) ---
-The MIT License (MIT)
-
-Copyright (c) Feross Aboukhadijeh
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
-================================================================================
-safe-buffer@5.2.1
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/safe-buffer
-
---- LICENSE (node_modules/mcp-remote/node_modules/safe-buffer/LICENSE) ---
+--- LICENSE (node_modules/jszip/node_modules/safe-buffer/LICENSE) ---
 The MIT License (MIT)
 
 Copyright (c) Feross Aboukhadijeh
@@ -36037,9 +35316,9 @@ SOFTWARE.
 sass@1.51.0
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/sass
+Install paths: node_modules/@excalidraw/excalidraw/node_modules/sass
 
---- LICENSE (node_modules/sass/LICENSE) ---
+--- LICENSE (node_modules/@excalidraw/excalidraw/node_modules/sass/LICENSE) ---
 Dart Sass license:
 
 Copyright (c) 2016, Google Inc.
@@ -37666,12 +36945,52 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
 IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
+semver@7.8.4
+Selected license: ISC
+Declared license: ISC
+Install paths: node_modules/conf/node_modules/semver
+
+--- LICENSE (node_modules/conf/node_modules/semver/LICENSE) ---
+The ISC License
+
+Copyright (c) Isaac Z. Schlueter and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
+IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+================================================================================
 semver@7.8.5
 Selected license: ISC
 Declared license: ISC
-Install paths: node_modules/semver
+Install paths: node_modules/semver, node_modules/sharp/node_modules/semver
 
 --- LICENSE (node_modules/semver/LICENSE) ---
+The ISC License
+
+Copyright (c) Isaac Z. Schlueter and Contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
+IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+--- LICENSE (node_modules/sharp/node_modules/semver/LICENSE) ---
 The ISC License
 
 Copyright (c) Isaac Z. Schlueter and Contributors
@@ -37713,37 +37032,6 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
-send@0.19.2
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/send
-
---- LICENSE (node_modules/mcp-remote/node_modules/send/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2012 TJ Holowaychuk
-Copyright (c) 2014-2022 Douglas Christopher Wilson
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 send@1.2.1
@@ -37792,39 +37080,6 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
-serve-static@1.16.3
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/serve-static
-
---- LICENSE (node_modules/mcp-remote/node_modules/serve-static/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2010 Sencha Inc.
-Copyright (c) 2011 LearnBoost
-Copyright (c) 2011 TJ Holowaychuk
-Copyright (c) 2014-2016 Douglas Christopher Wilson
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 serve-static@2.2.1
@@ -38601,9 +37856,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 sprintf-js@1.0.3
 Selected license: BSD-3-Clause
 Declared license: BSD-3-Clause
-Install paths: node_modules/argparse/node_modules/sprintf-js
+Install paths: node_modules/front-matter/node_modules/sprintf-js
 
---- LICENSE (node_modules/argparse/node_modules/sprintf-js/LICENSE) ---
+--- LICENSE (node_modules/front-matter/node_modules/sprintf-js/LICENSE) ---
 Copyright (c) 2007-2014, Alexandru Marasteanu <hello [at) alexei (dot] ro>
 All rights reserved.
 
@@ -38781,15 +38036,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ================================================================================
-strict-url-sanitise@0.0.1
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/strict-url-sanitise
-Issues: No license file found in package directory
-
-No license file found.
-
-================================================================================
 strictdom@1.0.1
 Selected license: MIT
 Declared license: MIT
@@ -38802,9 +38048,9 @@ No license file found.
 string_decoder@1.1.1
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/string_decoder
+Install paths: node_modules/jszip/node_modules/string_decoder
 
---- LICENSE (node_modules/string_decoder/LICENSE) ---
+--- LICENSE (node_modules/jszip/node_modules/string_decoder/LICENSE) ---
 Node.js is licensed for use as follows:
 
 """
@@ -39639,9 +38885,9 @@ SOFTWARE.
 type-fest@0.13.1
 Selected license: MIT
 Declared license: (MIT OR CC0-1.0)
-Install paths: node_modules/type-fest
+Install paths: node_modules/serialize-error/node_modules/type-fest
 
---- license (node_modules/type-fest/license) ---
+--- license (node_modules/serialize-error/node_modules/type-fest/license) ---
 MIT License
 
 Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https:/sindresorhus.com)
@@ -39660,37 +38906,6 @@ Install paths: node_modules/electron-store/node_modules/type-fest
 Issues: No license file found in package directory
 
 No license file found.
-
-================================================================================
-type-is@1.6.18
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/mcp-remote/node_modules/type-is
-
---- LICENSE (node_modules/mcp-remote/node_modules/type-is/LICENSE) ---
-(The MIT License)
-
-Copyright (c) 2014 Jonathan Ong <me@jongleberry.com>
-Copyright (c) 2014-2015 Douglas Christopher Wilson <doug@somethingdoug.com>
-
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-'Software'), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
-
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 type-is@2.1.0
@@ -39808,35 +39023,6 @@ Install paths: node_modules/ulid
 The MIT License (MIT)
 
 Copyright (c) 2017 Alizain Feerasta
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-================================================================================
-undici@7.30.1
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/undici
-
---- LICENSE (node_modules/undici/LICENSE) ---
-MIT License
-
-Copyright (c) Matteo Collina and Undici contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -40355,34 +39541,6 @@ HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
 WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
-utils-merge@1.0.1
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/utils-merge
-
---- LICENSE (node_modules/utils-merge/LICENSE) ---
-The MIT License (MIT)
-
-Copyright (c) 2013-2017 Jared Hanson
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 utrie@1.0.2
@@ -44189,9 +43347,9 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 web-streams-polyfill@3.3.3
 Selected license: MIT
 Declared license: MIT
-Install paths: node_modules/web-streams-polyfill
+Install paths: node_modules/fetch-blob/node_modules/web-streams-polyfill
 
---- LICENSE (node_modules/web-streams-polyfill/LICENSE) ---
+--- LICENSE (node_modules/fetch-blob/node_modules/web-streams-polyfill/LICENSE) ---
 The MIT License (MIT)
 
 Copyright (c) 2024 Mattias Buelens
@@ -44688,23 +43846,6 @@ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
 COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-================================================================================
-wsl-utils@0.1.0
-Selected license: MIT
-Declared license: MIT
-Install paths: node_modules/wsl-utils
-
---- license (node_modules/wsl-utils/license) ---
-MIT License
-
-Copyright (c) Sindre Sorhus <sindresorhus@gmail.com> (https://sindresorhus.com)
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 xml-parse-from-string@1.0.1

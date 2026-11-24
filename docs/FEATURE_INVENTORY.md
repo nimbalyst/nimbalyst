@@ -532,7 +532,8 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Document history retention
 - Auto-save interval
 - System spellchecker toggle; Windows/Linux language selection follows the OS locale with an override available through settings tools, while macOS uses the system spellchecker languages
-- MCP server configuration and OAuth authorization, including explicit client registration details for servers without dynamic registration; project-level Claude server disabling also applies to external Claude Code
+- MCP server configuration and OAuth authorization, including explicit client registration details (client ID, redirect URI) for servers without dynamic registration; project-level Claude server disabling also applies to external Claude Code
+- Remote MCP OAuth handled by Nimbalyst itself: Authorize signs in from the main process, credentials are stored encrypted in Nimbalyst's own storage (imported once from `~/.mcp-auth`), and agent CLIs reach those servers through a loopback gateway or a bundled stdio bridge on Electron's Node, so no system Node, `npx` or third-party helper is needed; stored `npx mcp-remote <url>` entries using only supported options are routed the same way without rewriting the config. See `docs/MCP_OAUTH.md`
 - Database controls for backup retention, pruning old tool output, migration status, and recovery of preserved database copies
 
 ## Theming

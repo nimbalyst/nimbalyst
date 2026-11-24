@@ -24,6 +24,12 @@ export const MCP_OAUTH_ERROR_TYPES = [
   'network',
   'process_error',
   'process_exit',
+  'issuer_mismatch',
+  'resource_mismatch',
+  'insecure_endpoint',
+  'authorization_server_changed',
+  'credential_storage_unavailable',
+  'cancelled',
   'ipc_error',
   'unknown',
 ] as const;

@@ -4,7 +4,7 @@ import type { MCPServerOAuthConfig } from '@nimbalyst/runtime/types/MCPServerCon
  * Apply a user-entered OAuth client id to a server's `oauth` block.
  *
  * Deliberately writes `staticClientInfo` and NOT `clientId`: the former is the
- * pre-registered client Nimbalyst authorizes with through `mcp-remote`, while
+ * pre-registered client Nimbalyst's own OAuth client authorizes with, while
  * the latter hands the server's auth to Claude/Codex and hides the Authorize
  * button (see MCPServerOAuthConfig).
  *
@@ -26,7 +26,35 @@ export function withStaticClientId(
 
   // A bare `oauth: {}` reads downstream as "this server requires OAuth"
   // (`requiresOAuth` in extractMcpRemoteConfig, `declaresOAuth` in
-  // requiresMcpRemote), which would wrap a static-key server in mcp-remote.
+  // requiresMcpRemote), which would route a static-key server through the gateway.
   // Clearing the field on a server that had no oauth block must leave it none.
   return Object.values(next).some((setting) => setting !== undefined) ? next : undefined;
+}
+
+/**
+ * Apply a user-entered redirect URI for a pre-registered client. Same
+ * clearing rule as `withStaticClientId`: emptying the field on a server whose
+ * only OAuth setting it was must leave no `oauth` block at all.
+ */
+export function withRedirectUri(
+  oauth: MCPServerOAuthConfig | undefined,
+  redirectUri: string
+): MCPServerOAuthConfig | undefined {
+  const trimmed = redirectUri.trim();
+  const next: MCPServerOAuthConfig = { ...oauth, redirectUri: trimmed || undefined };
+  return Object.values(next).some((setting) => setting !== undefined) ? next : undefined;
+}
+
+/**
+ * Whether Nimbalyst can receive the OAuth redirect at this URI: an absolute
+ * `http` URL with a port. The callback is served by a local listener, so an
+ * `https` or portless URI cannot be completed.
+ */
+export function isUsableRedirectUri(value: string): boolean {
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === 'http:' && url.port !== '' && url.pathname.length > 0;
+  } catch {
+    return false;
+  }
 }

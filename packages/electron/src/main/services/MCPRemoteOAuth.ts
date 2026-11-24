@@ -1,31 +1,48 @@
 import { spawn } from 'child_process';
-import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { MCPServerConfig } from '@nimbalyst/runtime/types/MCPServerConfig';
-import { getEnhancedPath } from './shellEnvironment';
+import { getEnhancedPath, getShellEnvironment } from './shellEnvironment';
 import { logger } from '../utils/logger';
+import type { McpOAuthErrorType } from './mcpOAuth/types';
+import { getMcpRemoteServerHashes } from './mcpOAuth/serverIdentity';
+import { getMcpOAuthManager } from './mcpOAuth';
 
 export interface MCPRemoteConfigDescriptor {
   serverUrl: string;
   headers: Record<string, string>;
   callbackPort?: number;
   host?: string;
+  /** Exact redirect URI for a pre-registered client (`oauth.redirectUri`). */
+  redirectUri?: string;
   authorizeResource?: string;
   transportStrategy?: 'http-first' | 'sse-first' | 'http-only' | 'sse-only';
   authTimeoutSeconds?: number;
   staticOAuthClientInfo?: Record<string, string>;
   staticOAuthClientMetadata?: Record<string, string | number | boolean | null>;
   requiresOAuth: boolean;
+  /**
+   * Set when the descriptor was parsed from an `npx mcp-remote <url> ...`
+   * command that Nimbalyst cannot reproduce exactly (an option it does not
+   * implement, a `${VAR}` it cannot resolve from the server's `env` or the
+   * login shell, an
+   * `@file` argument). Those keep running mcp-remote with its `~/.mcp-auth`
+   * store. A command made only of options Nimbalyst implements is bridged
+   * through the native gateway instead, without rewriting the saved config
+   * (see `isBridgeableMcpRemoteCommand`). Every other remote server is
+   * authorized by Nimbalyst's own OAuth client (see ./mcpOAuth and
+   * docs/MCP_OAUTH.md).
+   */
+  source?: 'user-command';
 }
 
 export interface MCPRemoteConfigOptions {
   /**
-   * Codex cannot use native remote OAuth client metadata directly, so Nimbalyst
-   * wraps those servers with mcp-remote at runtime. In that provider path, auth
-   * status must be checked against mcp-remote's cache instead of treating the
-   * native OAuth config as provider-managed.
+   * Codex, Codex ACP and Copilot cannot run a server's own `oauth.clientId`
+   * flow, so Nimbalyst authorizes those servers itself and routes them through
+   * the gateway. In that provider path, auth status is Nimbalyst's credential,
+   * not "managed by the CLI".
    */
   useMcpRemoteForNativeOAuth?: boolean;
 }
@@ -43,25 +60,10 @@ const oauthRequirementCache = new Map<string, Promise<boolean>>();
 
 export type MCPRemoteOAuthOutcome = 'authorized' | 'rejected' | 'timed_out' | 'failed';
 
-// Failure categories this service can produce. The renderer analytics allowlist
-// (mcpOAuthAnalytics.ts, MCP_OAUTH_ERROR_TYPES) is the superset: it also carries
-// `ipc_error`, which is a transport-layer category the renderer/IPC boundary adds
-// and this service never emits. Keep the two lists in sync when adding categories.
-export type MCPRemoteOAuthErrorType =
-  | 'invalid_config'
-  | 'timeout'
-  | 'browser_launch'
-  | 'stale_pending_auth'
-  | 'port_conflict'
-  | 'command_unavailable'
-  | 'provider_rejected'
-  | 'dynamic_registration_unsupported'
-  | 'callback_validation'
-  | 'token_exchange'
-  | 'network'
-  | 'process_error'
-  | 'process_exit'
-  | 'unknown';
+// Failure categories. The renderer analytics allowlist (mcpOAuthAnalytics.ts,
+// MCP_OAUTH_ERROR_TYPES) is the superset: it also carries `ipc_error`, which
+// only the IPC boundary adds. Keep the two lists in sync.
+export type MCPRemoteOAuthErrorType = McpOAuthErrorType;
 
 export interface MCPRemoteOAuthResult {
   success: boolean;
@@ -120,6 +122,26 @@ function getStaticOAuthClientInfo(
   return Object.keys(clientInfo).length > 0 ? clientInfo : undefined;
 }
 
+/**
+ * `oauth.redirectUri`, or the first string in a hand-edited
+ * `staticClientMetadata.redirect_uris` array. The typed field is scalar; the
+ * array form is read leniently because configs written for mcp-remote could
+ * carry it.
+ */
+function getConfiguredRedirectUri(oauthConfig: MCPServerConfig['oauth']): string | undefined {
+  if (typeof oauthConfig?.redirectUri === 'string' && oauthConfig.redirectUri.length > 0) {
+    return oauthConfig.redirectUri;
+  }
+  const raw = (oauthConfig?.staticClientMetadata as Record<string, unknown> | undefined)?.redirect_uris;
+  if (Array.isArray(raw)) {
+    const first = raw.find((value): value is string => typeof value === 'string' && value.length > 0);
+    if (first) {
+      return first;
+    }
+  }
+  return undefined;
+}
+
 export function extractMcpRemoteConfig(
   config: MCPServerConfig,
   options: MCPRemoteConfigOptions = {}
@@ -133,14 +155,19 @@ export function extractMcpRemoteConfig(
       return null;
     }
 
-    const headers = normalizeHeaders(config.headers);
+    // `${VAR}` in a URL or header resolves from the server's own `env`, then
+    // the login-shell environment, which is what the old helper inherited.
+    // Unresolved references stay literal, as before.
+    const env = resolveGatewayEnv(config.env);
+    const headers = normalizeHeaders(expandHeaderValues(config.headers, env));
     const requiresOAuth = Boolean(config.oauth);
 
     return {
-      serverUrl: config.url,
+      serverUrl: expandServerVariables(config.url, env).value,
       headers,
       callbackPort: config.oauth?.callbackPort,
       host: config.oauth?.host,
+      redirectUri: getConfiguredRedirectUri(config.oauth),
       authorizeResource: config.oauth?.resource,
       transportStrategy: config.oauth?.transportStrategy,
       authTimeoutSeconds: config.oauth?.authTimeoutSeconds,
@@ -152,6 +179,11 @@ export function extractMcpRemoteConfig(
 
   if (!looksLikeMcpRemoteCommand(config.command, config.args)) {
     return null;
+  }
+
+  const bridged = parseBridgeableMcpRemoteCommand(config);
+  if (bridged) {
+    return bridged;
   }
 
   const args = [...(config.args || [])];
@@ -186,6 +218,7 @@ export function extractMcpRemoteConfig(
     staticOAuthClientInfo: config.oauth?.staticClientInfo ?? parsed.staticOAuthClientInfo,
     staticOAuthClientMetadata: config.oauth?.staticClientMetadata ?? parsed.staticOAuthClientMetadata,
     requiresOAuth,
+    source: 'user-command',
   };
 }
 
@@ -240,6 +273,11 @@ export async function checkMcpRemoteAuthStatus(
 
   if (!descriptor) {
     return { authorized: false };
+  }
+
+  if (descriptor.source !== 'user-command') {
+    const status = await getMcpOAuthManager().getStatus(descriptor);
+    return { authorized: status.state === 'authorized' };
   }
 
   const startTime = Date.now();
@@ -323,6 +361,10 @@ export async function triggerMcpRemoteOAuth(
     return createMcpRemoteOAuthFailure(
       { outcome: 'failed', errorType: 'invalid_config' }
     );
+  }
+
+  if (descriptor.source !== 'user-command') {
+    return triggerNativeOAuth(descriptor);
   }
 
   return new Promise((resolve) => {
@@ -415,6 +457,31 @@ export async function triggerMcpRemoteOAuth(
       }
     }, 2000);
   });
+}
+
+async function triggerNativeOAuth(descriptor: MCPRemoteConfigDescriptor): Promise<MCPRemoteOAuthResult> {
+  safeLog('info', '[MCP OAuth] Starting authorization');
+  const result = await getMcpOAuthManager().authorize(descriptor, {
+    timeoutMs: getMcpRemoteOAuthTimeoutMs(descriptor),
+  });
+  if (result.ok) {
+    safeLog('info', '[MCP OAuth] Authorization finished', { outcome: 'authorized' });
+    return { success: true, outcome: 'authorized' };
+  }
+  const outcome: MCPRemoteOAuthResult['outcome'] = result.errorType === 'provider_rejected'
+    ? 'rejected'
+    : result.errorType === 'timeout'
+      ? 'timed_out'
+      : 'failed';
+  safeLog('info', '[MCP OAuth] Authorization finished', { outcome, errorType: result.errorType });
+  // No cache-clear retry here: clearing credentials cannot free a busy port
+  // and would only discard a working sign-in.
+  return {
+    success: false,
+    outcome,
+    errorType: result.errorType,
+    error: getMcpRemoteOAuthErrorMessage(result.errorType, undefined, { native: true }),
+  };
 }
 
 export function classifyMcpRemoteOAuthFailure(
@@ -540,9 +607,25 @@ function createMcpRemoteOAuthFailure(
 
 function getMcpRemoteOAuthErrorMessage(
   errorType: MCPRemoteOAuthErrorType,
-  exitCode?: number | null
+  exitCode?: number | null,
+  options: { native?: boolean } = {}
 ): string {
+  if (options.native && errorType === 'port_conflict') {
+    return 'Another process is using the OAuth callback port. Close it, or set a different callback port for this server, and try again.';
+  }
   switch (errorType) {
+    case 'issuer_mismatch':
+      return 'The sign-in provider published inconsistent details about itself, so Nimbalyst did not send credentials to it.';
+    case 'resource_mismatch':
+      return 'The server described itself as a different resource, so Nimbalyst did not continue the sign-in.';
+    case 'insecure_endpoint':
+      return 'The sign-in provider uses plain http for an https server, so Nimbalyst did not send credentials to it.';
+    case 'authorization_server_changed':
+      return 'This server now uses a different sign-in provider. Authorize it again.';
+    case 'credential_storage_unavailable':
+      return 'Nimbalyst could not read or save the sign-in for this server.';
+    case 'cancelled':
+      return 'Authorization was cancelled.';
     case 'invalid_config':
       return 'Invalid OAuth configuration.';
     case 'timeout':
@@ -585,13 +668,22 @@ function appendBoundedDiagnosticOutput(current: string, next: string): string {
 
 export async function revokeMcpRemoteOAuth(
   configOrUrl: MCPServerConfig | string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; providerRevocation?: 'revoked' | 'unsupported' | 'failed' | 'none' }> {
   const descriptor = typeof configOrUrl === 'string'
     ? { serverUrl: configOrUrl, headers: {}, requiresOAuth: true }
     : extractMcpRemoteConfig(configOrUrl);
 
   if (!descriptor) {
     return { success: false, error: 'Invalid OAuth configuration' };
+  }
+
+  if (descriptor.source !== 'user-command') {
+    try {
+      const result = await getMcpOAuthManager().revoke(descriptor);
+      return { success: result.success, providerRevocation: result.provider };
+    } catch (error: unknown) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
   }
 
   const authDir = getMcpAuthDir();
@@ -632,6 +724,262 @@ function looksLikeMcpRemoteCommand(command?: string, args?: string[]): boolean {
     return false;
   }
   return Boolean(args?.some((arg) => arg === 'mcp-remote' || arg.startsWith('mcp-remote@')));
+}
+
+/** mcp-remote options the native gateway reproduces, and whether each takes a value. */
+const BRIDGEABLE_VALUE_FLAGS = new Set([
+  '--header',
+  '--host',
+  '--transport',
+  '--resource',
+  '--auth-timeout',
+  '--static-oauth-client-info',
+  '--static-oauth-client-metadata',
+]);
+// `--allow-http`: the gateway already allows a configured http:// server.
+// `--debug` / `--silent` only change mcp-remote's own logging.
+const BRIDGEABLE_BOOLEAN_FLAGS = new Set(['--allow-http', '--debug', '--silent']);
+
+/**
+ * True when a stored `npx mcp-remote <url> ...` command is made only of
+ * options Nimbalyst implements, so it runs through the native gateway instead
+ * of the third-party helper. The saved config is not rewritten.
+ */
+export function isBridgeableMcpRemoteCommand(config: MCPServerConfig): boolean {
+  return (config.type === undefined || config.type === 'stdio')
+    && looksLikeMcpRemoteCommand(config.command, config.args)
+    && parseBridgeableMcpRemoteCommand(config) !== null;
+}
+
+/**
+ * Parse `npx [-y|--yes]... mcp-remote[@version] <url> [port] [options]` into a
+ * native descriptor, or return null when any part cannot be reproduced
+ * exactly: an unknown npx or mcp-remote option, an `@file` argument, malformed
+ * JSON, or a `${VAR}` neither the server's `env` nor the login shell defines.
+ */
+function parseBridgeableMcpRemoteCommand(config: MCPServerConfig): MCPRemoteConfigDescriptor | null {
+  const args = config.args ?? [];
+  let index = 0;
+  while (index < args.length && (args[index] === '-y' || args[index] === '--yes')) {
+    index += 1;
+  }
+  const pkg = args[index];
+  if (pkg !== 'mcp-remote' && !(typeof pkg === 'string' && pkg.startsWith('mcp-remote@'))) {
+    return null;
+  }
+  index += 1;
+
+  const env = resolveGatewayEnv(config.env);
+  const expand = (value: string): string | null => {
+    const result = expandServerVariables(value, env);
+    return result.unresolved ? null : result.value;
+  };
+
+  const serverUrl = typeof args[index] === 'string' ? expand(args[index]) : null;
+  if (!serverUrl || !/^https?:\/\//i.test(serverUrl)) {
+    return null;
+  }
+  try {
+    new URL(serverUrl);
+  } catch {
+    return null;
+  }
+  index += 1;
+
+  let callbackPort: number | undefined;
+  if (index < args.length && /^\d+$/.test(args[index])) {
+    callbackPort = Number(args[index]);
+    if (callbackPort < 1 || callbackPort > 65535) {
+      return null;
+    }
+    index += 1;
+  }
+
+  const headers: Record<string, string> = {};
+  let host: string | undefined;
+  let authorizeResource: string | undefined;
+  let transportStrategy: MCPRemoteConfigDescriptor['transportStrategy'];
+  let authTimeoutSeconds: number | undefined;
+  let staticOAuthClientInfo: Record<string, string> | undefined;
+  let staticOAuthClientMetadata: Record<string, string | number | boolean | null> | undefined;
+
+  while (index < args.length) {
+    const flag = args[index];
+    if (BRIDGEABLE_BOOLEAN_FLAGS.has(flag)) {
+      index += 1;
+      continue;
+    }
+    if (!BRIDGEABLE_VALUE_FLAGS.has(flag) || index + 1 >= args.length) {
+      return null;
+    }
+    const value = expand(args[index + 1]);
+    if (value === null) {
+      return null;
+    }
+    index += 2;
+
+    switch (flag) {
+      case '--header': {
+        const header = parseMcpRemoteHeader(value);
+        if (!header) {
+          return null;
+        }
+        headers[header[0]] = header[1];
+        break;
+      }
+      case '--host':
+        host = value;
+        break;
+      case '--resource':
+        authorizeResource = value;
+        break;
+      case '--transport':
+        if (!isTransportStrategy(value)) {
+          return null;
+        }
+        transportStrategy = value;
+        break;
+      case '--auth-timeout':
+        if (!/^\d+$/.test(value)) {
+          return null;
+        }
+        authTimeoutSeconds = Number(value);
+        break;
+      case '--static-oauth-client-info': {
+        const parsed = parseJsonObject(value);
+        if (!parsed || !Object.values(parsed).every((v) => typeof v === 'string')) {
+          return null;
+        }
+        staticOAuthClientInfo = parsed as Record<string, string>;
+        break;
+      }
+      case '--static-oauth-client-metadata': {
+        const parsed = parseJsonObject(value);
+        if (!parsed) {
+          return null;
+        }
+        staticOAuthClientMetadata = parsed as Record<string, string | number | boolean | null>;
+        break;
+      }
+      default:
+        return null;
+    }
+  }
+
+  return {
+    serverUrl,
+    headers: normalizeHeaders(headers),
+    callbackPort: config.oauth?.callbackPort ?? callbackPort,
+    host: config.oauth?.host ?? host,
+    redirectUri: getConfiguredRedirectUri(config.oauth),
+    authorizeResource: config.oauth?.resource ?? authorizeResource,
+    transportStrategy: config.oauth?.transportStrategy ?? transportStrategy,
+    authTimeoutSeconds: config.oauth?.authTimeoutSeconds ?? authTimeoutSeconds,
+    staticOAuthClientInfo: getStaticOAuthClientInfo(config.oauth) ?? staticOAuthClientInfo,
+    staticOAuthClientMetadata: config.oauth?.staticClientMetadata ?? staticOAuthClientMetadata,
+    requiresOAuth: Boolean(config.oauth),
+  };
+}
+
+/**
+ * Resolve `${VAR}` in a remote server's URL and header values from the
+ * server's own `env` block. Unresolved references stay literal, so a CLI that
+ * expands variables from its own environment still can. Other config kinds
+ * are returned unchanged.
+ */
+export function expandRemoteServerVariables(config: MCPServerConfig): MCPServerConfig {
+  if ((config.type !== 'http' && config.type !== 'sse') || !config.env) {
+    return config;
+  }
+  const env = resolveServerEnv(config.env);
+  if (Object.keys(env).length === 0) {
+    return config;
+  }
+  // A `:-default` is left for the CLI when the server's env does not define
+  // the variable: the CLI may resolve it from its own environment first.
+  const keepDefaults = { applyDefaults: false };
+  return {
+    ...config,
+    url: config.url ? expandServerVariables(config.url, env, keepDefaults).value : config.url,
+    headers: expandHeaderValues(config.headers, env, keepDefaults),
+  };
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | null {
+  if (value.startsWith('@')) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What `${VAR}` resolves against when Nimbalyst's gateway is the consumer:
+ * the server's own `env` first, then the user's login-shell environment
+ * (`getShellEnvironment`, the same environment the CLIs are given). That is
+ * what mcp-remote inherited. Nimbalyst's own `process.env` is not consulted.
+ */
+function resolveGatewayEnv(env: MCPServerConfig['env']): Record<string, string> {
+  const shell = getShellEnvironment() ?? {};
+  return { ...shell, ...resolveServerEnv(env, shell) };
+}
+
+/**
+ * The variables a server's `${VAR}` references resolve against: its own `env`
+ * block, each value itself expanded against earlier entries. Nimbalyst's own
+ * process environment is deliberately not consulted.
+ */
+function resolveServerEnv(env: MCPServerConfig['env'], base: Record<string, string> = {}): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env ?? {})) {
+    if (typeof value !== 'string') {
+      continue;
+    }
+    const expanded = expandServerVariables(value, { ...base, ...resolved });
+    if (!expanded.unresolved && expanded.value.length > 0) {
+      resolved[key] = expanded.value;
+    }
+  }
+  return resolved;
+}
+
+/** Expand `${VAR}` and `${VAR:-default}`; report whether any reference had no value. */
+function expandServerVariables(
+  value: string,
+  env: Record<string, string>,
+  options: { applyDefaults?: boolean } = {},
+): { value: string; unresolved: boolean } {
+  let unresolved = false;
+  const expanded = value.replace(/\$\{([^}:]+)(:-([^}]*))?\}/g, (match, name: string, _group: string, fallback?: string) => {
+    if (Object.prototype.hasOwnProperty.call(env, name)) {
+      return env[name];
+    }
+    if (fallback !== undefined && options.applyDefaults !== false) {
+      return fallback;
+    }
+    unresolved = true;
+    return match;
+  });
+  return { value: expanded, unresolved };
+}
+
+function expandHeaderValues(
+  headers: Record<string, string> | undefined,
+  env: Record<string, string>,
+  options: { applyDefaults?: boolean } = {},
+): Record<string, string> | undefined {
+  if (!headers) {
+    return undefined;
+  }
+  const expanded: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    expanded[key] = typeof value === 'string' ? expandServerVariables(value, env, options).value : value;
+  }
+  return expanded;
 }
 
 function normalizeHeaders(headers?: Record<string, string>): Record<string, string> {
@@ -758,16 +1106,23 @@ function parseMcpRemoteHeaders(args: string[]): Record<string, string> {
     if (args[i] !== '--header' || i + 1 >= args.length) {
       continue;
     }
-    const rawHeader = args[i + 1];
-    const separatorIndex = rawHeader.indexOf(':');
-    if (separatorIndex <= 0) {
-      continue;
+    const header = parseMcpRemoteHeader(args[i + 1]);
+    if (header) {
+      headers[header[0]] = header[1];
     }
-    const key = rawHeader.slice(0, separatorIndex);
-    const value = rawHeader.slice(separatorIndex + 1);
-    headers[key] = value;
   }
   return headers;
+}
+
+/**
+ * `Name: value` exactly as mcp-remote reads it (0.1.x and 0.16.x): the space
+ * after the colon is dropped, and a name outside `[A-Za-z0-9_-]` is ignored.
+ * The token-store hash covers headers, so any difference here would miss
+ * existing tokens.
+ */
+function parseMcpRemoteHeader(raw: string): [string, string] | null {
+  const match = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(raw);
+  return match ? [match[1], match[2]] : null;
 }
 
 function parseMcpRemoteFlags(args: string[]): {
@@ -821,19 +1176,7 @@ function safeJsonParse<T>(value: string): T | undefined {
 }
 
 function getServerHashes(descriptor: Pick<MCPRemoteConfigDescriptor, 'serverUrl' | 'authorizeResource' | 'headers'>): string[] {
-  const parts = [descriptor.serverUrl];
-  if (descriptor.authorizeResource) {
-    parts.push(descriptor.authorizeResource);
-  }
-  if (descriptor.headers && Object.keys(descriptor.headers).length > 0) {
-    const sortedKeys = Object.keys(descriptor.headers).sort();
-    parts.push(JSON.stringify(descriptor.headers, sortedKeys));
-  }
-
-  const canonical = parts.join('|');
-  const canonicalHash = crypto.createHash('md5').update(canonical).digest('hex');
-  const legacyHash = crypto.createHash('md5').update(descriptor.serverUrl).digest('hex');
-  return canonicalHash === legacyHash ? [canonicalHash] : [canonicalHash, legacyHash];
+  return getMcpRemoteServerHashes(descriptor);
 }
 
 async function findAuthorizedTokenFile(baseDir: string, hashes: string[]): Promise<string | null> {

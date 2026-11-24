@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'vitest';
 
 const rootRequire = createRequire(new URL('../../../../../../package.json', import.meta.url));
-const remoteRequire = createRequire(new URL('../../../../../../node_modules/mcp-remote/package.json', import.meta.url));
 type Trust = (address: string, index?: number) => boolean;
 const proxyaddr = rootRequire('proxy-addr') as { compile: (subnets: string | string[]) => Trust };
 
@@ -73,7 +72,9 @@ interface InertApp {
 }
 type ExpressFactory = () => InertApp;
 
-for (const [label, load] of [['Express 5', rootRequire], ['Express 4 under mcp-remote', remoteRequire]] as const) {
+// Express 4 was covered here while the bundled mcp-remote helper shipped it;
+// the helper and its Express 4 tree were removed with the native MCP OAuth gateway.
+for (const [label, load] of [['Express 5', rootRequire]] as const) {
   const express = load('express') as ExpressFactory;
   const expressRequire = createRequire(load.resolve('express'));
   describe(label, () => {

@@ -1,5 +1,11 @@
 /**
- * Whether an HTTP MCP server actually needs the `mcp-remote` stdio wrapper.
+ * Whether a remote MCP server has to go through Nimbalyst's bridge instead of
+ * straight to the CLI.
+ *
+ * The bridge used to be the third-party `mcp-remote` stdio helper; it is now
+ * Nimbalyst's own loopback gateway (`./mcpOAuth/gateway.ts`), which holds the
+ * OAuth credential so the CLI never sees it. The function names keep the old
+ * `McpRemote` wording because the routing rule itself did not change.
  *
  * `convertHttpToStdio` rewrote every `type: "http"` server into
  * `npx mcp-remote <url> --header ...`. That was reasonable when it landed
@@ -36,7 +42,7 @@
  */
 
 import type { MCPServerConfig } from '@nimbalyst/runtime/types/MCPServerConfig';
-import { checkMcpRemoteAuthStatus, usesNativeRemoteOAuth } from './MCPRemoteOAuth';
+import { checkMcpRemoteAuthStatus, isBridgeableMcpRemoteCommand, usesNativeRemoteOAuth } from './MCPRemoteOAuth';
 
 export interface McpRemoteRequirementOptions {
   /**
@@ -45,42 +51,60 @@ export interface McpRemoteRequirementOptions {
    */
   nativeHttpSupported?: boolean;
   /**
-   * Whether mcp-remote holds a usable token for this server under `~/.mcp-auth`.
+   * Whether Nimbalyst holds a usable OAuth credential for this server
+   * (including one imported once from mcp-remote's `~/.mcp-auth`).
    * Populated by `resolveMcpRemoteRequirementOptions`; left undefined by callers
-   * that never take the native-HTTP shortcut, since they wrap regardless.
+   * that never take the native-HTTP shortcut, since they bridge regardless.
    */
   hasCachedMcpRemoteToken?: boolean;
+  /**
+   * The caller cannot use a server's own `oauth.clientId` flow (Codex, Codex
+   * ACP, Copilot), so Nimbalyst authorizes those servers itself and bridges
+   * them, along with any `sse` server that declares OAuth.
+   */
+  useMcpRemoteForNativeOAuth?: boolean;
 }
 
 /**
- * True when the server must be routed through `npx mcp-remote`.
+ * True when the server must be routed through Nimbalyst's gateway.
  *
- * Only `http` servers are ever wrapped. `sse` is already a remote transport and
- * `stdio` is local, so neither is affected.
+ * `http` servers are bridged when Nimbalyst holds their OAuth or the CLI does
+ * not speak HTTP. `sse` is bridged only for callers that cannot run its OAuth.
+ * A stdio entry is bridged only when it is an `npx mcp-remote <url>` command
+ * made entirely of options the gateway reproduces (`isBridgeableMcpRemoteCommand`);
+ * that replaces the third-party helper and its system Node dependency with the
+ * gateway for every caller. Any other stdio server is local and untouched.
  */
 export function requiresMcpRemote(
   config: MCPServerConfig,
   options: McpRemoteRequirementOptions,
 ): boolean {
-  if (config.type !== 'http') {
-    return false;
-  }
-
-  // Existing escape hatch: explicit OAuth credentials go native.
-  if (usesNativeRemoteOAuth(config)) {
-    return false;
-  }
-
-  // An oauth block without credentials means tokens are negotiated and stored by
-  // mcp-remote (~/.mcp-auth). Those still need it.
   const declaresOAuth = config.oauth !== undefined && config.oauth !== null;
+
+  if (config.type === 'sse') {
+    // sse is already a remote transport the CLIs speak. Only a caller that
+    // cannot run the server's OAuth itself needs Nimbalyst to hold it.
+    return Boolean(options.useMcpRemoteForNativeOAuth && declaresOAuth);
+  }
+
+  if (config.type !== 'http') {
+    return isBridgeableMcpRemoteCommand(config);
+  }
+
+  // Explicit OAuth credentials go native, unless this caller cannot use them.
+  if (usesNativeRemoteOAuth(config)) {
+    return Boolean(options.useMcpRemoteForNativeOAuth);
+  }
+
+  // An oauth block without credentials means Nimbalyst negotiates and holds the
+  // tokens, so the server goes through the gateway.
   if (declaresOAuth) {
     return true;
   }
 
-  // A token in ~/.mcp-auth proves this server negotiated OAuth through
-  // mcp-remote at some point, whatever the config claims. Only mcp-remote can
-  // present and refresh that token, so the wrapper is the credential.
+  // A stored credential proves this server negotiated OAuth through Nimbalyst
+  // (or mcp-remote before it), whatever the config claims. Only the gateway
+  // can present and refresh it.
   if (options.hasCachedMcpRemoteToken) {
     return true;
   }

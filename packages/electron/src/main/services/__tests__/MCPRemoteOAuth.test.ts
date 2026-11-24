@@ -313,7 +313,7 @@ describe('MCPRemoteOAuth', () => {
     expect(getMcpRemoteOAuthTimeoutMs({ authTimeoutSeconds: 240 })).toBe(245_000);
   });
 
-  it('matches mcp-remote token hashes using URL, resource, and headers', async () => {
+  it('matches mcp-remote token hashes using URL, resource, and headers for a user-written command', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-remote-auth-'));
     process.env.MCP_REMOTE_CONFIG_DIR = tempDir;
 
@@ -335,13 +335,12 @@ describe('MCPRemoteOAuth', () => {
       'utf8',
     );
 
+    // A command with an option the gateway does not implement keeps running
+    // mcp-remote, so it keeps reading mcp-remote's own store.
     const status = await checkMcpRemoteAuthStatus({
-      type: 'http',
-      url: serverUrl,
-      headers,
-      oauth: {
-        resource,
-      },
+      type: 'stdio',
+      command: 'npx',
+      args: ['mcp-remote', serverUrl, '--resource', resource, '--header', 'Authorization:Bearer custom-token', '--enable-proxy'],
     });
 
     expect(status.authorized).toBe(true);

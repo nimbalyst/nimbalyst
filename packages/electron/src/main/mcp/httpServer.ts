@@ -17,6 +17,8 @@ import { getMostRecentlyFocusedWorkspaceWindow, windowStates, windowFocusOrder }
 import { windows } from "../window/windowState";
 import { workspaceToWindowMap } from "./mcpWorkspaceResolver";
 import { requireMcpAuth } from "./mcpAuth";
+import { closeMcpRemoteGatewayIfStarted, getMcpRemoteGateway } from "../services/mcpOAuth";
+import { handleGatewayRequest, isGatewayPath } from "../services/mcpOAuth/gatewayRoute";
 import { getAllowedClipOrigin, hasAllowedClipContentType } from "./clipRequestGuards";
 import { pickClipTarget } from "./clipTarget";
 import { loadFileIntoWindow } from "../file/FileOperations";
@@ -270,6 +272,13 @@ export async function shutdownHttpServer(): Promise<void> {
     await cleanupMcpServer();
   } catch (error) {
     console.error("[MCP Server] Error cleaning up transports:", error);
+  }
+
+  try {
+    // Upstream SSE connections the remote-MCP gateway holds open.
+    await closeMcpRemoteGatewayIfStarted();
+  } catch (error) {
+    console.error("[MCP Server] Error closing remote MCP gateway sessions:", error);
   }
 
   return new Promise((resolve) => {
@@ -914,6 +923,14 @@ async function tryCreateServer(port: number): Promise<any> {
             req.off("aborted", abortPermission);
             res.off("close", abortPermission);
           }
+          return;
+        }
+
+        // Remote MCP gateway (docs/MCP_OAUTH.md): forwards to a configured
+        // remote server and attaches its credential, so the credential never
+        // reaches the CLI. Gated by the same per-launch bearer as /mcp.
+        if (isGatewayPath(pathname)) {
+          await handleGatewayRequest(getMcpRemoteGateway(), req, res, pathname);
           return;
         }
 
