@@ -35,7 +35,8 @@ export function initFileChangeListeners(): () => void {
   initialized = true;
 
   const cleanups: Array<() => void> = [];
-  const warnings = new Map<string, { timer?: ReturnType<typeof setTimeout>; shown: boolean }>();
+  const warnings = new Map<string, { timer?: ReturnType<typeof setTimeout>; shown: boolean; reason?: string }>();
+  // A retry publishes `starting` while it scans; only `watching` ends the outage.
   const healthCleanup = window.electronAPI?.on?.('file:watch-health', (data: FileWatchHealth & { root: string }) => {
     if (!data?.root) return;
     store.set(fileWatcherHealthAtomFamily(data.root), data);
@@ -44,12 +45,17 @@ export function initFileChangeListeners(): () => void {
       if (existing?.timer) clearTimeout(existing.timer);
       if (existing?.shown && data.state === 'watching') errorNotificationService.showInfo('File updates resumed', 'Open files are being checked for changes.');
       warnings.delete(data.root);
-    } else if (data.state === 'recovering' && !existing) {
-      const warning = { shown: false, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+    } else if (data.state === 'recovering' && existing) {
+      existing.reason = data.reason;
+    } else if (data.state === 'recovering') {
+      const warning = { shown: false, timer: undefined as ReturnType<typeof setTimeout> | undefined, reason: data.reason };
       warning.timer = setTimeout(() => {
         warning.timer = undefined;
         warning.shown = true;
-        errorNotificationService.showWarning('File updates delayed', 'Automatic file updates are recovering. Open files will continue to be checked for changes.', { duration: 10_000 });
+        const cause = warning.reason === 'ENOSPC'
+          ? 'Too many files to watch in this project. Add large folders to .gitignore.'
+          : 'Automatic file updates are recovering.';
+        errorNotificationService.showWarning('File updates delayed', `${cause} Open files will continue to be checked for changes.`, { duration: 10_000 });
       }, 10_000);
       warnings.set(data.root, warning);
     }
