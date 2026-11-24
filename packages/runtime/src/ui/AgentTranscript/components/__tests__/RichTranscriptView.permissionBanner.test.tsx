@@ -368,6 +368,94 @@ describe('pending question navigation', () => {
     expect(vlistState.scrollToIndex).toHaveBeenCalledWith(2, { align: 'start' });
   });
 
+  // The mobile SessionView and desktop RemoteSessionTranscript mount the
+  // transcript with no messages and fill it after an async load, so every
+  // return to such a session mounts it empty.
+  const askedMessages = [
+    makeMessage(0, { type: 'user_message', text: 'Start' }), makeMessage(1, { text: 'History' }),
+    question(2), makeMessage(3, { text: 'Which way?' }),
+  ];
+  const persistedView = (messages: TranscriptViewMessage[]) => (
+    <RichTranscriptView sessionId={session} sessionStatus="idle" messages={messages} provider="claude-code" />
+  );
+  const mountEmptyThenFill = (messages: TranscriptViewMessage[], makeView = view) => {
+    const rendered = render(makeView([]));
+    flushFrames();
+    rendered.rerender(makeView(messages));
+    const scroller = instrumentScroller(rendered.container);
+    flushFrames();
+    return { ...rendered, ...scroller };
+  };
+  const returnEmptyThenFill = (makeView = view) => {
+    vlistState.scrollToIndex.mockClear();
+    vlistState.scrollOffset = 0;
+    vlistState.scrollSize = 3000;
+    return mountEmptyThenFill(askedMessages, makeView);
+  };
+
+  it('F4: follows from the end past a seen question when a transcript that mounts empty is returned to', () => {
+    const first = mountEmptyThenFill(askedMessages);
+    // First visit: the new question gets its jump, and no pin to the end overrides it.
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(3, { align: 'start' });
+    expect(first.pins).toEqual([]);
+    first.unmount();
+
+    const { scroller } = returnEmptyThenFill();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+    rowsMeasure(3400);
+    flushFrames();
+    expect(distanceFromEnd()).toBe(0);
+    // A reader who scrolls up from there stays where they scrolled.
+    fireEvent.wheel(scroller, { deltaY: -400 });
+    act(() => { vlistState.scrollOffset = 1500; vlistState.onScroll?.(1500); });
+    rowsMeasure(4200);
+    flushFrames();
+    expect(vlistState.scrollOffset).toBe(1500);
+  });
+
+  it('F4: follows from the end on return even after the reader scrolled up there before leaving', () => {
+    const first = mountEmptyThenFill(askedMessages, persistedView);
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(3, { align: 'start' });
+    act(() => { vlistState.scrollOffset = 1500; vlistState.onScroll?.(1500); });
+    fireEvent.wheel(first.scroller, { deltaY: -400 });
+    first.unmount();
+
+    returnEmptyThenFill(persistedView);
+    rowsMeasure(3400);
+    flushFrames();
+    expect(distanceFromEnd()).toBe(0);
+  });
+
+  it('F4: follows from the end past a seen question when a transcript that mounted empty fills while hidden', () => {
+    mountEmptyThenFill(askedMessages).unmount();
+    vlistState.scrollToIndex.mockClear();
+    vlistState.scrollOffset = 0;
+    const { container, rerender } = render(view([]));
+    flushFrames();
+    setTranscriptVisible(false);
+    rerender(view(askedMessages));
+    flushFrames();
+    setTranscriptVisible(true);
+    instrumentScroller(container);
+    flushFrames();
+    rowsMeasure(3400);
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+    expect(distanceFromEnd()).toBe(0);
+  });
+
+  it('F4: jumps to and holds a question opened after a transcript that mounted empty was returned to', () => {
+    mountEmptyThenFill(askedMessages).unmount();
+    const { pins, rerender } = returnEmptyThenFill();
+    rerender(view([...askedMessages, question(4), makeMessage(5, { text: 'Asked again' })]));
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(5, { align: 'start' });
+    const pinsBefore = [...pins];
+    rowsMeasure(4200);
+    flushFrames();
+    expect(pins).toEqual(pinsBefore);
+  });
+
   it('does not pull the reader back to the question after they return to the end', () => {
     const messages = [makeMessage(0, { text: 'Before' }), question(1), makeMessage(2, { text: 'After' })];
     const { container, rerender } = render(view(messages));

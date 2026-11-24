@@ -985,6 +985,19 @@ export const RichTranscriptView = React.forwardRef<
     return () => cancelAnimationFrame(frame);
   }, [sessionId, isContainerVisible]); // Re-run when session changes or container becomes visible
 
+  // Hosts that load messages after mounting (the mobile SessionView, remote
+  // session views) mount with none, so the pin above has nothing to pin and the
+  // list mounts at its top when they arrive. Then follow from the end past a
+  // question already shown, as the pin does; the follow below scrolls there.
+  // A question not yet shown keeps the jump the hook issued in this commit: its
+  // reveal frame has not run, so it still counts as one to reveal.
+  const hasMessages = messages.length > 0;
+  useEffect(() => {
+    if (!hasMessages || hasQuestionToReveal()) return;
+    followPastQuestionIdRef.current = newestQuestionIdRef.current;
+    setAtBottomState(true);
+  }, [hasMessages]); // On mount or while hidden, the pin above makes the same choice
+
   // Auto-scroll to bottom when messages change (if user was at bottom)
   useEffect(() => {
     const frame = requestAnimationFrame(followEnd);
