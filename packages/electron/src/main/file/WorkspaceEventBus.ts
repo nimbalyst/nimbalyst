@@ -12,6 +12,7 @@ import { logger } from '../utils/logger';
 import { shouldExcludeDir } from '../utils/fileFilters';
 import { isPathInWorkspace } from '../utils/workspaceDetection';
 import { validateWorkspaceWatchPath } from './workspaceWatchSafety';
+import { readGitExcludeRules, readGitExcludeRulesSync, resolveGlobalExcludesFile } from '../utils/gitExcludes';
 
 /**
  * .git is always ignored — it's an internal data structure, never user content.
@@ -165,8 +166,10 @@ interface BusEntry {
   listeners: Map<string, WorkspaceEventListener>;
   /** Absolute (resolved) workspace path. Cached so isGitignoredScoped doesn't re-resolve per event. */
   workspaceAbs: string;
-  /** Workspace-root .gitignore filter (or fallback patterns when none exists). */
+  /** Workspace-root ignore filter: git's exclude files plus .gitignore (or fallback patterns when none exists). */
   workspaceGitignoreFilter: Ignore;
+  /** git's global excludes file, resolved once per watcher start: the sync loaders must not run git. */
+  globalExcludesFile: string | null;
   /** Lazily loaded nested-repo .gitignore filters, keyed by absolute git-root path. */
   nestedGitignoreCache: Map<string, Ignore>;
   /** Memoized git-root lookup keyed by directory, so the chokidar walk visits each ancestor at most once. */
@@ -237,40 +240,54 @@ function shouldIgnoreHardcoded(relativePath: string): boolean {
   return false;
 }
 
-async function loadGitignoreFilter(workspacePath: string): Promise<Ignore> {
+/**
+ * Every filter follows git's precedence, lowest first: the global excludes file
+ * (`core.excludesFile`), the repository's `info/exclude`, then the root
+ * `.gitignore`. Later rules win, so a `.gitignore` negation re-includes a path
+ * the exclude files ignore.
+ *
+ * Known limitation: edits to `info/exclude` or the global excludes file apply
+ * from the next watcher start, not live. They sit under `.git`, which is never
+ * watched, or outside the workspace.
+ */
+async function loadGitignoreFilter(workspacePath: string, globalExcludesFile: string | null): Promise<Ignore> {
+  const excludeRules = await readGitExcludeRules(workspacePath, globalExcludesFile);
   const gitignorePath = path.join(workspacePath, '.gitignore');
   try {
     const content = await fsPromises.readFile(gitignorePath, 'utf-8');
-    return ignore().add(content);
+    return ignore().add(excludeRules).add(content);
   } catch {
-    return ignore().add(FALLBACK_IGNORE_PATTERNS);
+    return ignore().add(excludeRules).add(FALLBACK_IGNORE_PATTERNS);
   }
 }
 
-function loadWorkspaceGitignoreFilterSync(workspacePath: string): Ignore {
+function loadWorkspaceGitignoreFilterSync(workspacePath: string, globalExcludesFile: string | null): Ignore {
+  const excludeRules = readGitExcludeRulesSync(workspacePath, globalExcludesFile);
   const gitignorePath = path.join(workspacePath, '.gitignore');
   try {
     const content = fs.readFileSync(gitignorePath, 'utf-8');
-    return ignore().add(content);
+    return ignore().add(excludeRules).add(content);
   } catch {
-    return ignore().add(FALLBACK_IGNORE_PATTERNS);
+    return ignore().add(excludeRules).add(FALLBACK_IGNORE_PATTERNS);
   }
 }
 
 /**
- * Synchronous loader for nested-repo `.gitignore`s. Used from the chokidar
+ * Synchronous loader for nested-repo ignore rules. Used from the chokidar
  * `ignored` callback, which must return synchronously, so the `Ignore` instance
- * has to materialize on first miss without `await`. Returns an empty filter
- * when the nested repo has no `.gitignore` — we don't fall back to the workspace
- * patterns at the nested level because a nested repo's silence is its own choice.
+ * has to materialize on first miss without `await`, and only reads files. Holds
+ * just the nested repo's exclude files when it has no `.gitignore` — we don't
+ * fall back to the workspace patterns at the nested level because a nested
+ * repo's silence is its own choice.
  */
-function loadGitignoreFilterSync(rootPath: string): Ignore {
+function loadGitignoreFilterSync(rootPath: string, globalExcludesFile: string | null): Ignore {
+  const excludeRules = readGitExcludeRulesSync(rootPath, globalExcludesFile);
   const gitignorePath = path.join(rootPath, '.gitignore');
   try {
     const content = fs.readFileSync(gitignorePath, 'utf-8');
-    return ignore().add(content);
+    return ignore().add(excludeRules).add(content);
   } catch {
-    return ignore();
+    return ignore().add(excludeRules);
   }
 }
 
@@ -361,7 +378,7 @@ function isGitignoredScoped(
 
   let nestedFilter = entry.nestedGitignoreCache.get(owningRoot);
   if (!nestedFilter) {
-    nestedFilter = loadGitignoreFilterSync(owningRoot);
+    nestedFilter = loadGitignoreFilterSync(owningRoot, entry.globalExcludesFile);
     entry.nestedGitignoreCache.set(owningRoot, nestedFilter);
   }
   const rootRel = path.relative(owningRoot, absolutePath).split(path.sep).join('/');
@@ -381,12 +398,12 @@ function reloadGitignoreFiltersForPath(absolutePath: string, entry: BusEntry): b
   let reloaded = false;
 
   if (normalizedPath === workspaceGitignorePath) {
-    entry.workspaceGitignoreFilter = loadWorkspaceGitignoreFilterSync(entry.workspaceAbs);
+    entry.workspaceGitignoreFilter = loadWorkspaceGitignoreFilterSync(entry.workspaceAbs, entry.globalExcludesFile);
     reloaded = true;
   } else {
     const candidateRoot = path.dirname(normalizedPath);
     if (entry.nestedGitignoreCache.has(candidateRoot) || fs.existsSync(path.join(candidateRoot, '.git'))) {
-      entry.nestedGitignoreCache.set(candidateRoot, loadGitignoreFilterSync(candidateRoot));
+      entry.nestedGitignoreCache.set(candidateRoot, loadGitignoreFilterSync(candidateRoot, entry.globalExcludesFile));
       reloaded = true;
     }
   }
@@ -443,7 +460,8 @@ export function setGitignoreChangeHandler(handler: GitignoreChangeHandler | null
 
 /**
  * WorkspaceEventBus owns a single fs.watch/chokidar watcher per workspace,
- * loads .gitignore, and emits filtered events to all subscribers.
+ * loads git's ignore rules (global excludes file, info/exclude, .gitignore),
+ * and emits filtered events to all subscribers.
  *
  * Both OptimizedWorkspaceWatcher and SessionFileWatcher subscribe to this bus
  * rather than creating their own watchers.
@@ -467,12 +485,15 @@ export async function subscribe(
 
   const entry: BusEntry = {
     lifecycle: null!, expandedPaths: new Set(), listeners: new Map([[subscriberId, listener]]),
-    workspaceAbs: key, workspaceGitignoreFilter: ignore(), nestedGitignoreCache: new Map(),
+    workspaceAbs: key, workspaceGitignoreFilter: ignore(), globalExcludesFile: null, nestedGitignoreCache: new Map(),
     gitRootDirCache: new Map(), gitignoreBypassPaths: new Set(), bypassOwners: new Map(), replayBuffer: [],
   };
   entry.lifecycle = new RecoveringFileWatcher(async (current, fail, ready) => {
-    const filter = await loadGitignoreFilter(key);
+    // Running git is async, so it happens here, once per start, never in `ignored`.
+    const globalExcludesFile = await resolveGlobalExcludesFile(key);
+    const filter = await loadGitignoreFilter(key, globalExcludesFile);
     if (!current()) return { close() {} } as NativeWatchHandle;
+    entry.globalExcludesFile = globalExcludesFile;
     entry.workspaceGitignoreFilter = filter;
     entry.nestedGitignoreCache.clear();
     entry.gitRootDirCache.clear();

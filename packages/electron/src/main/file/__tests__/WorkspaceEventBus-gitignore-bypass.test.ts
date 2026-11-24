@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Tests for gitignore bypass and replay buffer in WorkspaceEventBus.
  *
@@ -10,6 +11,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
+import { execFileSync } from 'child_process';
+import * as os from 'os';
+import * as path from 'path';
+import { gitSandboxEnv } from '../../services/testSupport/gitTestSandbox';
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks — must run before vi.mock() factories
@@ -548,6 +553,63 @@ describe('WorkspaceEventBus gitignore bypass', () => {
       expect(listener.onChange).not.toHaveBeenCalled();
 
       unsubscribe(WORKSPACE, 'test-sub');
+    });
+  });
+
+  describe('folders excluded by .git/info/exclude', () => {
+    const originalEnv = { ...process.env };
+    let sandbox: string;
+    let workspace: string;
+
+    function replaceProcessEnv(next: NodeJS.ProcessEnv): void {
+      for (const key of Object.keys(process.env)) if (!(key in next)) delete process.env[key];
+      Object.assign(process.env, next);
+    }
+
+    beforeEach(async () => {
+      const actualFs = await vi.importActual<typeof import('fs')>('fs');
+      const actualFsPromises = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+      // A real repository: its ignore rules come from the files on disk.
+      mockGitignoreReadFile.mockImplementation(actualFsPromises.readFile as never);
+      mockGitignoreReadFileSync.mockImplementation(actualFs.readFileSync as never);
+      sandbox = actualFs.realpathSync(actualFs.mkdtempSync(path.join(os.tmpdir(), 'nimbalyst-test-')));
+      // The bus runs git itself: keep hook GIT_* and this machine's excludes out.
+      replaceProcessEnv({ ...gitSandboxEnv(), HOME: path.join(sandbox, 'home'), XDG_CONFIG_HOME: path.join(sandbox, 'xdg') });
+      workspace = path.join(sandbox, 'repo');
+      actualFs.mkdirSync(workspace);
+      execFileSync('git', ['init', '--initial-branch=main'], { cwd: workspace, stdio: 'pipe', env: gitSandboxEnv() });
+      actualFs.writeFileSync(path.join(workspace, '.git', 'info', 'exclude'), '/scratch/\n');
+    });
+
+    afterEach(async () => {
+      replaceProcessEnv(originalEnv);
+      const actualFs = await vi.importActual<typeof import('fs')>('fs');
+      actualFs.rmSync(sandbox, { recursive: true, force: true });
+    });
+
+    it('B7: an open file under an excluded folder still gets add and unlink events', async () => {
+      const listener = createListener();
+      await subscribe(workspace, 'test-sub', listener);
+      const openFile = `${workspace}/scratch/open.txt`;
+      addGitignoreBypass(workspace, openFile, 'open:window:one');
+
+      mockFsAccess.mockResolvedValue(undefined);
+      fireWatchEvent('rename', 'scratch/open.txt');
+      fireWatchEvent('rename', 'scratch/other.txt');
+      await drainWorkspaceEvents(workspace);
+
+      // The sibling is excluded and not open, so only the open file arrives.
+      expect(listener.changes).toEqual([{ path: openFile, type: 'add', bypassed: true }]);
+
+      mockFsAccess.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      fireWatchEvent('rename', 'scratch/open.txt');
+      await drainWorkspaceEvents(workspace);
+
+      expect(listener.changes).toEqual([
+        { path: openFile, type: 'add', bypassed: true },
+        { path: openFile, type: 'unlink', bypassed: true },
+      ]);
+      unsubscribe(workspace, 'test-sub');
     });
   });
 });

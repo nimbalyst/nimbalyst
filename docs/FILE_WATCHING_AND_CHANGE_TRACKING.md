@@ -119,7 +119,9 @@ The gitignore bypass mechanism ensures that files written by AI tools to gitigno
 
 #### Why It Exists
 
-WorkspaceEventBus loads `.gitignore` (or fallback patterns) and filters all file events through it. This is correct for user-facing file tree updates (nobody wants `node_modules/` flooding the sidebar), but breaks AI change detection when Claude Code writes to a gitignored path. The bypass system lets specific paths opt out of gitignore filtering.
+WorkspaceEventBus loads git's ignore rules (or fallback patterns) and filters all file events through them. This is correct for user-facing file tree updates (nobody wants `node_modules/` flooding the sidebar), but breaks AI change detection when Claude Code writes to a gitignored path. The bypass system lets specific paths opt out of gitignore filtering.
+
+Each checkout's filter combines three sources in git's precedence order, lowest first: the global excludes file (`core.excludesFile` as git resolves it in the checkout, or `$XDG_CONFIG_HOME/git/ignore`, falling back to `~/.config/git/ignore`, when it is unset), the repository's `info/exclude` (the main repository's for a linked worktree), then the root `.gitignore`. Later rules win, so a `.gitignore` negation re-includes a path the exclude files ignore. The fallback patterns apply only when the root `.gitignore` is missing. Nested checkouts use their own `info/exclude` and `.gitignore`; a workspace root that is not a checkout gets neither exclude file. The global excludes path is resolved with `git` once per watcher start, because chokidar's `ignored` callback is synchronous and only reads files. Edits to `info/exclude` or the global excludes file therefore apply from the next watcher start, not live: they sit under `.git`, which is never watched, or outside the workspace.
 
 #### API
 
