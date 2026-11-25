@@ -60,6 +60,7 @@ import {
   writeScrollback,
   deleteScrollbackFile,
 } from '../utils/terminalStore';
+import { flattenReplayHyperlinks } from './terminalHyperlinks';
 
 // Maximum scrollback buffer size (500KB)
 const MAX_SCROLLBACK_SIZE = 500 * 1024;
@@ -1306,11 +1307,14 @@ export class TerminalSessionManager {
   }
 
   async getRestoreSnapshot(terminalId: string, workspacePath?: string): Promise<TerminalRestoreSnapshot> {
+    // TEMPORARY: OSC 8 hyperlinks are flattened out of replayed scrollback to avoid a
+    // ghostty-vt hyperlink-arena exhaustion hang on restore. Remove once the upstream
+    // terminal degrades gracefully (coder/ghostty-web#186 / ghostty-org/ghostty).
     const active = this.terminals.get(terminalId);
     if (active) {
       return {
         terminalId,
-        scrollback: active.scrollbackBuffer,
+        scrollback: flattenReplayHyperlinks(active.scrollbackBuffer),
         sequence: active.outputSequence,
         cols: active.cols,
         rows: active.rows,
@@ -1325,7 +1329,7 @@ export class TerminalSessionManager {
     const storedMetadata = await this.loadStoredTerminalMetadata(terminalId, workspacePath);
     return {
       terminalId,
-      scrollback: storedMetadata?.scrollback || '',
+      scrollback: flattenReplayHyperlinks(storedMetadata?.scrollback || ''),
       sequence: 0,
       cols: storedMetadata?.cols || 80,
       rows: storedMetadata?.rows || 30,
