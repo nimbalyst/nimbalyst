@@ -17,6 +17,8 @@ If none of the above are true, run E2E tests normally.
 
 **ALWAYS use the \****`/e2e-devcontainer`**\*\* command when running E2E tests in a dev container.**
 
+On Linux hosts, `packages/electron/scripts/e2e-host.sh` is an alternative for worktrees: it needs neither Docker nor the developer's dev server. See [Running Without the Dev Server](#running-without-the-dev-server-host-runner).
+
 ### Running Targeted Tests
 
 You may use the `e2e-runner` agent to run **targeted E2E tests** related to the code you are working on. However:
@@ -138,8 +140,24 @@ background check.
 ### Important Constraints
 
 - **One file at a time**: Each spec file launches its own Electron instance. The PGLite database only allows one connection, so Playwright must run with `workers: 1` (configured in `playwright.config.ts`).
-- **Dev server required**: Tests expect the Vite dev server running on port 5273. Start it with `pnpm run dev` in `packages/electron/`.
+- **Dev server required**: Tests expect the Vite dev server running on port 5273. Start it with `pnpm run dev` in `packages/electron/`, or use the host runner below.
 - **No parallel execution**: Never use `--workers=N` with N > 1.
+
+### Running Without the Dev Server (Host Runner)
+
+`packages/electron/scripts/e2e-host.sh` runs specs on Linux without `pnpm run dev` and without Docker, so an agent can verify a change in its own worktree while the developer's dev instance keeps running:
+
+```bash
+cd packages/electron
+./scripts/e2e-host.sh e2e/worktree/worktree.spec.ts            # builds, then runs
+./scripts/e2e-host.sh --skip-build e2e/smoke/ --reporter=line  # reuse the last build
+```
+
+- Builds the workspace packages, extensions, worker, main and preload, then serves the renderer from the real `electron.vite.config.ts` (`scripts/renderer-dev-server.mjs`) on port 5373 (`NIMBALYST_E2E_RENDERER_PORT`). Port 5273 is refused.
+- `scripts/warm-renderer.mjs` fetches the renderer's whole import graph before Electron starts. A cold server compiles ~3,000 modules and re-optimizes dependencies on the first page load, which reloads the page under a running test.
+- Runs under `xvfb-run` when installed, so no windows appear (`NIMBALYST_E2E_HEADED=1` shows them). Temp workspaces and userData go under `e2e_test_output/tmp`.
+- The per-test budget defaults to 60s (`NIMBALYST_E2E_TIMEOUT`); a first launch under software rendering can exceed the config's 15s. A `--timeout` you pass still wins.
+- The specs talk to `NIMBALYST_E2E_DEV_SERVER_URL`, which the runner sets; `e2e/helpers.ts` falls back to port 5273 without it.
 
 ## Extension Tests (CDP-based)
 
