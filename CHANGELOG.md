@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Clicking an `@path` file mention in an agent reply now opens that file, instead of a path with the `@` that does not exist
 
 ### Removed
 <!-- Removed features go here -->
