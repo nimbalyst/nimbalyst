@@ -91,6 +91,7 @@ DO NOT add component-level IPC subscriptions for these events. Use the existing 
 - **Theme** (`store/listeners/themeListeners.ts`): `theme-change` -> `themeIdAtom`
 - **Permissions** (`store/listeners/permissionListeners.ts`): `permissions:changed` -> `permissionsChangedVersionAtom` (counter; consumers re-fetch)
 - **Codex auth** (`store/listeners/openAICodexAuthListeners.ts`): `openai-codex:auth-updated` -> `openAICodexAuthVersionAtom` (counter; the settings panel re-fetches)
+- **Claude account models** (`store/listeners/claudeAccountModelsListeners.ts`): `claude-code:account-models-changed` -> `claudeAccountModelsVersionAtom` (counter; the chat model picker re-fetches)
 - **Sync** (`store/listeners/syncListeners.ts`): `sync:status-changed` -> `syncStatusUpdateAtom`
 - **Database migration** (`store/listeners/dbMigrationListeners.ts`): `db:migration:phase`/`progress`/`complete`/`failed` -> the `dbMigration*` atoms
 - **Update toast** (`store/listeners/updateListeners.ts`): all `update-toast:*` events

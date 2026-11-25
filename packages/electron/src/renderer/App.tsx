@@ -121,6 +121,7 @@ import { initActionPromptListeners } from './store/listeners/actionPromptListene
 import { initAiCommandListeners } from './store/listeners/aiCommandListeners';
 import { initAppCommandListeners } from './store/listeners/appCommandListeners';
 import { initClaudeUsageListeners } from './store/listeners/claudeUsageListeners';
+import { initClaudeAccountModelsListeners } from './store/listeners/claudeAccountModelsListeners';
 import { initPromptSuggestionListeners } from './store/listeners/promptSuggestionListeners';
 import { initClaudeCliTerminalListeners } from './store/listeners/claudeCliTerminalListeners';
 import { initWindowFocusListeners } from './store/listeners/windowFocusListeners';
@@ -434,6 +435,7 @@ export default function App() {
     const cleanupAiCommands = initAiCommandListeners();
     const cleanupAppCommands = initAppCommandListeners();
     const cleanupClaude = initClaudeUsageListeners();
+    const cleanupClaudeAccountModels = initClaudeAccountModelsListeners();
     const cleanupPromptSuggestion = initPromptSuggestionListeners();
     const cleanupClaudeCliTerminal = initClaudeCliTerminalListeners();
     const cleanupWindowFocus = initWindowFocusListeners();
@@ -493,6 +495,7 @@ export default function App() {
       cleanupAiCommands?.();
       cleanupAppCommands?.();
       cleanupClaude?.();
+      cleanupClaudeAccountModels?.();
       cleanupPromptSuggestion?.();
       cleanupClaudeCliTerminal?.();
       cleanupWindowFocus?.();

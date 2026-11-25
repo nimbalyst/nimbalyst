@@ -7,6 +7,7 @@ import { ModelSelector } from '../ModelSelector';
 import { AIInputControls } from '../AIInputControls';
 import { isOpenModelPickerShortcut } from '../AIInput';
 import { advancedSettingsAtom } from '../../../store/atoms/appSettings';
+import { claudeAccountModelsVersionAtom } from '../../../store/atoms/claudeAccountModels';
 
 vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: () => null,
@@ -189,6 +190,64 @@ describe('AI model picker keyboard controls', () => {
       await modelsPromise;
     });
     aiInput.remove();
+  });
+
+  it('reloads the list when main says the account models changed, so a new model shows in a window that is already open', async () => {
+    const aiGetModels = vi.fn()
+      .mockResolvedValueOnce({
+        success: true,
+        grouped: { claude: [{ id: 'claude:haiku', name: 'Haiku', provider: 'claude' }] },
+      })
+      .mockResolvedValue({
+        success: true,
+        grouped: {
+          claude: [
+            { id: 'claude:haiku', name: 'Haiku', provider: 'claude' },
+            { id: 'claude:mythos', name: 'Mythos', provider: 'claude' },
+          ],
+        },
+      });
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { aiGetModels } });
+
+    const testStore = createStore();
+    testStore.set(advancedSettingsAtom, { ...testStore.get(advancedSettingsAtom), showDirectChatProviders: true });
+    render(
+      <Provider store={testStore}>
+        <ModelSelector currentModel="claude:haiku" onModelChange={() => {}} />
+      </Provider>,
+    );
+    await waitFor(() => expect(aiGetModels).toHaveBeenCalledTimes(1));
+
+    // The listener in store/listeners bumps this counter when main sends the signal.
+    await act(async () => {
+      testStore.set(claudeAccountModelsVersionAtom, (version) => version + 1);
+    });
+
+    await waitFor(() => expect(aiGetModels).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByTestId('model-picker'));
+    expect(await screen.findByRole('button', { name: 'Mythos' })).toBeTruthy();
+  });
+
+  it('does not reload the list on mount just because the counter exists', async () => {
+    const aiGetModels = vi.fn().mockResolvedValue({
+      success: true,
+      grouped: { claude: [{ id: 'claude:haiku', name: 'Haiku', provider: 'claude' }] },
+    });
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { aiGetModels } });
+
+    const testStore = createStore();
+    testStore.set(advancedSettingsAtom, { ...testStore.get(advancedSettingsAtom), showDirectChatProviders: true });
+    // A counter that is already above zero must not cause a second load.
+    testStore.set(claudeAccountModelsVersionAtom, 3);
+    render(
+      <Provider store={testStore}>
+        <ModelSelector currentModel="claude:haiku" onModelChange={() => {}} />
+      </Provider>,
+    );
+
+    await waitFor(() => expect(aiGetModels).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(aiGetModels).toHaveBeenCalledTimes(1);
   });
 
   it('focuses models by typing ahead against names and model IDs', async () => {

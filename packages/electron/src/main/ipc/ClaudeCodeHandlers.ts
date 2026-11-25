@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { BrowserWindow } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import { claudeCodeDetector } from '../services/ClaudeCodeDetector';
@@ -6,13 +7,32 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../utils/logger';
 import { setupClaudeCodeEnvironment, resolveClaudeCodeExecutablePath, resolveNativeBinaryPath, findOrphanedClaudeUpdateFiles, describeMissingClaudeRuntime } from '@nimbalyst/runtime/electron/claudeCodeEnvironment';
 import { AnalyticsService } from "../services/analytics/AnalyticsService.ts";
-import { shouldShowClaudeCodeWindowsWarning, dismissClaudeCodeWindowsWarning } from '../utils/store';
+import { shouldShowClaudeCodeWindowsWarning, dismissClaudeCodeWindowsWarning, getClaudeCodeDiscoveredModels, setClaudeCodeDiscoveredModels } from '../utils/store';
+import { claudeUsageService } from '../services/ClaudeUsageService';
+import { detectAccountModels } from '../services/ai/claudeAccountModels';
+import { ModelRegistry } from '@nimbalyst/runtime/ai/server/ModelRegistry';
 import os from "os";
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 
 // Use IPC component logger for this file
 const log = logger.ipc;
 const analytics = AnalyticsService.getInstance();
+
+/**
+ * Tell every open window that the account model list changed, so a chat model picker that
+ * is already open reads the list again. The renderer listens in
+ * store/listeners/claudeAccountModelsListeners.ts.
+ */
+function broadcastAccountModelsChanged(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+    try {
+      win.webContents.send('claude-code:account-models-changed');
+    } catch {
+      // A window that closes during the send needs no signal.
+    }
+  }
+}
 
 /** Wrap a path for safe inclusion in a POSIX shell command (handles spaces and quotes). */
 function shellQuote(value: string): string {
@@ -73,6 +93,23 @@ export function registerClaudeCodeHandlers() {
     const status = await claudeCodeDetector.getStatus();
     return status;
   });
+  // Ask Anthropic which models the signed-in Claude account can use, and save the ones
+  // the built-in list lacks. Runs only when the user clicks "Detect account models".
+  safeHandle('claude-code:detect-account-models', async () => {
+    return detectAccountModels({
+      getToken: () => claudeUsageService.getAccessTokenForApi(),
+      fetchImpl: fetch,
+      save: setClaudeCodeDiscoveredModels,
+      // Runs once, after the new list is saved and only when the run worked. The windows
+      // read the list again at once, so the cache is cleared before the signal goes out.
+      clearModelCache: () => {
+        ModelRegistry.clearCache();
+        broadcastAccountModelsChanged();
+      },
+      getSaved: getClaudeCodeDiscoveredModels,
+    });
+  });
+
   // Check login status
   safeHandle('claude-code:check-login', async () => {
     try {

@@ -38,6 +38,7 @@ import {
 import { logger } from '../utils/logger';
 import { getShellEnvironment } from './shellEnvironment';
 import { ClaudeSettingsManager } from './ClaudeSettingsManager';
+import { CLAUDE_OAUTH_BETA } from './ai/claudeAccountModels';
 import { parseClaudeUsageResponse, type ClaudeUsageData } from '../../shared/claudeUsage';
 import { claudeUsageWeekSamples } from '../../shared/usageHistory';
 import { usageHistoryStore } from './UsageHistoryStore';
@@ -50,6 +51,16 @@ interface KeychainCredentials {
   claudeAiOauth?: {
     accessToken?: string;
   };
+}
+
+/**
+ * Name and code of an error, for a log line. Never the message: a JSON parse error quotes
+ * the start of the text it read, and that text can be the credential.
+ */
+function errorNameAndCode(error: unknown): string {
+  const name = error instanceof Error ? error.name : typeof error;
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return `${name}${code ? ` (${code})` : ''}`;
 }
 
 const USAGE_API_URL = 'https://api.anthropic.com/api/oauth/usage';
@@ -238,6 +249,15 @@ class ClaudeUsageServiceImpl {
     return { ...process.env, ...shellEnv, ...settingsEnv };
   }
 
+  /**
+   * The Claude Code sign-in token for one outgoing Anthropic API call, or null when the
+   * user is signed out. Uses the same env and lookup as `doRefresh`. The caller must send
+   * the token only to Anthropic and must never log or store it.
+   */
+  async getAccessTokenForApi(): Promise<string | null> {
+    return this.getAccessToken(await this.resolveClaudeEnv());
+  }
+
   private getAccessToken(env: ClaudeEnv): string | null {
     if (process.platform === 'darwin') {
       const keychainToken = this.getAccessTokenFromKeychain(env);
@@ -283,7 +303,8 @@ class ClaudeUsageServiceImpl {
 
       return token;
     } catch (error) {
-      logger.main.warn('[ClaudeUsageService] Error reading credentials file:', error);
+      // The credentials file holds the credential, so log the name and code only.
+      logger.main.warn(`[ClaudeUsageService] Error reading credentials file: ${errorNameAndCode(error)}`);
       return null;
     }
   }
@@ -313,7 +334,8 @@ class ClaudeUsageServiceImpl {
         return null;
       }
       // Log other errors but continue to try fallback
-      logger.main.warn(`[ClaudeUsageService] Error reading keychain entry ${serviceName}:`, error);
+      // The keychain entry is the credential, so log the name and code only.
+      logger.main.warn(`[ClaudeUsageService] Error reading keychain entry ${serviceName}: ${errorNameAndCode(error)}`);
       return null;
     }
   }
@@ -329,7 +351,7 @@ class ClaudeUsageServiceImpl {
             'Authorization': `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
             'Accept': 'application/json',
-            'anthropic-beta': 'oauth-2025-04-20',
+            'anthropic-beta': CLAUDE_OAUTH_BETA,
             'User-Agent': `claude-code/${this.getClaudeCodeVersion()}`,
           },
         });

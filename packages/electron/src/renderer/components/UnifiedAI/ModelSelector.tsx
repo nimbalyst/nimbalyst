@@ -19,6 +19,7 @@ import { registerClaudeCustomModelsFromCatalog } from '@nimbalyst/runtime/ai/cla
 import { getClaudeCodeModelLabel } from '../../utils/modelUtils';
 import { advancedSettingsAtom, aiProviderSettingsAtom } from '../../store/atoms/appSettings';
 import { setWindowModeAtom } from '../../store/atoms/windowMode';
+import { claudeAccountModelsVersionAtom } from '../../store/atoms/claudeAccountModels';
 import { navigateToSettingsAtom } from '../../store/atoms/settingsNavigation';
 import type { SettingsCategory } from '../Settings/SettingsSidebar';
 import { AlphaBadge } from '../common/AlphaBadge';
@@ -84,6 +85,7 @@ export function ModelSelector({
   const [loading, setLoading] = useState(false);
   const aiProviderSettings = useAtomValue(aiProviderSettingsAtom);
   const advancedSettings = useAtomValue(advancedSettingsAtom);
+  const accountModelsVersion = useAtomValue(claudeAccountModelsVersionAtom);
   const { providers } = aiProviderSettings;
   const setWindowMode = useSetAtom(setWindowModeAtom);
   const navigateToSettings = useSetAtom(navigateToSettingsAtom);
@@ -147,6 +149,16 @@ export function ModelSelector({
     setModels({});
     void loadModels();
   }, [providers, loadModels]);
+
+  // "Detect account models" in Settings changes the list without changing any provider
+  // setting. Read the list again when it says so, and keep the old list on screen until the
+  // new one arrives. The first value is skipped: the effect above already loads on mount.
+  const seenAccountModelsVersionRef = React.useRef(accountModelsVersion);
+  useEffect(() => {
+    if (accountModelsVersion === seenAccountModelsVersionRef.current) return;
+    seenAccountModelsVersionRef.current = accountModelsVersion;
+    void loadModels();
+  }, [accountModelsVersion, loadModels]);
 
   const handleModelSelect = (modelId: string) => {
     resetTypeahead();
