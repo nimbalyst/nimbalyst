@@ -6,6 +6,7 @@
  * fixture because the resolution is entirely `existsSync` walking.
  */
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -25,6 +26,11 @@ import {
   resolveRepoForFile,
 } from '../workspaceRepos';
 import { __resetGitRootCache } from '../GitStatusService';
+import { FIXTURE_IDENTITY_ARGS, gitSandboxEnv } from '../testSupport/gitTestSandbox';
+
+function git(args: string[], cwd: string): void {
+  execFileSync('git', args, { cwd, stdio: 'pipe', env: gitSandboxEnv() });
+}
 
 let tmpRoot: string;
 let appRepo: string;
@@ -60,28 +66,49 @@ describe('workspace repos', () => {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('lists a root that is itself a repo, and repos one level inside a container root', () => {
+  it('lists a root that is itself a repo, and repos one level inside a container root', async () => {
     rootsByWorkspace.set(appRepo, [appRepo, infraContainer]);
 
-    expect(listWorkspaceRepos(appRepo)).toEqual([appRepo, infraRepoA]);
+    expect(await listWorkspaceRepos(appRepo)).toEqual([appRepo, infraRepoA]);
   });
 
-  it('reports no repos for a workspace of plain folders', () => {
+  it('reports no repos for a workspace of plain folders', async () => {
     // Callers must handle this rather than indexing [0] -- a workspace with no
     // git at all is valid, and the picker says "(not a git repo)".
     rootsByWorkspace.set(plainFolder, [plainFolder]);
 
-    expect(listWorkspaceRepos(plainFolder)).toEqual([]);
-    expect(resolveDefaultRepo(plainFolder)).toBeNull();
+    expect(await listWorkspaceRepos(plainFolder)).toEqual([]);
+    expect(await resolveDefaultRepo(plainFolder)).toBeNull();
   });
 
-  it('does not list a submodule as a top-level repo', () => {
+  it('does not list a submodule as a top-level repo', async () => {
     // A repo root answers with itself; its nested repos are reached per file.
     // Listing them here would fill the repo picker with submodules.
     mkRepo(path.join(appRepo, 'vendor', 'lib'));
     rootsByWorkspace.set(appRepo, [appRepo]);
 
-    expect(listWorkspaceRepos(appRepo)).toEqual([appRepo]);
+    expect(await listWorkspaceRepos(appRepo)).toEqual([appRepo]);
+  });
+
+  it('lists the clones a repo root ignores, not ignored folders or its own linked worktrees', async () => {
+    // An umbrella repo whose separate clones sit inside it, each gitignored so
+    // the umbrella's history stays its own.
+    const umbrella = path.join(tmpRoot, 'umbrella');
+    const clone = path.join(umbrella, 'service-a');
+    fs.mkdirSync(umbrella);
+    git(['init', '-q'], umbrella);
+    fs.writeFileSync(path.join(umbrella, '.gitignore'), '/service-a/\n/build/\n/.claude/\n');
+    git(['add', '.'], umbrella);
+    git([...FIXTURE_IDENTITY_ARGS, 'commit', '-q', '-m', 'init'], umbrella);
+    fs.mkdirSync(clone);
+    git(['init', '-q'], clone);
+    fs.mkdirSync(path.join(umbrella, 'build', 'out'), { recursive: true });
+    git(['worktree', 'add', '-q', '-b', 'agent', path.join(umbrella, '.claude', 'worktrees', 'agent')], umbrella);
+    rootsByWorkspace.set(umbrella, [umbrella]);
+
+    expect(await listWorkspaceRepos(umbrella)).toEqual([umbrella, clone]);
+    expect(await listRepoScanPaths(umbrella)).toEqual([umbrella, clone]);
+    expect(await resolveDefaultRepo(umbrella)).toBe(umbrella);
   });
 
   it('attributes a file in an attached folder to that folder repo', () => {
@@ -153,13 +180,13 @@ describe('workspace repos', () => {
     expect([...groups.keys()]).toEqual([appRepo]);
   });
 
-  it('includes repos below a container root in the workspace-wide scan set', () => {
+  it('includes repos below a container root in the workspace-wide scan set', async () => {
     // Workspace-wide status iterates this. Iterating ROOTS instead leaves an
     // attached container -- which is not itself a repo -- contributing nothing,
     // so its checkouts get no status badges even though the picker lists them.
     rootsByWorkspace.set(appRepo, [appRepo, infraContainer]);
 
-    expect(listRepoScanPaths(appRepo)).toEqual([appRepo, infraContainer, infraRepoA]);
+    expect(await listRepoScanPaths(appRepo)).toEqual([appRepo, infraContainer, infraRepoA]);
   });
 
   it('attributes a Windows-form path to its attached root', () => {
