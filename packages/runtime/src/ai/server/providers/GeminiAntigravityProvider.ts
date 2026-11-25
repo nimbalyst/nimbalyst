@@ -48,6 +48,17 @@ import {
   bareGeminiModelKey,
   discoverGeminiModels,
 } from './geminiAntigravity/geminiAntigravityModels';
+import {
+  AgySessionManager,
+  contextWindowForAgyModel,
+  discoverAgyModels,
+  findAgyBinary,
+  inlineGeminiAttachments,
+  normalizeAgyModelSlug,
+  prepareAgyAttachments,
+  type AgyEnvLoader,
+  type AgyPathLoader,
+} from './geminiAntigravity/AgyCliHarness';
 import type { ProviderSessionData } from './ProviderSessionManager';
 import type {
   AgentToolDefinition,
@@ -119,13 +130,23 @@ function clampCommandOutput(text: string): string {
 export class GeminiAntigravityProvider extends BaseAgentProvider {
   private static toolExecutor: GeminiToolExecutor | null = null;
   private static serverConfigLoader: (() => GeminiServerConfig) | null = null;
+  private static shellEnvironmentLoader: AgyEnvLoader | null = null;
+  private static enhancedPathLoader: AgyPathLoader | null = null;
 
   private readonly sessionStates = new Map<string, SessionState>();
   private readonly server: AntigravityServerManager;
+  private readonly findAgyBinaryFn: (pathLoader?: AgyPathLoader | null) => Promise<string | null>;
+  private readonly agySessionManager: AgySessionManager;
 
-  constructor(deps?: { server?: AntigravityServerManager }) {
+  constructor(deps?: {
+    server?: AntigravityServerManager;
+    findAgyBinary?: (pathLoader?: AgyPathLoader | null) => Promise<string | null>;
+    agySessionManager?: AgySessionManager;
+  }) {
     super();
     this.server = deps?.server ?? AntigravityServerManager.shared();
+    this.findAgyBinaryFn = deps?.findAgyBinary ?? findAgyBinary;
+    this.agySessionManager = deps?.agySessionManager ?? AgySessionManager.shared();
   }
 
   getProviderName(): AIProviderType {
@@ -159,6 +180,9 @@ export class GeminiAntigravityProvider extends BaseAgentProvider {
     for (const state of this.sessionStates.values()) {
       state.abortController?.abort();
       state.toolLoop.abort();
+    }
+    for (const sid of this.sessionStates.keys()) {
+      this.agySessionManager.abortSession(sid);
     }
     super.abort();
   }
@@ -225,8 +249,65 @@ export class GeminiAntigravityProvider extends BaseAgentProvider {
     const pendingCalls = new Map<string, { id: string; name: string; args: Record<string, unknown> }>();
 
     try {
+      const agyBinPath = await this.findAgyBinaryFn(GeminiAntigravityProvider.enhancedPathLoader);
+      if (agyBinPath) {
+        const prepared = await prepareAgyAttachments(message, _attachments);
+        const modelSlug = normalizeAgyModelSlug(
+          this.config?.model ?? (documentContext as { model?: string } | undefined)?.model ?? state.modelKey,
+        );
+        for await (const ev of this.agySessionManager.runTurn({
+          sessionId,
+          prompt: prepared.prompt,
+          modelSlug,
+          workspacePath,
+          extraDirs: prepared.extraDirs,
+          abortSignal: abortController.signal,
+          pathLoader: GeminiAntigravityProvider.enhancedPathLoader,
+          envLoader: GeminiAntigravityProvider.shellEnvironmentLoader,
+          agyBinPath,
+        })) {
+          if (abortController.signal.aborted) break;
+          if (ev.type === 'text') {
+            finalText += ev.content;
+            sawText = true;
+            yield { type: 'text', content: ev.content };
+          } else if (ev.type === 'tool_call') {
+            yield { type: 'tool_call', toolCall: { id: ev.id, name: ev.name, arguments: ev.args } };
+          } else if (ev.type === 'tool_result') {
+            await this.logAgentMessageBestEffort(
+              sessionId,
+              'output',
+              JSON.stringify({ name: ev.name, result: ev.result, args: ev.args }),
+              { metadata: { role: 'tool', timestamp: Date.now(), toolUseId: ev.id } },
+            );
+            yield {
+              type: 'tool_call',
+              toolCall: { id: ev.id, name: ev.name, arguments: ev.args, result: ev.result },
+            };
+          } else if (ev.type === 'complete') {
+            const persisted = ev.content || finalText || '(no model response)';
+            await this.logAgentMessageBestEffort(sessionId, 'output', persisted, {
+              metadata: { role: 'assistant', timestamp: Date.now(), model: modelSlug },
+            });
+            yield {
+              type: 'complete',
+              content: persisted,
+              isComplete: true,
+              ...(ev.usage ? { usage: ev.usage } : {}),
+              ...(ev.contextFillTokens !== undefined ? { contextFillTokens: ev.contextFillTokens } : {}),
+              ...(ev.contextWindow !== undefined ? { contextWindow: ev.contextWindow } : {}),
+              ...(ev.contextCompacted ? { contextCompacted: true } : {}),
+            };
+          } else if (ev.type === 'error') {
+            yield { type: 'error', error: ev.error };
+          }
+        }
+        return;
+      }
+
+      const fallbackMessage = await inlineGeminiAttachments(message, _attachments);
       for await (const step of state.toolLoop.run(
-        message,
+        fallbackMessage,
         turnSystemPrompt,
         (tools ?? []) as Array<{ type: 'function'; function: { name: string } }>,
         (name, args) => this.executeTool(state, name, args),
@@ -495,6 +576,14 @@ export class GeminiAntigravityProvider extends BaseAgentProvider {
     GeminiAntigravityProvider.serverConfigLoader = loader;
   }
 
+  static setShellEnvironmentLoader(loader: AgyEnvLoader | null): void {
+    GeminiAntigravityProvider.shellEnvironmentLoader = loader;
+  }
+
+  static setEnhancedPathLoader(loader: AgyPathLoader | null): void {
+    GeminiAntigravityProvider.enhancedPathLoader = loader;
+  }
+
   // --- Detection and catalog ----------------------------------------------
 
   static readonly NOT_INSTALLED_MESSAGE =
@@ -525,16 +614,24 @@ export class GeminiAntigravityProvider extends BaseAgentProvider {
   }
 
   /**
-   * The model catalog, discovered from the language server when it is already
-   * running and falling back to a short seed list otherwise. See
-   * `geminiAntigravityModels.ts` for why discovery never spawns the server.
+   * The model catalog, discovered live from `agy models` when the Antigravity
+   * CLI is installed, falling back to a running Antigravity language server or
+   * the seed list otherwise.
    */
   static async getModels(): Promise<AIModel[]> {
-    const models = await discoverGeminiModels(AntigravityServerManager.shared());
+    const agyModels = await discoverAgyModels(
+      GeminiAntigravityProvider.enhancedPathLoader,
+      GeminiAntigravityProvider.shellEnvironmentLoader,
+    );
+    const models =
+      agyModels && agyModels.length > 0
+        ? agyModels
+        : await discoverGeminiModels(AntigravityServerManager.shared());
     return models.map((m) => ({
       id: `${GEMINI_ANTIGRAVITY_PROVIDER}:${m.key}`,
       name: m.displayName,
       provider: GEMINI_ANTIGRAVITY_PROVIDER,
+      contextWindow: contextWindowForAgyModel(m.key),
     }));
   }
 }

@@ -52,7 +52,7 @@ describe('GeminiAntigravityProvider.sendMessage', () => {
     getModelResponse = vi.spyOn(AntigravityServerManager.prototype, 'getModelResponse');
     executor = vi.fn(async (_args: GeminiToolExecutorArgs) => ({ text: 'tool ok' }));
     GeminiAntigravityProvider.setToolExecutor(executor as never);
-    provider = new GeminiAntigravityProvider();
+    provider = new GeminiAntigravityProvider({ findAgyBinary: async () => null });
     await provider.initialize({});
   });
 

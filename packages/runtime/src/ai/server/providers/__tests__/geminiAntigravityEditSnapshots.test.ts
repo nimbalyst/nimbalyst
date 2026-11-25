@@ -61,7 +61,7 @@ describe('GeminiAntigravityProvider edit snapshots', () => {
 
   beforeEach(async () => {
     getModelResponse = vi.spyOn(AntigravityServerManager.prototype, 'getModelResponse');
-    provider = new GeminiAntigravityProvider();
+    provider = new GeminiAntigravityProvider({ findAgyBinary: async () => null });
     await provider.initialize({});
   });
 
