@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- A reply typed in the chat box while the agent waits on a single question now answers that question, instead of being queued while the session keeps spinning
 
 ### Removed
 <!-- Removed features go here -->
