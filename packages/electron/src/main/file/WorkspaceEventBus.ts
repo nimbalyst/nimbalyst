@@ -12,6 +12,7 @@ import { logger } from '../utils/logger';
 import { shouldExcludeDir } from '../utils/fileFilters';
 import { isPathInWorkspace } from '../utils/workspaceDetection';
 import { validateWorkspaceWatchPath } from './workspaceWatchSafety';
+import { gitCommonDir, listIgnoredNestedRepositories } from '../utils/gitUtils';
 
 /**
  * .git is always ignored — it's an internal data structure, never user content.
@@ -152,6 +153,10 @@ interface BusEntry {
   nestedGitignoreCache: Map<string, Ignore>;
   /** Memoized git-root lookup keyed by directory, so the chokidar walk visits each ancestor at most once. */
   gitRootDirCache: Map<string, string | null>;
+  /** The workspace root's shared git dir; null when the root is not a repo. */
+  workspaceCommonDir: string | null;
+  /** Per checkout root: whether it belongs to another repository than the workspace's. */
+  separateCheckoutCache: Map<string, boolean>;
   /** Absolute paths that bypass gitignore filtering. */
   gitignoreBypassPaths: Set<string>;
   bypassOwners: Map<string, Set<string>>;
@@ -319,10 +324,43 @@ function findGitRootForPathCached(
 }
 
 /**
+ * Whether `checkoutRoot` belongs to another repository than the workspace's: a
+ * separate clone, or a linked worktree of another repo. The workspace's own
+ * linked worktrees (an agent's under an ignored `.claude/worktrees`) do not
+ * count; they are copies of the workspace and keep its rules.
+ */
+function isSeparateCheckout(checkoutRoot: string, entry: BusEntry): boolean {
+  if (!entry.workspaceCommonDir) return false;
+  let separate = entry.separateCheckoutCache.get(checkoutRoot);
+  if (separate === undefined) {
+    const commonDir = gitCommonDir(checkoutRoot);
+    separate = commonDir !== null && commonDir !== entry.workspaceCommonDir;
+    entry.separateCheckoutCache.set(checkoutRoot, separate);
+  }
+  return separate;
+}
+
+function ignoredByNestedRepo(absolutePath: string, owningRoot: string, entry: BusEntry): boolean {
+  let nestedFilter = entry.nestedGitignoreCache.get(owningRoot);
+  if (!nestedFilter) {
+    nestedFilter = loadGitignoreFilterSync(owningRoot);
+    entry.nestedGitignoreCache.set(owningRoot, nestedFilter);
+  }
+  const rootRel = path.relative(owningRoot, absolutePath).split(path.sep).join('/');
+  if (rootRel === '' || rootRel.startsWith('..')) return false;
+  return nestedFilter.ignores(rootRel) || nestedFilter.ignores(rootRel + '/');
+}
+
+/**
  * Returns true if `absolutePath` is gitignored under either the workspace-root
  * `.gitignore` (existing behavior) or the nearest enclosing nested repo's
  * `.gitignore`. Honors the layout from issue #207, where a non-git workspace
  * root contains nested git repos with their own ignore rules.
+ *
+ * When the workspace root is itself a repo, a separate checkout inside it
+ * follows only its own rules, as in git: the enclosing repo's rules stop at the
+ * checkout boundary. An umbrella repo ignores the clones it holds so its
+ * history stays its own, yet their files are what the user edits.
  */
 function isGitignoredScoped(
   absolutePath: string,
@@ -332,22 +370,22 @@ function isGitignoredScoped(
   const wsRel = path.relative(workspaceAbs, absolutePath).split(path.sep).join('/');
   if (wsRel === '' || wsRel.startsWith('..')) return false;
 
+  const owningRoot = findGitRootForPathCached(absolutePath, workspaceAbs, entry.gitRootDirCache);
+  if (owningRoot && owningRoot !== workspaceAbs && isSeparateCheckout(owningRoot, entry)) {
+    return ignoredByNestedRepo(absolutePath, owningRoot, entry);
+  }
+
   if (entry.workspaceGitignoreFilter.ignores(wsRel) ||
       entry.workspaceGitignoreFilter.ignores(wsRel + '/')) {
-    return true;
+    // A separate checkout's own folder is never dropped, or the watcher would
+    // not descend into it. Checked only here, for paths already ignored, so the
+    // walk pays nothing extra for the rest.
+    return !(entry.workspaceCommonDir && fs.existsSync(path.join(absolutePath, '.git')) &&
+      isSeparateCheckout(absolutePath, entry));
   }
 
-  const owningRoot = findGitRootForPathCached(absolutePath, workspaceAbs, entry.gitRootDirCache);
   if (!owningRoot || owningRoot === workspaceAbs) return false;
-
-  let nestedFilter = entry.nestedGitignoreCache.get(owningRoot);
-  if (!nestedFilter) {
-    nestedFilter = loadGitignoreFilterSync(owningRoot);
-    entry.nestedGitignoreCache.set(owningRoot, nestedFilter);
-  }
-  const rootRel = path.relative(owningRoot, absolutePath).split(path.sep).join('/');
-  if (rootRel === '' || rootRel.startsWith('..')) return false;
-  return nestedFilter.ignores(rootRel) || nestedFilter.ignores(rootRel + '/');
+  return ignoredByNestedRepo(absolutePath, owningRoot, entry);
 }
 
 function isGitignoreFile(absolutePath: string): boolean {
@@ -444,7 +482,8 @@ export async function subscribe(
   const entry: BusEntry = {
     lifecycle: null!, expandedPaths: new Set(), listeners: new Map([[subscriberId, listener]]),
     workspaceAbs: key, workspaceGitignoreFilter: ignore(), nestedGitignoreCache: new Map(),
-    gitRootDirCache: new Map(), gitignoreBypassPaths: new Set(), bypassOwners: new Map(), replayBuffer: [],
+    gitRootDirCache: new Map(), workspaceCommonDir: null, separateCheckoutCache: new Map(),
+    gitignoreBypassPaths: new Set(), bypassOwners: new Map(), replayBuffer: [],
   };
   entry.lifecycle = new RecoveringFileWatcher(async (current, fail) => {
     const filter = await loadGitignoreFilter(key);
@@ -452,6 +491,8 @@ export async function subscribe(
     entry.workspaceGitignoreFilter = filter;
     entry.nestedGitignoreCache.clear();
     entry.gitRootDirCache.clear();
+    entry.workspaceCommonDir = gitCommonDir(key);
+    entry.separateCheckoutCache.clear();
     entry.replayBuffer = [];
     const watcher = createWorkspaceNativeWatcher(key, current, fail,
       filePath => {
@@ -463,6 +504,12 @@ export async function subscribe(
     );
     if (watcher && 'add' in watcher) {
       for (const file of new Set([...entry.expandedPaths, ...entry.gitignoreBypassPaths])) watcher.add(file);
+      // chokidar's depth budget counts from each added path. A clone the root
+      // ignores starts its own budget, so its deep trees are reached.
+      if (entry.workspaceCommonDir) {
+        const nestedCheckouts = await listIgnoredNestedRepositories(key);
+        if (current()) for (const checkout of nestedCheckouts) watcher.add(checkout);
+      }
     }
     return watcher;
   }, health => {
