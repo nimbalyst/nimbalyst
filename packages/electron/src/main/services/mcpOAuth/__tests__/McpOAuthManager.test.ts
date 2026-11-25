@@ -558,6 +558,52 @@ describe('McpOAuthManager review follow-ups', () => {
     expect(await manager.getStatus(descriptor)).toEqual({ state: 'needs_reauthorization', reason: 'token_exchange' });
   });
 
+  it('refuses discovery that sends a public server\'s sign-in to a loopback address, before any request reaches it', async () => {
+    const fetchFn = async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.hostname === 'mcp.example.com') {
+        if (url.pathname.startsWith('/.well-known/oauth-protected-resource')) {
+          return new Response(JSON.stringify({ resource: 'http://mcp.example.com/mcp', authorization_servers: [as2.base] }), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response('', { status: 404 });
+      }
+      return fetch(input, init);
+    };
+    const store = new McpOAuthCredentialStore(path.join(tempRoot, 'store'), codec);
+    const manager = new McpOAuthManager({ store, fetchFn, openExternal: async () => undefined, legacyAuthDir: () => tempRoot, platform: 'darwin' });
+
+    const result = await manager.authorize(descriptorFor('http://mcp.example.com/mcp'), { timeoutMs: 2000 });
+
+    expect(result).toMatchObject({ ok: false, errorType: 'insecure_endpoint' });
+    expect(as2.requests).toHaveLength(0);
+  });
+
+  it('fails discovery when a metadata body breaks mid-read instead of falling back to default endpoints', async () => {
+    const fetchFn = async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.origin === rs.base && url.pathname.startsWith('/.well-known/oauth-protected-resource')) {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"resource":'));
+            controller.error(new Error('connection reset'));
+          },
+        });
+        return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return fetch(input, init);
+    };
+    const store = new McpOAuthCredentialStore(path.join(tempRoot, 'store'), codec);
+    const manager = new McpOAuthManager({ store, fetchFn, openExternal: async () => undefined, legacyAuthDir: () => tempRoot, platform: 'darwin' });
+
+    const result = await manager.authorize(descriptorFor(rs.mcpUrl), { timeoutMs: 2000 });
+
+    expect(result).toMatchObject({ ok: false, errorType: 'network' });
+    expect(rs.requests.filter((r) => r.method === 'POST' && r.path !== '/mcp')).toHaveLength(0);
+    expect(as1.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
+  });
+
   it('retries the legacy import after a failed attempt instead of hiding the sign-in until restart', async () => {
     const descriptor = descriptorFor(rs.mcpUrl);
     as1.refreshTokens.add('legacy-refresh');
@@ -652,6 +698,93 @@ describe('McpOAuthManager stale legacy credentials', () => {
     const registrationsBefore = as1.requests.filter((r) => r.path === '/register').length;
     expect(await manager.authorize(descriptor, { timeoutMs: 5000 })).toEqual({ ok: true });
     expect(as1.requests.filter((r) => r.path === '/register').length).toBe(registrationsBefore + 1);
+    expect((await manager.getStatus(descriptor)).state).toBe('authorized');
+  });
+
+  it('checks an imported record with a future recorded expiry against the provider before calling it signed in', async () => {
+    const descriptor = descriptorFor(rs.mcpUrl);
+    const hash = (await import('../serverIdentity')).getMcpRemoteServerHashes(descriptor)[0];
+    writeLegacy(path.join(tempRoot, 'mcp-auth', 'mcp-remote-0.1.36'), hash,
+      { access_token: 'old-access', refresh_token: 'old-refresh-the-provider-forgot', expires_in: 3600 },
+      { client_id: 'old-client', redirect_uris: ['http://localhost:4444/oauth/callback'] });
+    const { manager } = createManager();
+
+    expect(await manager.getStatus(descriptor)).toEqual({ state: 'needs_reauthorization', reason: 'token_exchange' });
+  });
+});
+
+describe('McpOAuthManager commits checked inside the store write', () => {
+  it('an older sign-in that reaches its write after a newer one started does not win', async () => {
+    const browser = fakeBrowser();
+    let saves = 0;
+    let secondEntered: () => void = () => undefined;
+    const secondAtWrite = new Promise<void>((resolve) => { secondEntered = resolve; });
+    let releaseSecond: () => void = () => undefined;
+    const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    let second: Promise<unknown> = Promise.resolve();
+    const descriptor = descriptorFor(rs.mcpUrl);
+    class RacingStore extends McpOAuthCredentialStore {
+      override async saveIfGeneration(...args: Parameters<McpOAuthCredentialStore['saveIfGeneration']>): Promise<boolean> {
+        saves += 1;
+        if (saves === 1) {
+          // The first flow passed its own check; a second sign-in starts now
+          // and reaches its write before the first one is applied.
+          second = manager.authorize(descriptor, { timeoutMs: 5000 });
+          await secondAtWrite;
+          try {
+            return await super.saveIfGeneration(...args);
+          } finally {
+            releaseSecond();
+          }
+        }
+        if (saves === 2) {
+          secondEntered();
+          await secondGate;
+        }
+        return super.saveIfGeneration(...args);
+      }
+    }
+    const store = new RacingStore(path.join(tempRoot, 'store'), codec);
+    const manager = new McpOAuthManager({ store, openExternal: browser.openExternal, legacyAuthDir: () => tempRoot, platform: 'darwin' });
+
+    const first = await manager.authorize(descriptor, { timeoutMs: 5000 });
+
+    expect(first).toMatchObject({ ok: false, errorType: 'cancelled' });
+    expect(await second).toEqual({ ok: true });
+    const current = await manager.getAccessToken(manager.bindingKeyFor(descriptor));
+    if (!current.ok) throw new Error('expected token');
+    expect(as1.revoked).not.toContain(current.accessToken);
+  });
+
+  it('a 401 report does not clear tokens a refresh rotated in while it was checking the server', async () => {
+    const descriptor = descriptorFor(rs.mcpUrl);
+    let duringReport: (() => Promise<void>) | null = null;
+    const fetchFn = async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (duringReport && url.pathname.startsWith('/.well-known/oauth-protected-resource')) {
+        const hook = duringReport;
+        duringReport = null;
+        await hook();
+      }
+      return fetch(input, init);
+    };
+    const browser = fakeBrowser();
+    const store = new McpOAuthCredentialStore(path.join(tempRoot, 'store'), codec);
+    const manager = new McpOAuthManager({ store, fetchFn, openExternal: browser.openExternal, legacyAuthDir: () => tempRoot, platform: 'darwin' });
+    expect(await manager.authorize(descriptor, { timeoutMs: 5000 })).toEqual({ ok: true });
+    const key = manager.bindingKeyFor(descriptor);
+    const old = await manager.getAccessToken(key);
+    if (!old.ok) throw new Error('expected token');
+    let rotated = '';
+    duringReport = async () => {
+      const next = await manager.getAccessToken(key, { rejectedToken: old.accessToken });
+      if (next.ok) rotated = next.accessToken;
+    };
+
+    await manager.reportPersistentUnauthorized(key, `Bearer resource_metadata="${rs.base}/.well-known/oauth-protected-resource/mcp"`, old.accessToken);
+
+    expect(rotated).not.toBe('');
+    expect(await manager.getAccessToken(key)).toEqual({ ok: true, accessToken: rotated });
     expect((await manager.getStatus(descriptor)).state).toBe('authorized');
   });
 });

@@ -23,7 +23,7 @@
  */
 import { createHash, randomUUID } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
-import { Readable } from 'stream';
+import { Readable, Transform } from 'stream';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
@@ -57,9 +57,13 @@ export interface GatewayRoute {
   requiresOAuth: boolean;
   /** `sse-first` already switched this route to Streamable HTTP once. */
   sseFirstFellBack?: boolean;
+  /** Access tokens recently sent upstream on this route, for redaction. */
+  sentTokens?: string[];
 }
 
 interface SseSession {
+  /** The route that opened it; a session is only reachable through that route. */
+  routeKey: string;
   server: StreamableHTTPServerTransport;
   client: SSEClientTransport;
 }
@@ -116,6 +120,12 @@ export class McpRemoteGateway {
     return this.routes.has(key);
   }
 
+  private closeSseSession(sessionId: string, session: SseSession): void {
+    this.sseSessions.delete(sessionId);
+    void session.server.close().catch(() => undefined);
+    void session.client.close().catch(() => undefined);
+  }
+
   async closeAll(): Promise<void> {
     const sessions = Array.from(this.sseSessions.values());
     this.sseSessions.clear();
@@ -146,7 +156,15 @@ export class McpRemoteGateway {
 
     const sessionId = headerValue(req, 'mcp-session-id');
     const sseSession = sessionId ? this.sseSessions.get(sessionId) : undefined;
-    if (sseSession) {
+    if (sseSession && sseSession.routeKey === route.key) {
+      // Each request on an open session re-checks the credential, so a revoke
+      // (or a sign-in that needs renewing) ends the session.
+      const credential = await this.credentialFor(route);
+      if (!credential.ok) {
+        this.closeSseSession(sessionId!, sseSession);
+        sendUnavailable(res, body, credential.errorType);
+        return;
+      }
       await this.handleSseRequest(sseSession, req, res, body);
       return;
     }
@@ -236,23 +254,20 @@ export class McpRemoteGateway {
       const value = response.headers.get(name);
       if (value !== null) headers[name] = value;
     }
-    if (response.status >= 400 && response.body && req.method !== 'HEAD') {
-      // Error bodies are read whole and scrubbed: a server that echoes the
-      // request's credential in an error must not hand it to the CLI.
-      const text = await readLimited(response, MAX_ERROR_BODY_BYTES);
-      delete headers['content-length'];
-      res.writeHead(response.status, headers);
-      res.end(redactSecrets(text, this.secretsFor(route, credential.accessToken)));
-      return;
-    }
+    // Every body is scrubbed of the credentials the gateway attached (JSON,
+    // SSE events, errors alike): a server that echoes them must not hand
+    // them to the CLI. Redaction changes the length.
+    delete headers['content-length'];
     res.writeHead(response.status, headers);
     if (!response.body || req.method === 'HEAD') {
       res.end();
       return;
     }
     const stream = Readable.fromWeb(response.body as never);
+    const redacting = createRedactingStream(this.secretsFor(route, credential.accessToken));
     stream.on('error', () => res.destroy());
-    stream.pipe(res);
+    redacting.on('error', () => res.destroy());
+    stream.pipe(redacting).pipe(res);
   }
 
   /** Values that must never appear in what the CLI receives. */
@@ -265,6 +280,7 @@ export class McpRemoteGateway {
       if (credential) secrets.push(credential);
     }
     if (accessToken) secrets.push(accessToken);
+    secrets.push(...(route.sentTokens ?? []));
     // Short values (a header like `X-Team: a1`) would redact ordinary text.
     return secrets.filter((secret) => secret.length >= 8);
   }
@@ -322,6 +338,7 @@ export class McpRemoteGateway {
         if (name.toLowerCase() === 'authorization') delete headers[name];
       }
       headers.Authorization = `Bearer ${accessToken}`;
+      noteSentToken(route, accessToken);
     }
     return headers;
   }
@@ -371,7 +388,7 @@ export class McpRemoteGateway {
     const server = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sessionId) => {
-        this.sseSessions.set(sessionId, { server, client });
+        this.sseSessions.set(sessionId, { routeKey: route.key, server, client });
       },
     });
     let closing = false;
@@ -397,7 +414,7 @@ export class McpRemoteGateway {
       });
     };
     client.onmessage = (message: JSONRPCMessage) => {
-      void server.send(message).catch(() => undefined);
+      void server.send(redactMessage(message, this.secretsFor(route, undefined))).catch(() => undefined);
     };
     client.onclose = closeBoth;
     server.onclose = closeBoth;
@@ -418,7 +435,7 @@ export class McpRemoteGateway {
       sendUpstreamError(res, body, error);
       return false;
     }
-    await this.handleSseRequest({ server, client }, req, res, body);
+    await this.handleSseRequest({ routeKey: route.key, server, client }, req, res, body);
     return true;
   }
 
@@ -466,6 +483,7 @@ export class McpRemoteGateway {
       }
       if (accessToken !== undefined) {
         headers.set('Authorization', `Bearer ${accessToken}`);
+        noteSentToken(route, accessToken);
       }
       return this.fetchFn(url, { ...init, headers, redirect: 'manual' });
     };
@@ -540,23 +558,46 @@ function sendJsonRpcError(res: ServerResponse, body: Buffer | undefined, status:
     .end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32001, message } }));
 }
 
-const MAX_ERROR_BODY_BYTES = 64 * 1024;
+/**
+ * A pass-through that replaces any secret with `[redacted]`. Header values
+ * and tokens never contain a newline, so every complete line can be scrubbed
+ * and sent at once; only the trailing partial line waits for more data. SSE
+ * events (newline-terminated) are therefore not delayed, and a JSON body is
+ * scrubbed whole.
+ */
+export function createRedactingStream(secrets: string[]): Transform {
+  const decoder = new TextDecoder();
+  let pending = '';
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      pending += decoder.decode(chunk, { stream: true });
+      const lastNewline = pending.lastIndexOf('\n');
+      if (lastNewline === -1) {
+        callback();
+        return;
+      }
+      const ready = pending.slice(0, lastNewline + 1);
+      pending = pending.slice(lastNewline + 1);
+      callback(null, Buffer.from(redactSecrets(ready, secrets), 'utf8'));
+    },
+    flush(callback) {
+      pending += decoder.decode();
+      callback(null, pending ? Buffer.from(redactSecrets(pending, secrets), 'utf8') : undefined);
+    },
+  });
+}
 
-async function readLimited(response: Response, limit: number): Promise<string> {
-  const reader = response.body!.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (size < limit) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      size += value.length;
-    }
-  } finally {
-    await reader.cancel().catch(() => undefined);
+function noteSentToken(route: GatewayRoute, token: string): void {
+  const sent = route.sentTokens ?? [];
+  if (!sent.includes(token)) {
+    route.sentTokens = [token, ...sent].slice(0, 4);
   }
-  return Buffer.concat(chunks).subarray(0, limit).toString('utf8');
+}
+
+function redactMessage(message: JSONRPCMessage, secrets: string[]): JSONRPCMessage {
+  const text = JSON.stringify(message);
+  const scrubbed = redactSecrets(text, secrets.map((secret) => JSON.stringify(secret).slice(1, -1)));
+  return scrubbed === text ? message : JSON.parse(scrubbed) as JSONRPCMessage;
 }
 
 function redactSecrets(text: string, secrets: string[]): string {

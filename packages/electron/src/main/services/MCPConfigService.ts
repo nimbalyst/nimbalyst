@@ -1231,12 +1231,15 @@ export class MCPConfigService {
     // First, route the server through the gateway if it needs Nimbalyst's
     // bridge (unless the target CLI speaks HTTP natively and the server needs
     // no OAuth).
-    // `${VAR}` in a remote URL or header resolves from the server's own `env`
-    // here, whichever way the server is handed to the CLI. The old mcp-remote
-    // wrapper did this; a CLI's own expansion only sees its process
-    // environment, not the server's `env` block.
-    const expanded = expandRemoteServerVariables(serverConfig);
-    let config = this.normalizeTransportFields(this.convertForRemoteBridge(expanded, options));
+    // The bridge reads the raw config: the gateway resolves `${VAR}` itself,
+    // from the server's `env` and then the login shell, defaults included.
+    // A server handed to the CLI directly gets the names its own `env` block
+    // defines substituted here; a CLI's own expansion only sees its process
+    // environment, not that block.
+    const bridged = this.convertForRemoteBridge(serverConfig, options);
+    let config = this.normalizeTransportFields(
+      bridged === serverConfig ? expandRemoteServerVariables(serverConfig) : bridged,
+    );
 
     // Only process stdio servers with a command
     if (config.type === 'sse' || config.type === 'http' || !config.command) {

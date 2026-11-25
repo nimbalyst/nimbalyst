@@ -357,7 +357,13 @@ export class McpOAuthManager {
         createdAt: nowIso,
         updatedAt: nowIso,
       };
-      const saved = await this.store.saveIfGeneration(binding, commitGeneration);
+      // Re-checked inside the store's serialized write: a newer sign-in can
+      // start between the check above and this write.
+      const saved = await this.store.saveIfGeneration(
+        binding,
+        commitGeneration,
+        () => this.pendingFlows.get(key) === controller && !controller.signal.aborted,
+      );
       if (!saved) {
         // Revoked or signed in again during the commit itself.
         await this.revokeAtProvider(binding, storedTokens);
@@ -440,7 +446,7 @@ export class McpOAuthManager {
     };
     let saved: boolean;
     try {
-      saved = await this.store.saveIfGeneration(next, generation);
+      saved = await this.store.saveIfGeneration(next, generation, (current) => current?.tokens?.refresh_token === refreshToken);
     } catch {
       // The disk write failed, but the store kept the rotated tokens in
       // memory, so this run keeps working; the old refresh token on disk
@@ -615,7 +621,9 @@ export class McpOAuthManager {
     // marks the record for sign-in; a network failure leaves it to be tried
     // at first use.
     if (binding.tokens?.refresh_token) {
-      await this.getAccessToken(key);
+      // Forced: a recorded expiry still in the future says nothing about
+      // whether the grant is still alive.
+      await this.getAccessToken(key, { rejectedToken: binding.tokens.access_token });
     }
   }
 
@@ -656,7 +664,14 @@ export class McpOAuthManager {
       reauthReason: reason,
       updatedAt: new Date(this.now()).toISOString(),
     };
-    const saved = await this.store.saveIfGeneration(next, binding.generation);
+    // A refresh rotates tokens without a new generation; only the tokens
+    // that failed are cleared, never ones obtained since.
+    const failedAccessToken = binding.tokens?.access_token;
+    const saved = await this.store.saveIfGeneration(
+      next,
+      binding.generation,
+      (current) => current?.tokens?.access_token === failedAccessToken,
+    );
     if (saved) {
       this.log('warn', '[MCP OAuth] Server needs authorization again', { reason });
       for (const listener of this.listeners) {

@@ -113,15 +113,28 @@ export class McpOAuthCredentialStore {
 
   /**
    * Write `binding` only if the stored generation still equals
-   * `expectedGeneration`. Returns false, writing nothing, otherwise.
+   * `expectedGeneration` and `precondition`, evaluated inside the same
+   * serialized step, accepts the stored record. Returns false, writing
+   * nothing, otherwise. The precondition covers changes that do not bump the
+   * generation (a refresh rotating tokens) and state outside the store.
    */
-  async saveIfGeneration(binding: McpOAuthBinding, expectedGeneration: number): Promise<boolean> {
+  async saveIfGeneration(
+    binding: McpOAuthBinding,
+    expectedGeneration: number,
+    precondition?: (current: McpOAuthBinding | null) => boolean,
+  ): Promise<boolean> {
     const key = binding.bindingKey;
     assertKey(key);
     return this.serialize(key, async () => {
       const current = await this.currentGeneration(key);
       if (current !== expectedGeneration) {
         return false;
+      }
+      if (precondition) {
+        const loaded = await this.load(key);
+        if (!precondition(loaded.status === 'present' ? loaded.binding : null)) {
+          return false;
+        }
       }
       // Cached first: if the disk write fails, this run still uses what was
       // just obtained (a rotated refresh token would otherwise be lost).

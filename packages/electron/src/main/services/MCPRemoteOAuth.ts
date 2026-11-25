@@ -871,7 +871,12 @@ function parseBridgeableMcpRemoteCommand(config: MCPServerConfig): MCPRemoteConf
     headers: normalizeHeaders(headers),
     callbackPort: config.oauth?.callbackPort ?? callbackPort,
     host: config.oauth?.host ?? host,
-    redirectUri: getConfiguredRedirectUri(config.oauth),
+    // The metadata in effect (config or --static-oauth-client-metadata) also
+    // names the pre-registered redirect URI, as it did for mcp-remote.
+    redirectUri: getConfiguredRedirectUri({
+      ...config.oauth,
+      staticClientMetadata: config.oauth?.staticClientMetadata ?? staticOAuthClientMetadata,
+    } as MCPServerConfig['oauth']),
     authorizeResource: config.oauth?.resource ?? authorizeResource,
     transportStrategy: config.oauth?.transportStrategy ?? transportStrategy,
     authTimeoutSeconds: config.oauth?.authTimeoutSeconds ?? authTimeoutSeconds,
@@ -891,7 +896,9 @@ export function expandRemoteServerVariables(config: MCPServerConfig): MCPServerC
   if ((config.type !== 'http' && config.type !== 'sse') || !config.env) {
     return config;
   }
-  const env = resolveServerEnv(config.env);
+  // The env block's own values may name login-shell variables; only names the
+  // block defines are substituted into the URL and headers.
+  const env = resolveServerEnv(config.env, getShellEnvironment() ?? {});
   if (Object.keys(env).length === 0) {
     return config;
   }
@@ -930,8 +937,10 @@ function resolveGatewayEnv(env: MCPServerConfig['env']): Record<string, string> 
 
 /**
  * The variables a server's `${VAR}` references resolve against: its own `env`
- * block, each value itself expanded against earlier entries. Nimbalyst's own
- * process environment is deliberately not consulted.
+ * block, each value itself expanded against `base` and earlier entries. An
+ * explicit empty value is kept: it overrides the shell, as it would for a
+ * process given that env. Nimbalyst's own process environment is
+ * deliberately not consulted.
  */
 function resolveServerEnv(env: MCPServerConfig['env'], base: Record<string, string> = {}): Record<string, string> {
   const resolved: Record<string, string> = {};
@@ -940,7 +949,7 @@ function resolveServerEnv(env: MCPServerConfig['env'], base: Record<string, stri
       continue;
     }
     const expanded = expandServerVariables(value, { ...base, ...resolved });
-    if (!expanded.unresolved && expanded.value.length > 0) {
+    if (!expanded.unresolved) {
       resolved[key] = expanded.value;
     }
   }

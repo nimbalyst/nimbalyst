@@ -16,7 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/client/auth.js';
 import { checkResourceAllowed } from '@modelcontextprotocol/sdk/shared/auth-utils.js';
 import type { MCPRemoteConfigDescriptor } from '../MCPRemoteOAuth';
-import { assertNoDowngrade, issuersMatch, sameOrigin } from './urlPolicy';
+import { assertNoDowngrade, assertNotRedirectedToPrivate, issuersMatch, sameOrigin } from './urlPolicy';
 import { McpOAuthError, type FetchLike, type PinnedAuthorizationServer } from './types';
 
 export interface PinnedDiscovery {
@@ -46,15 +46,34 @@ export async function discoverForAuthorization(
 
   // The SDK reads a failed metadata request as "no metadata" and falls back to
   // default endpoints. Offline, that would pin made-up endpoints (and import
-  // would trust them), so any request that did not complete fails discovery.
+  // would trust them), so any request (or response body) that did not
+  // complete fails discovery. A clean 404 is still "no metadata".
+  //
+  // Every discovery request is also checked before it is sent: the SDK
+  // fetches whatever authorization server the resource metadata names, and a
+  // public server must not point it at the user's own machine or network.
   let requestFailed = false;
+  let refused: McpOAuthError | null = null;
   const trackingFetch: FetchLike = async (input, init) => {
+    const target = typeof input === 'string' ? input : input.href;
     try {
-      return await fetchFn(input, init);
+      assertNotRedirectedToPrivate(target, serverUrl, 'discovery URL');
+    } catch (error) {
+      // Kept aside: the SDK treats a failed metadata fetch as "none".
+      refused ??= error as McpOAuthError;
+      throw error;
+    }
+    let response: Response;
+    let text: string;
+    try {
+      response = await fetchFn(input, init);
+      text = await response.text();
     } catch (error) {
       requestFailed = true;
       throw error;
     }
+    const nullBody = response.status === 204 || response.status === 304;
+    return new Response(nullBody ? null : text, { status: response.status, statusText: response.statusText, headers: response.headers });
   };
 
   let info: Awaited<ReturnType<typeof discoverOAuthServerInfo>>;
@@ -64,10 +83,16 @@ export async function discoverForAuthorization(
       fetchFn: trackingFetch,
     });
   } catch (error) {
+    if (refused) {
+      throw refused;
+    }
     if (error instanceof McpOAuthError) {
       throw error;
     }
     throw new McpOAuthError('network', 'The OAuth discovery documents could not be loaded.');
+  }
+  if (refused) {
+    throw refused;
   }
   if (requestFailed) {
     throw new McpOAuthError('network', 'The OAuth discovery documents could not be loaded.');
@@ -137,6 +162,14 @@ export async function discoverForAuthorization(
     };
   }
 
+  for (const [endpoint, what] of [
+    [pinned.authorization_endpoint, 'authorization endpoint'],
+    [pinned.token_endpoint, 'token endpoint'],
+    [pinned.registration_endpoint, 'registration endpoint'],
+    [pinned.revocation_endpoint, 'revocation endpoint'],
+  ] as const) {
+    if (endpoint) assertNotRedirectedToPrivate(endpoint, serverUrl, what);
+  }
   assertNoDowngrade(pinned.authorization_endpoint, serverUrl, 'authorization endpoint');
   assertNoDowngrade(pinned.token_endpoint, serverUrl, 'token endpoint');
   if (pinned.registration_endpoint) {
@@ -208,6 +241,7 @@ async function probeResourceMetadataUrl(
       return undefined;
     }
     const named = extractResourceMetadataUrl(response)?.href;
+    // (Same origin implies the private-address rule above.)
     // Same origin only: the server must not be able to point main at another
     // host or a loopback service.
     return named && sameOrigin(named, descriptor.serverUrl) ? named : undefined;

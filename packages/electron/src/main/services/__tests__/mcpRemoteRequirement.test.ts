@@ -330,7 +330,7 @@ describe('Codex and Claude Code reach the same credential (NIM-2433)', () => {
         type: 'stdio',
         command: 'npx',
         args: ['-y', 'mcp-remote', 'https://mcp.example.com/mcp', '--header', 'Authorization:Bearer ${UNSET_TOKEN}'],
-        env: { UNSET_TOKEN: '' },
+        env: {},
       } as MCPServerConfig;
 
       const entry = service.processServerConfigForRuntime(config, { nativeHttpSupported: true });
@@ -374,6 +374,49 @@ describe('Codex and Claude Code reach the same credential (NIM-2433)', () => {
 
       expect(entry.url).toBe(config.url);
       expect(entry.headers).toEqual({ Authorization: 'Bearer corridor-key' });
+    });
+
+    it('an explicitly empty env value overrides the login shell in the gateway route', () => {
+      __setShellEnvironmentForTest({ SHARED_KEY: 'from-login-shell' });
+      try {
+        const config = http({ headers: { 'X-Api-Key': '${SHARED_KEY}' }, env: { SHARED_KEY: '' }, oauth: {} });
+
+        const entry = service.processServerConfigForRuntime(config, { nativeHttpSupported: true });
+
+        // An empty header is not sent; the shell's value must not take its place.
+        expect(routes().get(keyOf(entry.url))?.descriptor.headers).toEqual({});
+      } finally {
+        __setShellEnvironmentForTest(null);
+      }
+    });
+
+    it('resolves an env entry that names a login-shell variable for a server handed to the CLI directly', () => {
+      __setShellEnvironmentForTest({ SHELL_SECRET: 'shell-secret' });
+      try {
+        const config = http({ headers: { Authorization: 'Bearer ${API_KEY}' }, env: { API_KEY: '${SHELL_SECRET}' } });
+
+        const entry = service.processServerConfigForRuntime(config, { nativeHttpSupported: true });
+
+        expect(entry.url).toBe(config.url);
+        expect(entry.headers).toEqual({ Authorization: 'Bearer shell-secret' });
+      } finally {
+        __setShellEnvironmentForTest(null);
+      }
+    });
+
+    it('takes the redirect URI from --static-oauth-client-metadata, as mcp-remote did', () => {
+      const config = {
+        type: 'stdio',
+        command: 'npx',
+        args: ['-y', 'mcp-remote', 'https://mcp.example.com/mcp',
+          '--static-oauth-client-info', '{"client_id":"pre-registered"}',
+          '--static-oauth-client-metadata', '{"redirect_uris":["http://localhost:7777/custom/callback"]}'],
+      } as MCPServerConfig;
+
+      const entry = service.processServerConfigForRuntime(config, { nativeHttpSupported: true });
+
+      const descriptor = routes().get(keyOf(entry.url))?.descriptor as { redirectUri?: string } | undefined;
+      expect(descriptor?.redirectUri).toBe('http://localhost:7777/custom/callback');
     });
 
     it('validates a ${VAR} URL against the server env, as it will be used', () => {

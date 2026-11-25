@@ -45,10 +45,17 @@ function errorFor(message, text) {
   }
 }
 
+// Requests (by id) whose response releases the queue: see the stdin handler.
+const awaitingResponse = new Map();
+
 function noteResponse(message) {
   // Track the negotiated protocol version from the initialize result.
   if (message && message.result && typeof message.result.protocolVersion === 'string') {
     protocolVersion = message.result.protocolVersion;
+  }
+  if (message && message.id !== undefined && message.method === undefined && awaitingResponse.has(message.id)) {
+    awaitingResponse.get(message.id)();
+    awaitingResponse.delete(message.id);
   }
 }
 
@@ -214,10 +221,16 @@ process.stdin.on('data', (chunk) => {
     } catch {
       continue;
     }
-    // initialize must finish (and yield the session id) before anything else
-    // is sent; after that, requests run concurrently.
+    // initialize must answer (and yield the session id) before anything else
+    // is sent; after that, requests run concurrently. The queue is released
+    // by the initialize response itself, not by its stream closing: a server
+    // may keep that stream open.
     if (message && message.method === 'initialize') {
-      pending = pending.then(() => track(post(message)));
+      pending = pending.then(() => {
+        const answered = new Promise((resolve) => awaitingResponse.set(message.id, resolve));
+        const done = track(post(message));
+        return Promise.race([done, answered]).finally(() => awaitingResponse.delete(message.id));
+      });
     } else {
       void pending.then(() => track(post(message)));
     }

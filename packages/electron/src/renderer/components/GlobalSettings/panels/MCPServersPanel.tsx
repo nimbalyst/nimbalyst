@@ -941,6 +941,11 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
     oauth: getCurrentOAuthConfig(),
   });
 
+  // Only Nimbalyst's own sign-in can be redone from here. A stored
+  // `npx mcp-remote` command that runs the helper reuses its cached tokens,
+  // so the button would do nothing visible for it.
+  const canSignInAgain = formType === 'http' || formType === 'sse';
+
   const usesNativeOAuth = (config: MCPServerConfig): boolean =>
     Boolean((config.type === 'http' || config.type === 'sse') && (config.oauth?.clientId || config.oauth?.clientSecret));
 
@@ -1957,7 +1962,7 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
                   {oauthAction === 'authorizing' ? 'Authorizing...' : 'Authorize'}
                 </button>
               )}
-{oauthStatus === 'authorized' && (
+              {oauthStatus === 'authorized' && canSignInAgain && (
                 <button
                   onClick={handleAuthorize}
                   disabled={oauthAction !== 'idle'}
@@ -2480,7 +2485,7 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
                     {oauthAction === 'authorizing' ? 'Authorizing...' : 'Authorize'}
                   </button>
                 )}
-{oauthStatus === 'authorized' && (
+                {oauthStatus === 'authorized' && canSignInAgain && (
                   <button
                     onClick={handleAuthorize}
                     disabled={oauthAction !== 'idle'}

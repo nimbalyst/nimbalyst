@@ -468,6 +468,52 @@ describe('mcp-gateway-stdio.mjs', () => {
     expect(upstream.length).toBeGreaterThanOrEqual(2);
     expect(upstream.every((r) => as1.validAccessTokens.has((r.headers.authorization ?? '').replace('Bearer ', '')))).toBe(true);
   });
+
+  it('sends later requests once the initialize response arrives, even if its stream stays open', async () => {
+    const { spawn } = await import('child_process');
+    const descriptor = descriptorFor(rs.mcpUrl);
+    expect(await manager.authorize(descriptor, { timeoutMs: 5000 })).toEqual({ ok: true });
+    const open: http.ServerResponse[] = [];
+    rs.onMcp = (req, res) => {
+      if (req.method !== 'POST' || !JSON.parse(req.body || '{}').method?.startsWith('initialize')) {
+        return false;
+      }
+      const id = JSON.parse(req.body).id;
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'mcp-session-id': 'upstream-session' });
+      res.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1.0.0' } } })}\n\n`);
+      // The stream is left open, as a server may do.
+      open.push(res);
+      return true;
+    };
+    const key = gateway.registerRoute(descriptor, 'http');
+    const shim = path.resolve(__dirname, '../../../../../resources/mcp-gateway-stdio.mjs');
+    const child = spawn(process.execPath, [shim, `${gatewayBase}${GATEWAY_PATH_PREFIX}${key}`], {
+      env: { PATH: '', NIMBALYST_MCP_GATEWAY_TOKEN: tokenFor(key) },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    try {
+      let output = '';
+      const listed = new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), 3000);
+        child.stdout.on('data', (chunk: Buffer) => {
+          output += chunk.toString();
+          if (output.split('\n').some((line) => line.includes('"id":2'))) {
+            clearTimeout(timer);
+            resolve(true);
+          }
+        });
+      });
+      const send = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`);
+      send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'cli', version: '1' } } });
+      send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      send({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+
+      expect(await listed).toBe(true);
+    } finally {
+      child.kill();
+      for (const res of open) res.end();
+    }
+  });
 });
 
 describe('Test connection', () => {

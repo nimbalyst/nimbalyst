@@ -28,9 +28,9 @@ Static credentials: a server whose config carries its own `Authorization` header
 3. Forwards to the server with the configured static headers plus `Authorization: Bearer <access token>`. Redirects are followed only to the same origin, only for GET/307/308, and never across a scheme change.
 4. On a 401, refreshes once and retries; a second 401 marks the binding as needing sign-in.
 5. When a credential is missing or needs sign-in, answers **503 with a JSON-RPC error**, never 401 with `WWW-Authenticate`, which would start the CLI's own OAuth against the loopback URL and cache the failure. A missing record first triggers the one-time import below.
-6. Reads upstream error bodies (status 400 and up, at most 64 KB) and replaces the access token and static header values with `[redacted]` before passing them on.
+6. Streams every upstream body back through a line-based filter that replaces the current access token, any token sent on this route since start, and static header values with `[redacted]`. Messages relayed from a legacy SSE server are filtered the same way.
 
-Upstream transport: Streamable HTTP is forwarded as is. Legacy SSE servers are adapted (SDK `StreamableHTTPServerTransport` on the CLI side, `SSEClientTransport` upstream, whose `endpoint` event must be same-origin). `http-first` (the default) tries SSE when an `initialize` POST gets 404/405, and the route stays on SSE only once an SSE session has started. `sse-first` falls back to Streamable HTTP once if the SSE stream cannot be opened.
+Upstream transport: Streamable HTTP is forwarded as is. Legacy SSE servers are adapted (SDK `StreamableHTTPServerTransport` on the CLI side, `SSEClientTransport` upstream, whose `endpoint` event must be same-origin). `http-first` (the default) tries SSE when an `initialize` POST gets 404/405, and the route stays on SSE only once an SSE session has started. `sse-first` falls back to Streamable HTTP once if the SSE stream cannot be opened. An SSE adapter session belongs to the route that created it, and the route's credential is checked again on every request to it, so a revoke or a missing sign-in ends the session.
 
 Every OAuth HTTP request (discovery, registration, token, revocation) has a 30-second deadline, so a hung provider cannot hold a sign-in open or block refresh.
 
@@ -38,11 +38,11 @@ Every OAuth HTTP request (discovery, registration, token, revocation) has a 30-s
 
 `McpOAuthManager.authorize`, started by **Authorize** in MCP settings (`mcp-config:trigger-oauth`):
 
-1. **Discovery** (`discovery.ts`): an unauthenticated `initialize` probe reads a `resource_metadata` URL from the server's 401 challenge (used only when it is on the server's own origin), then protected-resource metadata, then authorization-server metadata. If any discovery request fails to complete, discovery fails rather than falling back to default endpoints. The metadata `issuer` must equal the authorization server URL, a PRM `resource` must cover the server URL, and an `https` server may not point at `http` endpoints (`urlPolicy.ts`). A plain `http://` server the user configured is allowed. A configured `oauth.resource` is sent verbatim. The discovered endpoints are pinned in the binding.
+1. **Discovery** (`discovery.ts`): an unauthenticated `initialize` probe reads a `resource_metadata` URL from the server's 401 challenge (used only when it is on the server's own origin), then protected-resource metadata, then authorization-server metadata. If any discovery request fails to complete, including a body that breaks mid-read, discovery fails rather than falling back to default endpoints. A server on a public address may not send discovery or any OAuth endpoint to a loopback, private or link-local address (`insecure_endpoint`); a server the user configured on such an address may. The metadata `issuer` must equal the authorization server URL, a PRM `resource` must cover the server URL, and an `https` server may not point at `http` endpoints (`urlPolicy.ts`). A plain `http://` server the user configured is allowed. A configured `oauth.resource` is sent verbatim. The discovered endpoints are pinned in the binding.
 2. **Client**: a pre-registered client (`oauth.clientId`/`staticClientInfo`), a stored registration reused exactly, or RFC 7591 dynamic registration as client name `Nimbalyst`, `token_endpoint_auth_method: none`.
 3. **Redirect URI** (`redirectUri.ts`): `oauth.redirectUri` for a pre-registered client; otherwise a stored registration's URI exactly, including a custom host; otherwise `http://localhost:<port>/oauth/callback` (`127.0.0.1` on Windows, as mcp-remote does) with `oauth.callbackPort` or the port mcp-remote derives from the server hash, so imported registrations keep matching. Changing it re-registers explicitly.
 4. **Callback** (`callbackServer.ts`): a one-shot loopback listener on that URI. It accepts GET on the exact path only, compares `state` in constant time, requires `iss` when the server advertises it, and accepts one callback.
-5. **Exchange**: PKCE S256, then tokens are stored with a new generation. Starting a second sign-in for the same server cancels the first; a cancelled flow whose exchange was already in flight does not save, and its tokens are revoked. A provider that rejects a stored dynamic client at exchange marks it, so the next sign-in registers a new one.
+5. **Exchange**: PKCE S256, then tokens are stored with a new generation. Starting a second sign-in for the same server cancels the first; a cancelled flow whose exchange was already in flight does not save, and its tokens are revoked. That check runs inside the store's serialized write, so a newer sign-in that starts just before the older one's write still wins. A provider that rejects a stored dynamic client at exchange marks it, so the next sign-in registers a new one.
 
 Errors map to the bounded categories below; a provider that rejects dynamic registration yields `dynamic_registration_unsupported`, whose remedy is a client ID (the panel's **Add a Client ID** button).
 
@@ -51,7 +51,7 @@ Errors map to the bounded categories below; a provider that rejects dynamic regi
 `credentialStore.ts`, under `<userData>/mcp-oauth/`, one record per binding key (a hash of the normalized server URL, resource, non-auth headers and static client ID):
 
 - `<key>.enc`, encrypted with Electron `safeStorage`; `<key>.json` with mode 0600 only when `safeStorage` has no backend (Linux without a keyring). An unreadable `.enc` is never overwritten with plaintext.
-- Writes are atomic with a `.bak`, serialized per key, and compare-and-set on `generation`, so a refresh that finishes after a revoke or a new sign-in is discarded.
+- Writes are atomic with a `.bak`, serialized per key, and compare-and-set on `generation`, so a refresh that finishes after a revoke or a new sign-in is discarded. A refresh rotates tokens without a new generation, so marking a server for sign-in also requires the stored access token to still be the one that failed, and saving a refresh requires the refresh token it used to still be stored.
 - A record that cannot be decrypted is never overwritten: a new sign-in moves it to `<key>.unreadable-<ms>.enc` first. An unreadable result is not cached, so a keyring that unlocks later is picked up. When the keyring is unavailable and an encrypted record exists, Authorize fails with `credential_storage_unavailable` before opening the browser.
 - If a disk write fails after a refresh, the rotated tokens are kept in memory for the rest of the run.
 
@@ -59,7 +59,7 @@ At rest the records are as private as the platform makes a same-user file; on Wi
 
 ## Import from `~/.mcp-auth`
 
-The first status check, or the first gateway request, for a server with no binding looks for mcp-remote tokens (`legacyImport.ts`) under `~/.mcp-auth` (or `MCP_REMOTE_CONFIG_DIR`), matching mcp-remote's own hashes. The files are read, never modified or deleted. The import is trust-on-first-use: every issuer the legacy files record must match the authorization server found now, which must pass the same discovery checks, and after import the endpoints are pinned. A failed attempt (offline, provider down) is retried at the next check. An imported record with a refresh token is refreshed once right away; if the provider rejects it, the server shows as needing sign-in instead of signed in, and an imported dynamic client is not reused. A revoked binding's tombstone records the imported tokens' fingerprints so the same tokens are not imported again.
+The first status check, or the first gateway request, for a server with no binding looks for mcp-remote tokens (`legacyImport.ts`) under `~/.mcp-auth` (or `MCP_REMOTE_CONFIG_DIR`), matching mcp-remote's own hashes. The files are read, never modified or deleted. The import is trust-on-first-use: every issuer the legacy files record must match the authorization server found now, which must pass the same discovery checks, and after import the endpoints are pinned. A failed attempt (offline, provider down) is retried at the next check. An imported record with a refresh token is refreshed once right away, whatever expiry the legacy file records; if the provider rejects it, the server shows as needing sign-in instead of signed in, and an imported dynamic client is not reused. A revoked binding's tombstone records the imported tokens' fingerprints so the same tokens are not imported again.
 
 After import, Nimbalyst and any other app using the same `~/.mcp-auth` entry hold copies of one refresh token. With a provider that rotates refresh tokens, whichever refreshes first invalidates the other's copy, and a provider with reuse detection may revoke both.
 
@@ -77,8 +77,10 @@ Any other entry keeps running mcp-remote through `npx`, with the old Authorize, 
 
 `${VAR}` and `${VAR:-default}` in a remote server's URL and header values:
 
-- **Through the gateway** (Nimbalyst sends the request): resolve from the server's `env` block, then from the user's login-shell environment (`getShellEnvironment`, the same environment the CLIs are given), which is what mcp-remote inherited. Defaults apply.
-- **Given to a CLI directly** (`expandRemoteServerVariables`, also used in validation): resolve from the server's `env` block only. Anything else, including a `:-default` for a variable the block does not define, is left for the CLI to expand from its own environment.
+- **Through the gateway** (Nimbalyst sends the request): resolve from the server's `env` block, then from the user's login-shell environment (`getShellEnvironment`, the same environment the CLIs are given), which is what mcp-remote inherited. Defaults apply. The bridge reads the raw config and does this resolution itself.
+- **Given to a CLI directly** (`expandRemoteServerVariables`, also used in validation): substitute only names the server's `env` block defines. Anything else, including a `:-default` for a variable the block does not define, is left for the CLI to expand from its own environment.
+
+In both cases an `env` entry's own value may reference login-shell variables, and an explicitly empty `env` value counts as defined: it overrides the shell rather than falling through to it.
 
 Nimbalyst's own `process.env` is not consulted in either case.
 
@@ -99,5 +101,5 @@ The `process_*`, `stale_pending_auth` and `command_unavailable` categories come 
 ## Tests
 
 - `mcpOAuth/__tests__/McpOAuthManager.test.ts`: discovery, issuer/resource/downgrade checks, refresh pinning, revoke fencing, import (negative regressions N1-N5, N7-N9, N11, N12, N14, N15, N17-N19).
-- `mcpOAuth/__tests__/gateway.test.ts`: forwarding, 503 on missing credentials, single-flight refresh, redirects, SSE adapter, the stdio shim, Test connection (N6, N10, N16).
+- `mcpOAuth/__tests__/gateway.test.ts`: forwarding, 503 on missing credentials, single-flight refresh, redirects, redaction, SSE adapter and its session binding, the stdio shim and its initialize ordering, Test connection (N6, N10, N16).
 - `services/__tests__/mcpRemoteRequirement.test.ts`: routing, generated entries carry no remote credential (N13), stored mcp-remote commands, variable resolution.

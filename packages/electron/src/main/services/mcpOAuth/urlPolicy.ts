@@ -13,6 +13,48 @@ export function isLoopbackHostname(hostname: string): boolean {
 }
 
 /**
+ * Loopback, private (RFC 1918), link-local and unique-local address
+ * literals, plus `localhost`. Hostnames are not resolved, so a public name
+ * that resolves to a private address is not caught here.
+ */
+export function isPrivateHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (isLoopbackHostname(host) || host === '0.0.0.0' || host.endsWith('.localhost')) {
+    return true;
+  }
+  const v4 = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(host);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || a === 0;
+  }
+  if (host.includes(':')) {
+    return host === '::' || host === '::1' || /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host)
+      || /^::ffff:(10|127|192\.168|169\.254|172\.(1[6-9]|2\d|3[01]))\./.test(host);
+  }
+  return false;
+}
+
+/**
+ * A URL the remote server chose (through its metadata or a challenge) may
+ * point at a loopback or private address only when the configured server is
+ * itself on one. Otherwise a public server could make Nimbalyst send
+ * requests to services on the user's machine or network.
+ */
+export function assertNotRedirectedToPrivate(target: string | URL, configuredServerUrl: string, what: string): void {
+  let url: URL;
+  let configured: URL;
+  try {
+    url = typeof target === 'string' ? new URL(target) : new URL(target.href);
+    configured = new URL(configuredServerUrl);
+  } catch {
+    throw new McpOAuthError('invalid_config', `The ${what} is not a valid URL.`);
+  }
+  if (isPrivateHostname(url.hostname) && !isPrivateHostname(configured.hostname)) {
+    throw new McpOAuthError('insecure_endpoint', `The ${what} points at a local or private address, which a public server may not do.`);
+  }
+}
+
+/**
  * No downgrade: when the user configured an `https` server, every URL the
  * OAuth flow touches must be `https` too, except loopback. A server the user
  * configured as plain `http://` keeps working over `http`, matching the
