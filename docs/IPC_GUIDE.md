@@ -187,6 +187,7 @@ React components and hooks import nothing from Electron directly. They call `win
 When invoking IPC from the renderer:
 
 - Always `await` invoke calls and handle failures gracefully (`try/catch`).
+- Check `result.success` when the handler returns `{ success, error? }`. Most handlers report a failure that way instead of throwing, so a `try/catch` alone misses it. `invoke` is typed `Promise<any>`, so the compiler cannot catch an ignored result. Example: `claude-code:answer-question` refuses an already-answered question with `{ success: false }` (#366).
 - Debounce high-frequency sends (like resizing) before sending to the main process.
 
 ## Workspace-Scoped IPC: `workspacePath` is Required
