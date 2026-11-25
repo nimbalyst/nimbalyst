@@ -1957,6 +1957,17 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
                   {oauthAction === 'authorizing' ? 'Authorizing...' : 'Authorize'}
                 </button>
               )}
+{oauthStatus === 'authorized' && (
+                <button
+                  onClick={handleAuthorize}
+                  disabled={oauthAction !== 'idle'}
+                  className="mcp-oauth-button reauthorize px-4 py-2 rounded text-sm font-medium cursor-pointer transition-all duration-150 bg-transparent text-[var(--nim-text)] border border-[var(--nim-border)] disabled:opacity-60 disabled:cursor-not-allowed hover:enabled:bg-[var(--nim-bg-hover)]"
+                  aria-label="Sign in to this server again"
+                  aria-busy={oauthAction === 'authorizing'}
+                >
+                  {oauthAction === 'authorizing' ? 'Signing in...' : 'Sign in again'}
+                </button>
+              )}
               {oauthStatus === 'authorized' && (
                 <button
                   onClick={handleRevoke}
@@ -2467,6 +2478,17 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
                     className="mcp-oauth-button authorize px-4 py-2 rounded text-sm font-medium cursor-pointer transition-all duration-150 bg-[var(--nim-primary)] text-white border-none disabled:opacity-60 disabled:cursor-not-allowed hover:enabled:opacity-90"
                   >
                     {oauthAction === 'authorizing' ? 'Authorizing...' : 'Authorize'}
+                  </button>
+                )}
+{oauthStatus === 'authorized' && (
+                  <button
+                    onClick={handleAuthorize}
+                    disabled={oauthAction !== 'idle'}
+                    className="mcp-oauth-button reauthorize px-4 py-2 rounded text-sm font-medium cursor-pointer transition-all duration-150 bg-transparent text-[var(--nim-text)] border border-[var(--nim-border)] disabled:opacity-60 disabled:cursor-not-allowed hover:enabled:bg-[var(--nim-bg-hover)]"
+                    aria-label="Sign in to this server again"
+                    aria-busy={oauthAction === 'authorizing'}
+                  >
+                    {oauthAction === 'authorizing' ? 'Signing in...' : 'Sign in again'}
                   </button>
                 )}
                 {oauthStatus === 'authorized' && (

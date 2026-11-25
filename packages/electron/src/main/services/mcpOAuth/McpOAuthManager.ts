@@ -414,10 +414,16 @@ export class McpOAuthManager {
       });
     } catch (error) {
       if (error instanceof InvalidGrantError) {
-        await this.markNeedsReauthorization(binding, 'token_exchange', { dropTokens: true });
+        // An imported registration whose grant is dead is likely stale too
+        // (old dynamic clients get cleaned up); registering a new one costs
+        // nothing, while reusing a deleted one fails on the provider's page.
+        const staleImport = binding.origin === 'imported-mcp-remote' && binding.client.source === 'imported';
+        this.log('warn', '[MCP OAuth] Refresh token rejected; sign-in needed', { imported: binding.origin === 'imported-mcp-remote' });
+        await this.markNeedsReauthorization(binding, 'token_exchange', { dropTokens: true, dropClient: staleImport });
         return { ok: false, errorType: 'token_exchange' };
       }
       if (error instanceof InvalidClientError || error instanceof UnauthorizedClientError) {
+        this.log('warn', '[MCP OAuth] Client rejected at refresh; sign-in needed');
         await this.markNeedsReauthorization(binding, 'token_exchange', { dropTokens: true, dropClient: true });
         return { ok: false, errorType: 'token_exchange' };
       }
@@ -599,8 +605,17 @@ export class McpOAuthManager {
       updatedAt: nowIso,
     };
     const saved = await this.store.saveIfGeneration(binding, startGeneration);
-    if (saved) {
-      this.log('info', '[MCP OAuth] Imported credentials from mcp-remote', { issuerHost: safeHost(discovery.issuer) });
+    if (!saved) {
+      return;
+    }
+    this.log('info', '[MCP OAuth] Imported credentials from mcp-remote', { issuerHost: safeHost(discovery.issuer) });
+    // A legacy record can be months old. Prove it still works now, with the
+    // one refresh trust-on-first-use already allows, instead of reporting it
+    // as signed in and failing at first use. A refresh the provider rejects
+    // marks the record for sign-in; a network failure leaves it to be tried
+    // at first use.
+    if (binding.tokens?.refresh_token) {
+      await this.getAccessToken(key);
     }
   }
 

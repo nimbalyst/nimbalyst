@@ -632,3 +632,26 @@ describe('McpOAuthManager review follow-ups', () => {
     expect(browser.opened).toHaveLength(0);
   });
 });
+
+describe('McpOAuthManager stale legacy credentials', () => {
+  it('does not report a dead imported sign-in as authorized, and the next sign-in registers a new client', async () => {
+    // A months-old mcp-remote record whose refresh token the provider no longer honors.
+    const descriptor = descriptorFor(rs.mcpUrl);
+    const hash = (await import('../serverIdentity')).getMcpRemoteServerHashes(descriptor)[0];
+    writeLegacy(path.join(tempRoot, 'mcp-auth', 'mcp-remote-0.1.36'), hash,
+      { access_token: 'old-access', refresh_token: 'old-refresh-the-provider-forgot' },
+      { client_id: 'old-client', redirect_uris: ['http://localhost:4444/oauth/callback'] });
+    const { manager, store } = createManager();
+
+    const status = await manager.getStatus(descriptor);
+
+    expect(status).toEqual({ state: 'needs_reauthorization', reason: 'token_exchange' });
+    // The stale imported registration is marked, so it is not reused.
+    const stored = await store.load(manager.bindingKeyFor(descriptor));
+    expect(stored.status === 'present' && stored.binding.clientRejected).toBe(true);
+    const registrationsBefore = as1.requests.filter((r) => r.path === '/register').length;
+    expect(await manager.authorize(descriptor, { timeoutMs: 5000 })).toEqual({ ok: true });
+    expect(as1.requests.filter((r) => r.path === '/register').length).toBe(registrationsBefore + 1);
+    expect((await manager.getStatus(descriptor)).state).toBe('authorized');
+  });
+});
