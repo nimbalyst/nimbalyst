@@ -1678,7 +1678,10 @@ interface ElectronAPI {
   };
 
   // Worktree operations
-  worktreeCreate: (workspacePath: string, options?: { name?: string; baseBranch?: string; sourceFolderPath?: string }) => Promise<{
+  worktreeCreate: (
+    workspacePath: string,
+    options?: { name?: string; baseBranch?: string; sourceFolderPath?: string; nameSource?: 'user' | 'suggested' },
+  ) => Promise<{
     success: boolean;
     error?: string;
     worktree?: {
