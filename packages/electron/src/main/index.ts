@@ -249,7 +249,10 @@ import {
   GeminiAntigravityProvider,
   configureOpenCodeModelCatalog,
 } from '@nimbalyst/runtime/ai/server';
-import { configureMcpServers } from '@nimbalyst/runtime/ai/server';
+import {
+  configureMcpServers,
+  getMcpConfigService as getRuntimeMcpConfigService,
+} from '@nimbalyst/runtime/ai/server';
 import { matchesAllowPattern } from '@nimbalyst/runtime/ai/server/permissions/toolPermissionHelpers';
 import { resolveCodexPreEditHookScriptPath } from './services/ai/codexPreEditHookPath';
 import {configureCodexShellTracking} from './services/ai/codexShellTrackingHost';
@@ -2197,10 +2200,86 @@ app.whenReady().then(ownerOnly('app initialisation', async () => {
     GrokBuildProvider.setEnhancedPathLoader(() => getEnhancedPath());
     CursorAgentProvider.setEnhancedPathLoader(() => getEnhancedPath());
 
-    // Gemini executes its tools in this process. The provider ships in the
-    // runtime package, which cannot import from main, so the executor is
-    // injected rather than imported.
+    // Gemini executes its tools in this process when falling back to the
+    // language server, and prefers the official Antigravity CLI (`agy`) harness
+    // when available (using the login shell environment and enhanced PATH).
     GeminiAntigravityProvider.setToolExecutor(executeGeminiTool);
+    GeminiAntigravityProvider.setShellEnvironmentLoader(() => getShellEnvironment());
+    GeminiAntigravityProvider.setEnhancedPathLoader(() => getEnhancedPath());
+    GeminiAntigravityProvider.setMcpConfigLoader(async (workspacePath?: string, sessionId?: string) => {
+      const globalServers: Record<string, any> = {};
+      const workspaceServers: Record<string, any> = {};
+
+      // Load Nimbalyst's built-in & extension MCPs (nimbalyst-core, nimbalyst-browser,
+      // nimbalyst-playwright, nimbalyst-trackers, nimbalyst-host, nimbalyst-situational, etc.)
+      try {
+        const effWs = workspacePath || os.homedir();
+        const builtIn = await getRuntimeMcpConfigService({
+          mcpConfigLoader: async () => ({}),
+          claudeSettingsEnvLoader: null,
+          shellEnvironmentLoader: () => getShellEnvironment(),
+        }).getMcpServersConfig({
+          sessionId: sessionId || '',
+          workspacePath: effWs,
+          profile: 'standard',
+        });
+        Object.assign(workspaceServers, builtIn || {});
+      } catch (err) {
+        logger.mcp.warn('[GeminiAgyMcp] Failed to load Nimbalyst built-in/extension MCPs:', err);
+      }
+
+      if (!mcpConfigService) return { globalServers, workspaceServers };
+
+      const filterAndResolve = async (
+        rawMap: Record<string, MCPServerConfig> | undefined,
+        target: Record<string, any>,
+      ): Promise<void> => {
+        for (const [name, cfg] of Object.entries(rawMap || {})) {
+          if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) continue;
+          if ((cfg as { disabled?: boolean }).disabled === true) continue;
+          const enabledProviders = (cfg as { enabledForProviders?: string[] }).enabledForProviders;
+          if (
+            Array.isArray(enabledProviders) &&
+            !enabledProviders.includes('antigravity-gemini-agent') &&
+            !enabledProviders.includes(MCP_PROVIDER_IDS.CLAUDE_AGENT) &&
+            !enabledProviders.includes(MCP_PROVIDER_IDS.CODEX)
+          ) {
+            continue;
+          }
+          try {
+            const opts = await mcpConfigService!.resolveMcpRemoteOptions(cfg, {
+              nativeHttpSupported: true,
+            });
+            const isAuth = await mcpConfigService!.isOAuthAuthorized(cfg, opts);
+            if (isAuth) {
+              target[name] = mcpConfigService!.processServerConfigForRuntime(cfg as any, opts);
+            } else if ((cfg as { url?: string }).url) {
+              const urlCfg = cfg as { url: string; type?: string; headers?: Record<string, string> };
+              target[name] = { url: urlCfg.url, type: urlCfg.type || 'http', headers: urlCfg.headers };
+            }
+          } catch {
+            target[name] = mcpConfigService!.processServerConfigForRuntime(cfg as any);
+          }
+        }
+      };
+
+      try {
+        const userCfg = await mcpConfigService.readUserMCPConfig();
+        await filterAndResolve(userCfg?.mcpServers, globalServers);
+      } catch {
+        /* ignore unreadable user MCP config */
+      }
+      if (workspacePath) {
+        try {
+          const wsCfg = await mcpConfigService.readWorkspaceMCPConfig(workspacePath);
+          await filterAndResolve(wsCfg?.mcpServers, workspaceServers);
+        } catch {
+          /* ignore unreadable workspace MCP config */
+        }
+      }
+
+      return { globalServers, workspaceServers };
+    });
     // The Antigravity language server enforces a supported-build floor against
     // --override_ide_version and rejects anything below it. Reading the value
     // from settings means a user hit by a vendor-side bump can raise it without
