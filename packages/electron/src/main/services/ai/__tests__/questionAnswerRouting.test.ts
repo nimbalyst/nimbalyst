@@ -19,8 +19,10 @@ const h = vi.hoisted(() => {
     reservations: new Map<string, unknown>(),
     handlers: new Map<string, (...args: any[]) => any>(),
     provider: 'claude-code',
-    providerInstance: undefined as undefined | { rejectAskUserQuestion: (...a: unknown[]) => void; abort: () => void },
-    queued: new Map<string, { id: string; sessionId: string; prompt: string; documentContext?: unknown }>(),
+    providerInstance: undefined as undefined | { rejectAskUserQuestion?: (...a: unknown[]) => void; abort?: () => void; isLeadBusy?: () => boolean },
+    queued: new Map<string, { id: string; sessionId: string; prompt: string; documentContext?: unknown; status?: string }>(),
+    /** Rows the turn-end dispatch claims between our list and our claim. */
+    raced: new Set<string>(),
   };
 });
 
@@ -58,25 +60,37 @@ vi.mock('../../SyncManager', () => ({ getSyncProvider: () => null }));
 vi.mock('../../RepositoryManager', () => ({
   getQueuedPromptsStore: () => ({
     get: async (id: string) => h.queued.get(id) ?? null,
-    create: async (row: { id: string; sessionId: string; prompt: string }) => { h.queued.set(row.id, row); return row; },
+    create: async (row: { id: string; sessionId: string; prompt: string }) => { h.queued.set(row.id, { ...row, status: 'pending' }); return row; },
+    listPending: async (sessionId: string) => [...h.queued.values()].filter((row) => row.sessionId === sessionId && row.status === 'pending'),
+    claim: async (id: string) => {
+      const row = h.queued.get(id);
+      if (row?.status !== 'pending') return null;
+      row.status = 'executing';
+      return h.raced.has(id) ? null : row;
+    },
+    complete: async (id: string) => { const row = h.queued.get(id); if (row) row.status = 'completed'; },
+    delete: async (id: string) => { h.queued.delete(id); },
   }),
 }));
 
 import { registerSessionPromptResponseHandler } from '../../../ipc/sessionPromptResponseHandler';
 import { registerAskUserQuestionAnswerHandler } from '../ipc/registerAskUserQuestionAnswerHandler';
-import { configureRequestUserInputResume } from '../requestUserInputOrphanedAnswer';
+import { configureRequestUserInputResume, LATE_ANSWER_PREAMBLE, takeLateAnswersForRunningTurn } from '../requestUserInputOrphanedAnswer';
 import { registerInteractivePromptHandlers } from '../ipc/registerInteractivePromptHandlers';
 import { clearLiveInteractivePrompt, noteLiveInteractivePrompt } from '../../../mcp/tools/interactivePromptLiveness';
 import { openPrompt } from '../openPromptRegistry';
 import { setSessionPendingPrompt } from '../pendingPromptPersistence';
+import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 
 let n = 0;
 let sid = '';
+const drive = vi.fn(async () => ({ kind: 'deferred', reason: 'session-busy' }));
 
 beforeEach(() => {
   sid = `routing-${++n}`;
   h.rows.length = 0;
   h.queued.clear();
+  h.raced.clear();
   h.provider = 'claude-code';
   h.providerInstance = undefined;
   h.ipcMain.removeAllListeners();
@@ -95,7 +109,7 @@ const respondToForm = (promptId: string) => {
 };
 
 const answerQuestion = (sendMessageHandler: () => unknown, questionId: string) => {
-  registerAskUserQuestionAnswerHandler({ sendMessageHandler } as any);
+  registerAskUserQuestionAnswerHandler({ sendMessageHandler, publishQueueStateToSync: vi.fn(async () => {}), driveQueuedPrompts: drive } as any);
   return h.handlers.get('claude-code:answer-question')!({}, { questionId, answers: { Q: 'stale' }, sessionId: sid });
 };
 
@@ -160,6 +174,123 @@ describe('an answer for a card with no live waiter', () => {
 
     expect(waiter).toHaveBeenCalledWith(null, expect.objectContaining({ promptId: 'toolu_card' }));
     expect(h.rows).toEqual([]);
+  });
+});
+
+// 2026-11-07: an answer for a card left over from an earlier process arrived
+// while the lead was mid-turn with no other card open. The auto-resume replaced
+// the running turn, and Claude Code padded the cut-off turn with a synthetic
+// "No response requested." reply that the agent took for its own.
+describe('an answer with no live waiter while the lead turn is running', () => {
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const endTurn = async () => {
+    if (getSessionStateManager().getSessionState(sid)) await getSessionStateManager().endSession(sid);
+  };
+
+  it.each([
+    ['the turn is running', async () => { await getSessionStateManager().startSession({ sessionId: sid, workspacePath: '/ws' }); }],
+    ['the provider is about to start its own turn', async () => { h.providerInstance = { isLeadBusy: () => true }; }],
+  ])('queues a question answer instead of resuming when %s', async (_label, arrange) => {
+    await arrange();
+    const sendMessageHandler = vi.fn();
+    try {
+      expect(await answerQuestion(sendMessageHandler, 'toolu_old')).toEqual({ success: true });
+      await settle();
+
+      expect(sendMessageHandler).not.toHaveBeenCalled();
+      expect([...h.queued.values()]).toEqual([expect.objectContaining({
+        sessionId: sid,
+        prompt: '[Resuming after answering a question]\n\nQ: stale',
+        documentContext: { promptOrigin: 'interactive-question' },
+      })]);
+      // The turn may end before the row exists; the drive covers that.
+      expect(drive).toHaveBeenCalledWith(sid, '/ws', 'session-idle');
+    } finally {
+      await endTurn();
+    }
+  });
+
+  it('queues a form answer instead of resuming while the turn is running', async () => {
+    await getSessionStateManager().startSession({ sessionId: sid, workspacePath: '/ws' });
+    const resume = vi.fn(async () => undefined);
+    configureRequestUserInputResume(resume, vi.fn(async () => {}), drive);
+    try {
+      expect(await respondToForm('toolu_old')).toMatchObject({ success: true });
+      await settle();
+
+      expect(resume).not.toHaveBeenCalled();
+      expect([...h.queued.values()]).toEqual([expect.objectContaining({ sessionId: sid, prompt: expect.stringContaining('"ok"') })]);
+      expect(drive).toHaveBeenCalledWith(sid, '/ws');
+    } finally {
+      await endTurn();
+    }
+  });
+
+  it('still resumes at once when nothing is running', async () => {
+    const sendMessageHandler = vi.fn(async () => undefined);
+
+    expect(await answerQuestion(sendMessageHandler, 'toolu_old')).toEqual({ success: true });
+    await settle();
+
+    expect(sendMessageHandler).toHaveBeenCalledTimes(1);
+    expect(h.queued.size).toBe(0);
+  });
+});
+
+// An hour-long turn would otherwise work on without the answer until it ends.
+// The runtime's PostToolBatch hook hands it to the turn at its next tool boundary.
+describe('a queued answer reaching the running turn at its next tool boundary', () => {
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const status = () => Object.fromEntries([...h.queued.values()].map((row) => [row.id, row.status]));
+
+  it.each([
+    ['question', () => answerQuestion(vi.fn(), 'toolu_old'), 'Q: stale'],
+    ['form', () => { configureRequestUserInputResume(vi.fn(), vi.fn(async () => {}), drive); return respondToForm('toolu_old'); }, '"ok"'],
+  ])('hands over a %s answer once, completing it only after delivery', async (_label, answer, text) => {
+    await getSessionStateManager().startSession({ sessionId: sid, workspacePath: '/ws' });
+    try {
+      await answer();
+      await settle();
+      const [id] = Object.keys(status());
+      const claimed = vi.fn();
+
+      const batch = await takeLateAnswersForRunningTurn(sid, claimed);
+
+      expect(batch?.text.startsWith(`${LATE_ANSWER_PREAMBLE}\n\n`)).toBe(true);
+      expect(batch?.text).toContain(text);
+      expect(batch?.text).not.toContain('[Resuming after');
+      // Claimed, so the turn-end dispatch cannot take it meanwhile.
+      expect(status()).toEqual({ [id]: 'executing' });
+      expect(claimed).not.toHaveBeenCalled();
+
+      await batch!.settle(true);
+      expect(status()).toEqual({ [id]: 'completed' });
+      expect(claimed).toHaveBeenCalledWith(id);
+      expect(await takeLateAnswersForRunningTurn(sid)).toBeNull();
+    } finally {
+      await getSessionStateManager().endSession(sid);
+    }
+  });
+
+  it('puts an answer that did not reach the turn back in the queue for the turn end', async () => {
+    h.queued.set('answer-a', { id: 'answer-a', sessionId: sid, prompt: 'Q: a', documentContext: { promptOrigin: 'interactive-question' }, status: 'pending' });
+    const claimed = vi.fn();
+
+    await (await takeLateAnswersForRunningTurn(sid, claimed))!.settle(false);
+
+    expect([...h.queued.values()]).toEqual([expect.objectContaining({
+      id: 'answer-a', prompt: 'Q: a', documentContext: { promptOrigin: 'interactive-question' }, status: 'pending',
+    })]);
+    expect(claimed).not.toHaveBeenCalled();
+  });
+
+  it('leaves the user\'s own queued prompts, and an answer the turn-end dispatch claims first', async () => {
+    h.queued.set('user-1', { id: 'user-1', sessionId: sid, prompt: 'next task', status: 'pending' });
+    h.queued.set('answer-raced', { id: 'answer-raced', sessionId: sid, prompt: 'Q: a', status: 'pending' });
+    h.raced.add('answer-raced');
+
+    expect(await takeLateAnswersForRunningTurn(sid)).toBeNull();
+    expect(status()).toEqual({ 'user-1': 'pending', 'answer-raced': 'executing' });
   });
 });
 

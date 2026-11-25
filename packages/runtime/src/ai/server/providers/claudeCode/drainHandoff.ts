@@ -10,6 +10,17 @@
  * the live query instead: the draining turn stops iterating without closing
  * anything and hands over its iterator, any in-flight `next()`, the prompt
  * stream, and the abort controller the process was spawned with.
+ *
+ * Once a task has settled, the CLI starts a turn of its own to answer the
+ * task notification, and a message pushed meanwhile is folded into that turn
+ * or runs after it (verified against Agent SDK 0.3.314). So a follow-up that
+ * adopts after a settle is pushed with a uuid, and its turn starts at the
+ * first frame the CLI stamps as answering it (`answersPushedMessage`).
+ *
+ * When the last task settles, its result goes back into the same live CLI as
+ * a wake that adopts the query (a live wake), instead of closing the process
+ * and resuming it cold: closing it cut off the CLI's own turn mid-way, and the
+ * resumed CLI filled that turn in with "No response requested.".
  */
 
 import type { PromptStreamController } from './sdkOptionsBuilder';
@@ -17,13 +28,35 @@ import type { PromptStreamController } from './sdkOptionsBuilder';
 /** How long a follow-up waits for the draining turn to let go before falling back to a fresh query. */
 export const DRAIN_HANDOFF_TIMEOUT_MS = 10_000;
 
+/** How long the drain keeps the query open for a live wake before ending the old way (close, then a cold resume). */
+export const LIVE_WAKE_TIMEOUT_MS = 60_000;
+
+/**
+ * Stands in for the next chunk while a draining turn waits behind its live wake
+ * without reading. Rejects with an AbortError when the turn is aborted (a turn
+ * that could not adopt the query replaced it), so the turn ends the way a read
+ * would have ended it.
+ */
+export function parkedUntilAborted(signal: AbortSignal | undefined): Promise<never> {
+  return new Promise<never>((_resolve, reject) => {
+    if (!signal) return;
+    const abort = (): void => {
+      const error = new Error('The draining turn was aborted while waiting for its live wake');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
 export interface DrainAdoptionFacts {
   hasLeadQuery: boolean;
   draining: boolean;
   promptStreamOpen: boolean;
   hasRunningTasks: boolean;
-  /** Tasks that already settled during the drain carry results only the drain's own continuation delivers. */
-  terminalNotificationCount: number;
+  /** The last task settled and the wake carrying its result is on its way to take this query. */
+  liveWakePending: boolean;
   settledThisTurn: boolean;
   graceExpired: boolean;
   wasInterrupted: boolean;
@@ -34,16 +67,17 @@ export interface DrainAdoptionFacts {
 }
 
 /**
- * True only in the plain case: the lead answered, a background task is still
- * running, and nothing else is waiting on this turn. Anything else keeps the
- * existing drain behavior.
+ * True when the lead answered, a background task is still running or the live
+ * wake for the last one is due, and nothing else is waiting on this turn.
+ * Tasks that already settled do not block it: the live CLI holds their
+ * notifications, and the follow-up binds past the CLI's own turn about them.
+ * Anything else keeps the existing drain behavior.
  */
 export function canAdoptDrainingQuery(facts: DrainAdoptionFacts): boolean {
   return facts.hasLeadQuery
     && facts.draining
     && facts.promptStreamOpen
-    && facts.hasRunningTasks
-    && facts.terminalNotificationCount === 0
+    && (facts.hasRunningTasks || facts.liveWakePending)
     && !facts.settledThisTurn
     && !facts.graceExpired
     && !facts.wasInterrupted
@@ -62,6 +96,27 @@ export interface AdoptedQuery<Q, H> {
   abortController: AbortController | null;
   /** The hooks the live process was spawned with are bound to this instance. */
   toolHooksService: H;
+  /**
+   * A task settled during the drain, so the CLI may be running its own turn
+   * about it when the follow-up lands. The follow-up is pushed with a uuid and
+   * its turn starts at the first frame stamped with it.
+   */
+  bindToOwnTurn: boolean;
+}
+
+/**
+ * True for a frame the CLI stamps as answering the pushed message `uuid`: the
+ * first top-level assistant frame of its turn, the first one after it was
+ * folded into a running turn, or that turn's result (SDK `user_message_uuid`
+ * and `user_message_uuids`).
+ */
+export function answersPushedMessage(chunk: unknown, uuid: string): boolean {
+  if (!chunk || typeof chunk !== 'object') return false;
+  const frame = chunk as { type?: unknown; parent_tool_use_id?: unknown; user_message_uuid?: unknown; user_message_uuids?: unknown };
+  if (frame.type !== 'assistant' && frame.type !== 'result') return false;
+  if (frame.type === 'assistant' && frame.parent_tool_use_id) return false;
+  if (frame.user_message_uuid === uuid) return true;
+  return Array.isArray(frame.user_message_uuids) && frame.user_message_uuids.includes(uuid);
 }
 
 export class DrainHandoff<Q, H> {

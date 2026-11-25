@@ -355,6 +355,19 @@ describe('buildTaskResultContinuationMessage', () => {
     expect(msg).toContain('/tmp/tasks/b1.output');
     expect(msg).not.toContain('user stopped watcher');
   });
+
+  // 2026-11-07: the CLI had already written its own hand-back turn when the
+  // drain closed it, so the resumed CLI answered that turn with a synthetic
+  // "No response requested." and reported the finished task as stopped. The
+  // agent took both for its own mistakes. The wake has to say they are not.
+  it('tells the agent the placeholder reply and the stopped notice came from the closed process', () => {
+    for (const status of ['completed', 'failed'] as const) {
+      const msg = buildTaskResultContinuationMessage([{ taskId: 'a1', description: 'tenant 403 fix', status }]);
+      expect(msg).toContain('"No response requested."');
+      expect(msg).toContain('you did not write it');
+      expect(msg).toContain("didn't finish before the previous session ended");
+    }
+  });
 });
 
 describe('hasRunningTasks', () => {

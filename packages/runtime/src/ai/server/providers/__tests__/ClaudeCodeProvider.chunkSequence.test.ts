@@ -38,6 +38,12 @@ vi.mock('../claudeCode/promptSuggestionWait', async (importOriginal) => ({
   PROMPT_SUGGESTION_WAIT_MS: 300,
 }));
 
+// The real window is 60s; the test that lets a live wake go unanswered cannot wait that long.
+vi.mock('../claudeCode/drainHandoff', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../claudeCode/drainHandoff')>()),
+  LIVE_WAKE_TIMEOUT_MS: 400,
+}));
+
 const queryMock = vi.fn();
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: (args: unknown) => queryMock(args),
@@ -1311,14 +1317,178 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
     expect(second.filter((chunk) => chunk.type === 'text').map((chunk) => chunk.content)).toEqual(['FOLLOWUP_OK']);
     expect(queryMock).toHaveBeenCalledTimes(1);
 
-    // The shell finishes later; the adopted turn drains it like any other turn.
+    // The shell finishes later. Its result is sent as a wake for the live CLI,
+    // and the queue waits for it. No turn takes it here, so once the wait runs
+    // out the drain ends the old way and the wake runs on a fresh query.
     live.send({ type: 'system', subtype: 'task_notification', task_id: 'task_1', status: 'completed', summary: 'sleep finished' });
+    await waitFor(() => idleMessages.length === 1);
+    expect(idleMessages[0].message).toContain('sleep 45');
+    expect(live.close).not.toHaveBeenCalled();
+    expect(provider.canAcceptFollowUpDuringDrain()).toBe(false);
     await secondTurn;
     expect(live.close).toHaveBeenCalledOnce();
     expect(idleMessages).toHaveLength(1);
+    expect(settled).toEqual([]);
+    expect(provider.isLeadBusy()).toBe(true);
+
+    queryMock.mockImplementation(() => scriptQuery([INIT_CHUNK, { type: 'result', subtype: 'success', is_error: false, num_turns: 1 }]));
+    await runTurn(provider, idleMessages[0].message);
+    expect(queryMock).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(stubsOf(provider).logAgentMessage.mock.calls)).toContain('closed the Claude Code process');
+  });
+
+  // A follow-up used to wait for every background task once any one had settled.
+  it('takes a follow-up onto the live query after one of two background tasks settled', async () => {
+    const { provider } = await makeProvider();
+    const live = liveQuery();
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+      live.attach(prompt);
+      return live.query;
+    });
+    const idleMessages: Array<{ message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    live.send(INIT_CHUNK, backgroundShell('task_1', 'sleep 45'), backgroundShell('task_2', 'sleep 90'), STARTED, LEAD_RESULT);
+    const first: StreamChunk[] = [];
+    const firstTurn = runTurn(provider, 'start two shells', (chunk) => first.push(chunk));
+    await waitFor(() => first.some((chunk) => chunk.type === 'complete'));
+    live.send(shellSettled('task_1'));
+    await waitFor(() => provider.canAcceptFollowUpDuringDrain());
+
+    const second: StreamChunk[] = [];
+    const secondTurn = runTurn(provider, 'follow up', (chunk) => second.push(chunk));
+    await waitFor(() => live.prompts.length === 2);
+    const uuid = (live.prompts[1] as { uuid?: string }).uuid;
+    expect(uuid).toEqual(expect.any(String));
+    await firstTurn;
+    expect(live.close).not.toHaveBeenCalled();
+
+    // The CLI's own turn about task_1 ran first; its result is not the follow-up's.
+    live.send(
+      INIT_CHUNK,
+      assistantText('msg_own', 'CLI_OWN_TURN'),
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 1 },
+      INIT_CHUNK,
+      { ...assistantText('msg_2', 'FOLLOWUP_OK'), user_message_uuid: uuid },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 1, user_message_uuid: uuid },
+    );
+    await waitFor(() => second.some((chunk) => chunk.type === 'complete'));
+    expect(second.filter((chunk) => chunk.type === 'text').map((chunk) => chunk.content)).toEqual(['FOLLOWUP_OK']);
+    expect(second.filter((chunk) => chunk.type === 'complete')).toHaveLength(1);
+
+    // task_2 keeps the follow-up's turn draining. Its wake reports task_2 only:
+    // the live CLI already holds task_1's result.
+    live.send(shellSettled('task_2'));
+    await secondTurn;
+    expect(idleMessages).toHaveLength(1);
+    expect(idleMessages[0].message).toContain('sleep 90');
+    expect(idleMessages[0].message).not.toContain('sleep 45');
+  });
+
+  // The last background task settling used to close the CLI and resume it cold
+  // with the result. That cut off the CLI's own turn about the task, which the
+  // resumed CLI then answered with "No response requested.". Sending the result
+  // into the live CLI instead got it answered twice.
+  it('wakes the session with the live CLI\'s own turn about the last background result', async () => {
+    const { provider } = await makeProvider();
+    const live = liveQuery();
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+      live.attach(prompt);
+      return live.query;
+    });
+    const settled: unknown[] = [];
+    provider.on('subagents:drainSettled', (payload) => settled.push(payload));
+    const idleMessages: Array<{ message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    live.send(INIT_CHUNK, backgroundShell('task_1', 'sleep 45'), STARTED, LEAD_RESULT);
+    const first: StreamChunk[] = [];
+    // The finished turn's queue chain asks this as the turn ends. The wake does
+    // not hold the queue, so "not busy" ends the session under the wake turn.
+    let busyAsFirstTurnEnds: boolean | undefined;
+    const firstTurn = runTurn(provider, 'start the shell', (chunk) => first.push(chunk))
+      .then(() => { busyAsFirstTurnEnds = provider.isLeadBusy(); });
+    await waitFor(() => first.some((chunk) => chunk.type === 'complete'));
+
+    // The CLI starts its own turn about the result before any wake turn exists.
+    live.send(shellSettled('task_1'), INIT_CHUNK, assistantText('msg_own', 'CLI_OWN_TURN'));
+    await waitFor(() => idleMessages.length === 1);
     expect(idleMessages[0].message).toContain('sleep 45');
+    expect(idleMessages[0].message).not.toContain('closed the Claude Code process');
+    expect(provider.canAcceptFollowUpDuringDrain()).toBe(false);
+
+    const wake: StreamChunk[] = [];
+    const wakeTurn = runTurn(provider, idleMessages[0].message, (chunk) => wake.push(chunk));
+    await firstTurn;
+    expect(busyAsFirstTurnEnds).toBe(true);
+    expect(live.close).not.toHaveBeenCalled();
+    expect(live.promptStreamEnded).toBe(false);
+    expect(settled).toEqual([]);
+
+    live.send(assistantText('msg_own_2', 'CLI_OWN_TURN_MORE'), { type: 'result', subtype: 'success', is_error: false, num_turns: 1 });
+    await wakeTurn;
+    // The wake turn is the CLI's turn from its first frame; the CLI is sent nothing.
+    expect(wake.filter((chunk) => chunk.type === 'text').map((chunk) => chunk.content)).toEqual(['CLI_OWN_TURN', 'CLI_OWN_TURN_MORE']);
+    expect(wake.filter((chunk) => chunk.type === 'complete')).toHaveLength(1);
+    expect(live.prompts).toHaveLength(1);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(live.close).not.toHaveBeenCalled();
+    expect(idleMessages).toHaveLength(1);
+  });
+
+  // The draining turn stops reading behind its live wake. A wake turn that cannot
+  // take the live CLI over aborts it instead, and the parked turn must still end.
+  it('ends the parked turn and closes its CLI when the wake turn starts a new query', async () => {
+    const { provider } = await makeProvider();
+    const live = liveQuery();
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+      live.attach(prompt);
+      return live.query;
+    });
+    const idleMessages: Array<{ message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    live.send(INIT_CHUNK, backgroundShell('task_1', 'sleep 45'), STARTED, LEAD_RESULT);
+    const first: StreamChunk[] = [];
+    let firstTurnEnded = false;
+    const firstTurn = runTurn(provider, 'start the shell', (chunk) => first.push(chunk))
+      .then(() => { firstTurnEnded = true; });
+    await waitFor(() => first.some((chunk) => chunk.type === 'complete'));
+    live.send(shellSettled('task_1'));
+    await waitFor(() => idleMessages.length === 1);
+
+    // The live CLI runs the old model, so the wake turn starts a new query.
+    (provider as unknown as { config: { model: string } }).config.model = 'opus';
+    queryMock.mockImplementation(() => scriptQuery([INIT_CHUNK, { type: 'result', subtype: 'success', is_error: false, num_turns: 1 }]));
+    await runTurn(provider, idleMessages[0].message);
+    expect(queryMock).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(stubsOf(provider).logAgentMessage.mock.calls)).toContain('closed the Claude Code process');
+
+    await waitFor(() => firstTurnEnded);
+    await firstTurn;
+    expect(live.close).toHaveBeenCalledOnce();
+    expect(idleMessages).toHaveLength(1);
   });
 });
+
+const STARTED ={ type: 'assistant', session_id: 'sdk-session-1', message: { id: 'msg_1', content: [{ type: 'text', text: 'STARTED' }] } };
+const LEAD_RESULT = { type: 'result', subtype: 'success', is_error: false, num_turns: 1 };
+
+function backgroundShell(taskId: string, description: string) {
+  return { type: 'system', subtype: 'task_started', task_id: taskId, task_type: 'local_bash', is_backgrounded: true, description, tool_use_id: `toolu_${taskId}` };
+}
+
+function shellSettled(taskId: string) {
+  return { type: 'system', subtype: 'task_notification', task_id: taskId, status: 'completed', summary: `${taskId} finished` };
+}
+
+function assistantText(id: string, text: string) {
+  return { type: 'assistant', session_id: 'sdk-session-1', parent_tool_use_id: null, message: { id, content: [{ type: 'text', text }] } };
+}
+
+function stubsOf(provider: ClaudeCodeProvider): { logAgentMessage: ReturnType<typeof vi.fn> } {
+  return provider as unknown as { logAgentMessage: ReturnType<typeof vi.fn> };
+}
 
 describe('ClaudeCodeProvider prompt suggestions', () => {
   const ANSWER = [
