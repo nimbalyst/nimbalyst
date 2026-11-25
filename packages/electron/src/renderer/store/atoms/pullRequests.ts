@@ -30,9 +30,25 @@ export interface PrRemoteInfo {
   workspacePath: string;
   remote: string;
   host: string;
+  /** The repository whose remote this is; the workspace root when unset */
+  repoPath?: string;
 }
 
 export const prRemoteAtom = atom<PrRemoteInfo | null>(null);
+
+/**
+ * The repository the GitHub panel points at, when the user chose one other
+ * than the workspace root. A workspace can hold several repositories; this
+ * is remembered per workspace (`prRepoPath` in its state).
+ */
+export const prSelectedRepoAtom = atom<{ workspacePath: string; repoPath: string } | null>(null);
+
+/** Point the GitHub panel at one of the workspace's repositories, and remember it */
+export function selectPrRepo(workspacePath: string, repoPath: string): void {
+  store.set(prSelectedRepoAtom, { workspacePath, repoPath });
+  void window.electronAPI?.invoke?.('workspace:update-state', workspacePath, { prRepoPath: repoPath })
+    ?.catch?.(() => {});
+}
 
 /**
  * Cached PR list for the active workspace. Replaced wholesale by the mode
