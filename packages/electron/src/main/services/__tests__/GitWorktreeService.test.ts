@@ -8,7 +8,7 @@ import * as os from 'os';
 import { GitWorktreeService, WorkspaceHasNoCommitsError } from '../GitWorktreeService';
 import { gitOperationLock } from '../GitOperationLock';
 import * as operationLog from '../GitOperationLogService';
-import { assertGitSandbox, FIXTURE_IDENTITY_ARGS, gitSandboxEnv } from '../testSupport/gitTestSandbox';
+import { assertGitSandbox, createScratchRepo, FIXTURE_IDENTITY_ARGS, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 
 // createWorktree/deleteWorktree record each command in the persisted git
 // activity log, which is bookkeeping these tests do not exercise.
@@ -58,10 +58,7 @@ describe('GitWorktreeService.validateWorkspaceHasCommits', () => {
   });
 
   it('throws WorkspaceHasNoCommitsError for a `git init`-ed repo with no commits', async () => {
-    // Never let a pre-push hook's GIT_DIR redirect this mutating init into the
-    // developer's shared repository.
-    const git = createGit(tmpDir, {}, gitSandboxEnv(undefined, { pinConfigPaths: false }));
-    await git.init();
+    createScratchRepo({ at: tmpDir });
 
     await expect(service.validateWorkspaceHasCommits(tmpDir))
       .rejects
@@ -69,17 +66,12 @@ describe('GitWorktreeService.validateWorkspaceHasCommits', () => {
   });
 
   it('resolves cleanly when the repo has at least one commit', async () => {
-    // .env() strips GIT_* — without it a hook-inherited GIT_DIR redirects this
-    // commit onto the developer's live branch. See testSupport/gitTestSandbox.ts.
-    const git = createGit(tmpDir, {}, gitSandboxEnv(undefined, { pinConfigPaths: false }));
-    await git.init();
-    await git.addConfig('user.email', 'test@example.com', false, 'local');
-    await git.addConfig('user.name', 'Test', false, 'local');
-    await git.addConfig('commit.gpgsign', 'false', false, 'local');
-    assertGitSandbox(tmpDir);
+    // The fixture's git() strips GIT_* and checks the sandbox before each command.
+    // See testSupport/gitTestSandbox.ts.
+    const repo = createScratchRepo({ at: tmpDir });
     fs.writeFileSync(path.join(tmpDir, 'README.md'), 'hi');
-    await git.add('README.md');
-    await git.commit('initial');
+    repo.git('add', 'README.md');
+    repo.git('commit', '-q', '-m', 'initial');
 
     await expect(service.validateWorkspaceHasCommits(tmpDir)).resolves.toBeUndefined();
   });
@@ -115,18 +107,13 @@ describe('GitWorktreeService.getChangedFiles untracked-directory expansion', () 
   let tmpDir: string;
   const service = new GitWorktreeService();
 
-  beforeEach(async () => {
+  beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbalyst-gws-changed-'));
-    const git = createGit(tmpDir, {}, gitSandboxEnv(undefined, { pinConfigPaths: false }));
-    await git.init();
-    await git.addConfig('user.email', 'test@example.com', false, 'local');
-    await git.addConfig('user.name', 'Test', false, 'local');
-    await git.addConfig('commit.gpgsign', 'false', false, 'local');
-    assertGitSandbox(tmpDir);
+    const repo = createScratchRepo({ at: tmpDir });
 
     fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'node_modules/\n');
-    await git.add('.gitignore');
-    await git.commit('initial');
+    repo.git('add', '.gitignore');
+    repo.git('commit', '-q', '-m', 'initial');
 
     // Three collapsed `?? dir/` entries, one holding a gitignored install.
     for (const name of ['pkg-a', 'pkg-b', 'pkg-c']) {
@@ -144,11 +131,7 @@ describe('GitWorktreeService.getChangedFiles untracked-directory expansion', () 
     // whose contents belong to IT rather than to the outer worktree.
     const embedded = path.join(tmpDir, 'embedded-repo');
     fs.mkdirSync(embedded);
-    const embeddedGit = createGit(embedded, {}, gitSandboxEnv(undefined, { pinConfigPaths: false }));
-    await embeddedGit.init();
-    await embeddedGit.addConfig('user.email', 'test@example.com', false, 'local');
-    await embeddedGit.addConfig('user.name', 'Test', false, 'local');
-    await embeddedGit.addConfig('commit.gpgsign', 'false', false, 'local');
+    createScratchRepo({ at: embedded });
     fs.writeFileSync(path.join(embedded, 'inner.ts'), 'export {};\n');
   });
 

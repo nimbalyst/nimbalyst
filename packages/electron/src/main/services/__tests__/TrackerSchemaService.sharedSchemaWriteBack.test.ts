@@ -11,7 +11,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { execFileSync } from 'child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mockWatch, dbRef } = vi.hoisted(() => ({
@@ -45,6 +44,7 @@ vi.mock('../TrackerIdentityService', () => ({
 }));
 
 import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
+import { createScratchRepo } from '../testSupport/gitTestSandbox';
 import {
   applyRemoteWorkspaceTrackerSchemaDef,
   handleSchemaFileDeleted,
@@ -472,12 +472,11 @@ describe('shared tracker schema write-back (#1178)', () => {
   });
 
   it('warns for a git-tracked team YAML and stays silent for an untracked one', async () => {
-    execFileSync('git', ['init'], { cwd: ws, stdio: 'ignore' });
-    const topLevel = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: ws, encoding: 'utf-8' }).trim();
-    expect(fs.realpathSync(topLevel)).toBe(fs.realpathSync(ws));
+    // The folder belongs to the test's own setup, so the fixture uses it in place.
+    const repo = createScratchRepo({ at: ws });
 
     fs.writeFileSync(schemaFile(), serializeTrackerYAML(sharedModel as never));
-    execFileSync('git', ['add', '-f', path.relative(ws, schemaFile())], { cwd: ws, stdio: 'ignore' });
+    repo.git('add', '-f', path.relative(ws, schemaFile()));
     await applyRemoteWorkspaceTrackerSchemaDef(ws, {
       type: TYPE, model: JSON.stringify(sharedModel), syncId: 14,
     });

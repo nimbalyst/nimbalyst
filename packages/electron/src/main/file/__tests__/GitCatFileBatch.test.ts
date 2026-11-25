@@ -12,13 +12,15 @@
  * would only prove the parser agrees with my own assumptions.
  */
 import { describe, expect, it, beforeAll, afterAll, afterEach, vi } from 'vitest';
-import { execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
+import type { ChildProcessWithoutNullStreams } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { GitCatFileBatch, toGitObjectPath } from '../GitCatFileBatch';
 import { parseDirtyPathsPorcelainZ } from '../FileSnapshotCache';
+import { createScratchRepo, type ScratchRepo } from '../../services/testSupport/gitTestSandbox';
 
+let scratch: ScratchRepo;
 let repo: string;
 let sha: string;
 const open: GitCatFileBatch[] = [];
@@ -30,12 +32,9 @@ const make = (opts?: ConstructorParameters<typeof GitCatFileBatch>[1]) => {
 };
 
 beforeAll(() => {
-  // Sandboxed under tmpdir so a stray commit can never land on the real repo.
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-catfile-'));
-  const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
-  git('init', '-q');
-  git('config', 'user.email', 'test@example.com');
-  git('config', 'user.name', 'Test');
+  // The fixture keeps a stray commit from ever landing on the real repo.
+  scratch = createScratchRepo();
+  repo = scratch.path;
   fs.writeFileSync(path.join(repo, 'a.txt'), 'alpha\n');
   fs.writeFileSync(path.join(repo, 'b.txt'), 'beta content here\n');
   fs.mkdirSync(path.join(repo, 'nested'));
@@ -43,9 +42,9 @@ beforeAll(() => {
   // A file with a newline-heavy body: the batch protocol is length-prefixed,
   // so a parser that scanned for newlines would corrupt this one.
   fs.writeFileSync(path.join(repo, 'multi.txt'), 'l1\nl2\nl3\n\n\nl6\n');
-  git('add', '-A');
-  git('commit', '-qm', 'init');
-  sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, stdio: 'pipe' }).toString().trim();
+  scratch.git('add', '-A');
+  scratch.git('commit', '-qm', 'init');
+  sha = scratch.git('rev-parse', 'HEAD').trim();
 });
 
 afterEach(() => {
@@ -54,7 +53,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
-  fs.rmSync(repo, { recursive: true, force: true });
+  scratch.cleanup();
 });
 
 describe('GitCatFileBatch', () => {
@@ -185,12 +184,10 @@ describe('parseDirtyPathsPorcelainZ', () => {
   // Checked against real `git status -z` output rather than a hand-written
   // string, so the parser cannot just agree with my reading of the format.
   it('returns unquoted paths and skips the source of a rename', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-status-z-'));
+    const statusRepo = createScratchRepo();
     try {
-      const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' }).toString();
-      git('init', '-q');
-      git('config', 'user.email', 'test@example.com');
-      git('config', 'user.name', 'Test');
+      const dir = statusRepo.path;
+      const git = statusRepo.git;
       fs.writeFileSync(path.join(dir, 'old name.md'), 'x\n');
       fs.writeFileSync(path.join(dir, 'tracked.md'), 'x\n');
       git('add', '-A');
@@ -202,7 +199,7 @@ describe('parseDirtyPathsPorcelainZ', () => {
       const stdout = git('--no-optional-locks', 'status', '--porcelain', '-z');
       expect(parseDirtyPathsPorcelainZ(stdout).sort()).toEqual(['café.md', 'new name.md', 'tracked.md']);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      statusRepo.cleanup();
     }
   });
 });

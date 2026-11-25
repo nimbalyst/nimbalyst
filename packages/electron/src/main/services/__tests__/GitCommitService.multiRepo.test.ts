@@ -12,7 +12,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
+import { createScratchRepo, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 
 const execFileAsync = promisify(execFile);
 const testTempRoot = process.env.NIMBALYST_TEST_TEMP_DIR ?? os.tmpdir();
@@ -40,15 +40,6 @@ async function gitOutput(args: string[], cwd: string): Promise<string> {
   return stdout;
 }
 
-async function initScratchRepo(cwd: string): Promise<void> {
-  await fs.mkdir(cwd, { recursive: true });
-  await git(['init', '-q'], cwd);
-  await git(['config', 'user.email', 'test@example.com'], cwd);
-  await git(['config', 'user.name', 'Test User'], cwd);
-  await git(['config', 'commit.gpgsign', 'false'], cwd);
-  assertGitSandbox(cwd, testTempRoot);
-}
-
 beforeEach(async () => {
   await fs.mkdir(testTempRoot, { recursive: true });
   tmpRoot = await fs.realpath(await fs.mkdtemp(path.join(testTempRoot, 'nim-git-multirepo-')));
@@ -56,9 +47,12 @@ beforeEach(async () => {
   infraRepo = path.join(tmpRoot, 'infra');
   plainFolder = path.join(tmpRoot, 'docs');
 
-  await initScratchRepo(appRepo);
-  await initScratchRepo(infraRepo);
+  // The fixture needs each folder to exist before it runs `git init` there.
+  await fs.mkdir(appRepo, { recursive: true });
+  await fs.mkdir(infraRepo, { recursive: true });
   await fs.mkdir(plainFolder, { recursive: true });
+  createScratchRepo({ at: appRepo });
+  createScratchRepo({ at: infraRepo });
 
   rootsByWorkspace.clear();
   clearWorkspaceRepoCache();
@@ -191,7 +185,8 @@ describe('executeGitCommitAcrossRepos', () => {
     // stored under the parent workspace key. Without extraRoots the infra file
     // resolves to no repo, is dropped into uncommittableFiles, and never lands.
     const worktree = path.join(tmpRoot, 'app-worktree');
-    await initScratchRepo(worktree);
+    await fs.mkdir(worktree, { recursive: true });
+    createScratchRepo({ at: worktree });
     rootsByWorkspace.set(worktree, [worktree]);
     await fs.writeFile(path.join(worktree, 'a.txt'), 'one\n', 'utf8');
     await fs.writeFile(path.join(infraRepo, 'main.tf'), 'two\n', 'utf8');
