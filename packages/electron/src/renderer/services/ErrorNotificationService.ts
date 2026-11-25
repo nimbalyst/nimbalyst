@@ -28,6 +28,7 @@ export interface ErrorNotification {
 }
 
 type ErrorListener = (notification: ErrorNotification) => void;
+type DismissListener = (id: string) => void;
 
 /**
  * Failures that arrive as a storm rather than as an event.
@@ -60,6 +61,7 @@ export function notificationDedupKey(
 
 class ErrorNotificationService {
   private listeners: Set<ErrorListener> = new Set();
+  private dismissListeners: Set<DismissListener> = new Set();
   private notifications: ErrorNotification[] = [];
   private nextId = 1;
   // Deduplication: track recent error keys to suppress duplicates
@@ -72,6 +74,15 @@ class ErrorNotificationService {
   addListener(listener: ErrorListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * Register a listener that hears when a notification is dismissed in code,
+   * so the toast on screen can be removed too (#282).
+   */
+  addDismissListener(listener: DismissListener): () => void {
+    this.dismissListeners.add(listener);
+    return () => this.dismissListeners.delete(listener);
   }
 
   /**
@@ -223,7 +234,12 @@ class ErrorNotificationService {
    * Dismiss a notification
    */
   dismiss(id: string): void {
+    const before = this.notifications.length;
     this.notifications = this.notifications.filter(n => n.id !== id);
+    // Only tell listeners when something was really removed, so a second call does nothing.
+    if (this.notifications.length !== before) {
+      this.dismissListeners.forEach(listener => listener(id));
+    }
   }
 
   /**

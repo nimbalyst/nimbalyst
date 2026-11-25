@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- The New Worktree dialog no longer spends over a minute refreshing remote branches when the remote can't be reached; the fetch now gives up after 15 seconds and the dialog shows the local branches
+- Archiving a worktree shows a "Checking for unsaved work" notice when that check takes more than a second, instead of nothing happening on screen
 
 ### Removed
 <!-- Removed features go here -->
