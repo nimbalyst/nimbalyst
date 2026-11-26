@@ -355,6 +355,33 @@ describe('pending question navigation', () => {
     expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
   });
 
+  it('retries a jump whose card was not yet found when the pane was hidden', () => {
+    const base = [makeMessage(0, { text: 'Before' })];
+    const { rerender, container } = render(view(base));
+    flushFrames();
+    vlistState.scrollToIndex.mockClear();
+    rerender(view([...base, question(1), makeMessage(2, { text: 'After' })]));
+    // The question's row has not mounted its card yet, so the first reveal frame retries.
+    const card = container.querySelector<HTMLElement>('[data-transcript-tool-id="question-1"]')!;
+    card.removeAttribute('data-transcript-tool-id');
+    act(() => {
+      const callbacks = [...frames.values()];
+      frames.clear();
+      callbacks.forEach(callback => callback(0));
+    });
+    expect(vlistState.scrollBy).not.toHaveBeenCalled();
+    setTranscriptVisible(false);
+    flushFrames();
+
+    card.setAttribute('data-transcript-tool-id', 'question-1');
+    vlistState.scrollToIndex.mockClear();
+    setTranscriptVisible(true);
+    flushFrames();
+    // Shown again, the jump runs and this time aligns the card.
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(2, { align: 'start' });
+    expect(vlistState.scrollBy).toHaveBeenCalledTimes(1);
+  });
+
   it('retries a jump cut short by an in-place session switch', () => {
     const withQuestion = [makeMessage(0, { text: 'Before' }), question(1), makeMessage(2, { text: 'After' })];
     const { rerender } = render(view([makeMessage(0, { text: 'Before' })], `${session}-a`));

@@ -90,17 +90,20 @@ export function usePendingQuestionNavigation({ messages, sessionId, ready, vlist
       const latest = latestRef.current;
       const target = latest.pendingQuestions.find(candidate => candidate.id === question.id);
       if (latest.sessionId !== sessionId || !target || !vlistRef.current) return;
-      // Shown once a reveal frame runs; a jump cancelled before this (pane hidden,
-      // session switched) leaves the question to auto-jump again.
-      revealedQuestionsFor(sessionId).add(target.id);
       const container = scrollContainerRef.current;
       const card = Array.from(container?.querySelectorAll<HTMLElement>('[data-transcript-tool-id]') ?? [])
         .find(element => element.dataset.transcriptToolId === target.id);
       if (card && container) {
+        // Shown once its card is aligned; a jump cancelled before this (pane hidden,
+        // session switched) leaves the question to auto-jump again.
+        revealedQuestionsFor(sessionId).add(target.id);
         vlistRef.current.scrollBy(card.getBoundingClientRect().top - container.getBoundingClientRect().top - 8);
       } else if (++attempts < 6) {
         vlistRef.current.scrollToIndex(target.rowIndex, { align: 'start' });
         frameRef.current = requestAnimationFrame(revealCard);
+      } else {
+        // The card never mounted; stop so later output does not restart the jump.
+        revealedQuestionsFor(sessionId).add(target.id);
       }
     };
     frameRef.current = requestAnimationFrame(revealCard);
