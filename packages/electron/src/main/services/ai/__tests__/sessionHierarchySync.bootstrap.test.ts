@@ -115,8 +115,10 @@ it('retains a durable offline desktop move across store/provider recreation and 
     expect(await intents()).toHaveLength(0);
     await recreated.updateMetadata('child', {parentSessionId: null});
     expect(await intents()).toHaveLength(1);
-    const detached = connected.socket.send.mock.calls.map(([p]) => JSON.parse(p))
-      .reverse().find(p => p.type === 'indexUpdate' && p.session.sessionId === 'child' && p.session.parentSessionId === null).session;
+    const detachedPublication = () => connected.socket.send.mock.calls.map(([p]) => JSON.parse(p))
+      .reverse().find(p => p.type === 'indexUpdate' && p.session.sessionId === 'child' && p.session.parentSessionId === null);
+    await vi.waitFor(() => expect(detachedPublication()).toBeDefined());
+    const detached = detachedPublication().session;
     const {createdBySessionId: _manager, ...omittedManager} = detached;
     await connected.socket.receive({type: 'indexBroadcast', session: omittedManager});
     expect(await intents()).toHaveLength(1);

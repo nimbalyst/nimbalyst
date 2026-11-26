@@ -60,3 +60,25 @@ it('drops a durable intent for a session outside index retention instead of retr
     expect(publisher.pendingCount()).toBe(0);
   } finally { publisher.pause(); }
 });
+
+it('retains an old-session intent after failed acknowledgement and retries it', async () => {
+  const row = { id: 'old', parentSessionId: 'manager', createdBySessionId: 'manager', metadata: {
+    hierarchySyncIntent: { revision: 'r1', parentSessionId: 'manager', createdBySessionId: 'manager' },
+  } } as any;
+  const failure = new Error('acknowledgement failed');
+  const dropIntent = vi.fn().mockRejectedValueOnce(failure).mockImplementation(async () => { delete row.metadata.hierarchySyncIntent; });
+  const push = vi.fn();
+  const warn = vi.fn();
+  const publisher = createHierarchyPublisher({ get: async () => row, push, isRetained: () => false, dropIntent, warn });
+  try {
+    await publisher.publish('old');
+    expect(row.metadata.hierarchySyncIntent).toMatchObject({ revision: 'r1' });
+    expect(publisher.pendingCount()).toBe(1);
+    expect(warn).toHaveBeenCalledWith(failure);
+    await publisher.retry();
+    expect(dropIntent).toHaveBeenCalledTimes(2);
+    expect(row.metadata.hierarchySyncIntent).toBeUndefined();
+    expect(publisher.pendingCount()).toBe(0);
+    expect(push).not.toHaveBeenCalled();
+  } finally { publisher.pause(); }
+});
