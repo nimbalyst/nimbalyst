@@ -113,6 +113,7 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
   const requestId = (args.requestId || toolCall.providerToolCallId || '') as string;
   const toolName = (args.toolName || '') as string;
   const rawCommand = unwrapShellCommand((args.rawCommand || '') as string);
+  // Model-written, so clamp it (line-clamp-3 below) to keep the command in view; the full text is in the title.
   const description = (args.description || '') as string;
   const pattern = (args.pattern || toolName) as string;
   const patternDisplayName = (args.patternDisplayName || getPatternDisplayName(pattern)) as string;
@@ -334,7 +335,7 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
 
         <div className="p-3 flex flex-col gap-2">
           {description && (
-            <div data-testid="tool-permission-description" className="text-sm text-nim">
+            <div data-testid="tool-permission-description" className="text-sm text-nim select-text break-words line-clamp-3" title={description}>
               {description}
             </div>
           )}
@@ -464,7 +465,7 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
         )}
 
         {description && (
-          <div data-testid="tool-permission-description" className="text-sm text-nim">
+          <div data-testid="tool-permission-description" className="text-sm text-nim select-text break-words line-clamp-3" title={description}>
             {description}
           </div>
         )}
