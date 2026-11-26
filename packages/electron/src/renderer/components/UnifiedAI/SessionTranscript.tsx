@@ -33,6 +33,7 @@ import type { AIInputRef } from './AIInput';
 import { SessionAIInput } from './SessionAIInput';
 import { PromptQueueList } from './PromptQueueList';
 import { TranscriptEmbeddedFileCard } from './TranscriptEmbeddedFileCard';
+import { TranscriptFileLinkMenu } from './TranscriptFileLinkMenu';
 import { getDiffPeekSizeForInteractiveWidgetHost } from './interactiveWidgetHostProxy';
 import { createFeedbackComposeHost } from '../FeedbackRequest/createFeedbackComposeHost';
 import { askFeedbackDestination } from '../FeedbackRequest/askFeedbackDestination';
@@ -2571,7 +2572,8 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
           tool_use blocks do). The genuine TUI sits in the collapsible drawer
           below. */}
       {!collapseTranscript && (
-        <div
+        <TranscriptFileLinkMenu
+          baseDir={sessionWorktreePath ?? workspacePath}
           style={{
             flex: 1,
             overflow: 'hidden',
@@ -2634,7 +2636,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
             phaseColumns={SESSION_PHASE_COLUMNS}
             onSetPhase={handleSetPhase}
           />
-        </div>
+        </TranscriptFileLinkMenu>
       )}
 
       {/* claude-code-cli (NIM-806, Phase 3): collapsible "raw terminal" drawer
