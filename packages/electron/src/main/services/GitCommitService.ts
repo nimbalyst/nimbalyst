@@ -1,7 +1,7 @@
 import { execFile } from 'child_process';
 import log from 'electron-log/main';
 import { existsSync, readdirSync, rmSync, statSync } from 'fs';
-import { isAbsolute, join, relative, resolve, sep } from 'path';
+import { isAbsolute, join, posix, relative, resolve, sep } from 'path';
 import type { SimpleGit } from 'simple-git';
 import { createGit } from './gitClient';
 import {
@@ -209,6 +209,32 @@ async function readStagedPaths(git: SimpleGit, repoHasCommits: boolean): Promise
     ? await git.raw(['diff', '--cached', '--name-only', '--no-renames', '-z', 'HEAD'])
     : await git.raw(['ls-files', '--cached', '-z']);
   return raw.split('\0').filter((entry) => entry.length > 0);
+}
+
+// On a case-insensitive checkout, adding both spellings against HEAD lets
+// Git reuse the old index entry. Only inspect directories when two selected
+// filenames could alias. The directory listing gives their actual spelling,
+// including on filesystems where the two names are independent files.
+function selectedCaseRenameSources(workspacePath: string, paths: string[]): Set<string> {
+  const groups = new Map<string, Set<string>>();
+  for (const file of paths) {
+    const key = posix.join(posix.dirname(file), posix.basename(file).toLowerCase());
+    const group = groups.get(key) ?? new Set<string>();
+    group.add(file);
+    groups.set(key, group);
+  }
+  const sources = new Set<string>();
+  for (const group of groups.values()) {
+    if (group.size !== 2) continue;
+    const [a, b] = group;
+    const directory = join(workspacePath, posix.dirname(a));
+    if (!existsSync(directory)) continue;
+    const names = new Set(readdirSync(directory));
+    const hasA = names.has(posix.basename(a));
+    const hasB = names.has(posix.basename(b));
+    if (hasA !== hasB) sources.add(hasA ? b : a);
+  }
+  return sources;
 }
 
 /**
@@ -511,7 +537,11 @@ export async function executeGitCommit(
         // magic in a proposal. Keep it before the command: it is a global Git
         // option, not an `add` option.
         if (wholeFileRelative.length > 0) {
-          await stagingGit.raw(['--literal-pathspecs', 'add', '--all', '--', ...wholeFileRelative]);
+          const sources = selectedCaseRenameSources(workspacePath, wholeFileRelative);
+          if (sources.size > 0) {
+            await stagingGit.raw(['--literal-pathspecs', 'rm', '--cached', '--', ...sources]);
+          }
+          await stagingGit.raw(['--literal-pathspecs', 'add', '--all', '--', ...wholeFileRelative.filter(f => !sources.has(f))]);
         }
 
         // Partially-staged files go in as patches against the private index,
