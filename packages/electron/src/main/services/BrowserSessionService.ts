@@ -49,9 +49,9 @@ export interface BrowserSessionInitOptions {
   partition?: string;
   /**
    * Agent-owned headless session. When true the view is never attached to a
-   * visible window; offscreen rendering keeps the page painting so navigation,
-   * `capturePage()`, and DOM interaction still work. Used by AI tools that
-   * drive a browser without the user opening an editor tab.
+   * visible window; hosting it in a hidden off-screen window keeps layout,
+   * navigation, CDP screenshots, and DOM interaction working. Used by AI tools
+   * that drive a browser without the user opening an editor tab.
    */
   headless?: boolean;
   /**
@@ -69,11 +69,8 @@ const DEFAULT_HEADLESS_VIEWPORT = { width: 1280, height: 800 };
  * How long a headless (agent-owned) session may sit unused before we reap it.
  *
  * Agents routinely forget to call `browser.close_session`, and a leaked headless
- * session keeps the shared host window alive for the rest of the app run. That
- * window has to be *shown* to paint and macOS always drags it onto a real
- * display, so `setOpacity(0)` is the only thing standing between the user and a
- * frameless window they cannot close. Reaping idle sessions means we are not
- * relying on that single defence for days at a time.
+ * session keeps its WebContentsView and the shared host window alive for the
+ * rest of the app run. Reaping idle sessions prevents unbounded memory growth.
  */
 const HEADLESS_IDLE_TTL_MS = 5 * 60 * 1000;
 
@@ -320,12 +317,12 @@ export class BrowserSessionService extends EventEmitter {
 
   /**
    * Shared host window for headless (agent-owned) sessions and for parked
-   * editor-backed views whose placeholder is off screen. Created lazily and
-   * *shown* so Chromium actually composits the child views (a
-   * hidden/`show:false` window suspends painting, which fails capturePage()),
-   * but held at opacity 0 so the user never sees it. Torn down when the last
-   * headless or parked session goes away, or when the idle reaper collects the
-   * last leaked headless session.
+   * editor-backed views whose placeholder is off screen. Created lazily with
+   * `show: false` and never shown (`showInactive()` is never called) so AppKit
+   * can never render it over the main window on macOS (#1597). Headless and
+   * parked screenshots use CDP `Page.captureScreenshot`. Torn down when the
+   * last headless or parked session goes away, or when the idle reaper
+   * collects the last leaked headless session.
    */
   private headlessHostWindow: BrowserWindow | null = null;
 
@@ -437,11 +434,9 @@ export class BrowserSessionService extends EventEmitter {
     this.wireWebContentsEvents(entry);
 
     if (headless) {
-      // A WebContentsView only paints while attached to a rendering window;
-      // capturePage() returns an empty buffer otherwise (WebContentsView
-      // ignores the `offscreen` webPreference). Park headless views in a shared
-      // off-screen host window so navigation, screenshots, and input all work
-      // without the user ever seeing the surface.
+      // Host headless views in a shared hidden BrowserWindow so layout,
+      // navigation, CDP screenshots, and input all work with a real viewport
+      // without ever ordering a window onto the user's display.
       const vp = opts.viewport ?? DEFAULT_HEADLESS_VIEWPORT;
       const host = this.getOrCreateHeadlessHostWindow(vp);
       this.attachToWindow(opts.sessionId, host, { x: 0, y: 0, width: vp.width, height: vp.height });
@@ -593,10 +588,10 @@ export class BrowserSessionService extends EventEmitter {
 
   /**
    * Moves an editor-backed view whose placeholder is entirely off screen into
-   * the shared off-screen host window. Leaving it in its owner would paint the
+   * the shared hidden host window. Leaving it in its owner would paint the
    * page over the owner's top-left corner (see `liesAboveOrLeftOfWindow`), while
-   * detaching it would stop it painting and break `capturePage()` for AI tools
-   * driving an editor that HiddenTabManager mounted off screen.
+   * detaching it would leave it without a viewport for layout and AI screenshot
+   * capture when HiddenTabManager mounts an editor off screen.
    */
   private parkOffscreen(entry: SessionEntry, scaled: BrowserSessionBounds): void {
     const owner = entry.hostWindow;
@@ -697,7 +692,27 @@ export class BrowserSessionService extends EventEmitter {
 
   public async captureScreenshot(sessionId: string): Promise<Buffer> {
     const entry = this.requireEntry(sessionId);
-    // Attached, parked, and headless views all paint into a window, so capturePage() grabs live pixels.
+    // Headless and parked views live in a `show: false` host window that is
+    // never ordered onto a display, so Electron's `capturePage()` cannot grab
+    // a display surface. Capture via CDP `Page.captureScreenshot` instead, and
+    // fall back to `capturePage()` if the debugger cannot attach or fails.
+    if (entry.headless || entry.parkedIn != null) {
+      const dbg = await this.cdpInput(entry);
+      if (dbg) {
+        try {
+          const shot = (await dbg.sendCommand('Page.captureScreenshot', {
+            format: 'png',
+          })) as { data?: string };
+          if (shot && typeof shot.data === 'string' && shot.data.length > 0) {
+            return Buffer.from(shot.data, 'base64');
+          }
+        } catch (err) {
+          logger.main.warn(
+            `[BrowserSessionService] CDP Page.captureScreenshot failed for ${sessionId}, falling back to capturePage(): ${(err as Error)?.message}`,
+          );
+        }
+      }
+    }
     const nativeImage = await entry.view.webContents.capturePage();
     return nativeImage.toPNG();
   }
@@ -892,40 +907,26 @@ export class BrowserSessionService extends EventEmitter {
     const win = new BrowserWindow({
       width: viewport.width,
       height: viewport.height,
-      // Requested off-display. macOS does NOT honour this: AppKit constrains the
-      // frame back onto a real screen the moment the window is ordered in, even
-      // when it is frameless. Measured on a two-display Mac: a window asking for
-      // (-32000, -32000) lands at (-1352, 304) -- i.e. squarely on the second
-      // monitor. The request is kept because it is honoured on Windows/Linux;
-      // `setOpacity(0)` below is what actually hides it on macOS.
+      // Requested off-display for Windows/Linux. On macOS, AppKit constrains
+      // any ordered-in window back onto a real display, so this window is kept
+      // permanently hidden (`show: false`, never calling `showInactive()`),
+      // eliminating the intermittent macOS overlay bug (#1597).
       x: -32000,
       y: -32000,
       show: false,
+      opacity: 0,
       focusable: false,
       skipTaskbar: true,
       frame: false,
     });
-    // The window must be *shown* for its child views to composite -- a window
-    // that is never shown fails capturePage() outright with "Current display
-    // surface not available for capture". showInactive() forces compositing
-    // without stealing focus from the user's real window.
-    win.showInactive();
-    win.setContentSize(viewport.width, viewport.height);
-    // Since macOS insists on placing it on a display, make it invisible there.
-    // Opacity 0 does not suppress compositing: child views keep painting and
-    // capturePage() still returns full-fidelity pixels.
+    // Defense in depth: never call `showInactive()` or `setAlwaysOnTop()`.
+    // Because the window is never ordered onto a display, AppKit can never
+    // paint it over the main window and never adds it to the Cmd+` window
+    // cycle. Headless and parked views capture screenshots via CDP
+    // `Page.captureScreenshot` instead of `capturePage()`.
     win.setOpacity(0);
-    // Belt and braces -- a frameless, non-focusable window has no close button
-    // and no Cmd+W, so it must never be able to swallow the user's clicks.
     win.setIgnoreMouseEvents(true);
-    // A shown, non-focusable window at the normal level stops AppKit's Cmd+`
-    // cycle dead: forward cycling never leaves the current window while this
-    // host exists. Windows above the normal level are not in that cycle.
-    // `excludedFromShownWindowsMenu` does not help. Harmless otherwise, since
-    // the window is invisible and click-through.
-    if (process.platform === 'darwin') {
-      win.setAlwaysOnTop(true, 'floating');
-    }
+    win.setContentSize(viewport.width, viewport.height);
 
     win.once('closed', () => {
       if (this.headlessHostWindow === win) this.headlessHostWindow = null;
@@ -933,7 +934,7 @@ export class BrowserSessionService extends EventEmitter {
 
     this.headlessHostWindow = win;
     logger.main.info(
-      `[BrowserSessionService] Created headless host window at ${JSON.stringify(win.getBounds())} (opacity 0)`,
+      `[BrowserSessionService] Created headless host window at ${JSON.stringify(win.getBounds())} (hidden, opacity 0)`,
     );
     return win;
   }
