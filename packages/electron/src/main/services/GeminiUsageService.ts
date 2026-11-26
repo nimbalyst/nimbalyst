@@ -199,18 +199,18 @@ class GeminiUsageServiceImpl {
    */
   private async fetchSnapshot(): Promise<GeminiUsageSnapshotResult> {
     const server = AntigravityServerManager.shared();
-    if (server.currentEndpoint() === null) {
-      const hub = await server.findRunningEndpoint().catch(() => null);
-      if (!hub) {
-        return { available: false, notStarted: true, error: GEMINI_NOT_STARTED_MESSAGE };
-      }
+    // Read from this endpoint explicitly: without one, the meter goes through
+    // ensureRunning(), which spawns a server if the hub has since gone away.
+    const endpoint = server.currentEndpoint()
+      ?? await server.findRunningEndpoint().catch(() => null);
+    if (!endpoint) {
+      return { available: false, notStarted: true, error: GEMINI_NOT_STARTED_MESSAGE };
     }
     try {
-      const snapshot = await new AntigravityUsageMeter(server).getSnapshot();
+      const snapshot = await new AntigravityUsageMeter(server).getSnapshot(endpoint);
       return { available: true, snapshot };
     } catch (error) {
-      const endpoint = server.currentEndpoint();
-      if (endpoint?.owned === true || !isEndpointGoneError(error)) {
+      if (endpoint.owned || !isEndpointGoneError(error)) {
         return {
           available: false,
           error: error instanceof Error ? error.message : 'Unknown error reading Gemini usage',
@@ -220,7 +220,7 @@ class GeminiUsageServiceImpl {
       const retryHub = await server.findRunningEndpoint().catch(() => null);
       if (retryHub) {
         try {
-          const snapshot = await new AntigravityUsageMeter(server).getSnapshot();
+          const snapshot = await new AntigravityUsageMeter(server).getSnapshot(retryHub);
           return { available: true, snapshot };
         } catch {
           /* fall through to report the original error */

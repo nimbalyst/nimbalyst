@@ -111,6 +111,23 @@ describe('GeminiUsageService hub discovery', () => {
     expect(data.fiveHour.utilization).toBeCloseTo(60);
   });
 
+  // The poll must never reach ensureRunning(), which spawns a server when the
+  // discovered hub has gone away by the time the usage RPC runs.
+  it('reads usage from the discovered hub without going through ensureRunning()', async () => {
+    const server = AntigravityServerManager.shared();
+    const hub = { httpsPort: 50020, csrf: 'hub-tok', owned: false };
+    vi.spyOn(server, 'findRunningEndpoint').mockResolvedValue(hub);
+    const ensureRunning = vi.spyOn(server, 'ensureRunning').mockResolvedValue(hub);
+    const rpc = vi
+      .spyOn(server as unknown as { rpc: (...args: unknown[]) => Promise<unknown> }, 'rpc')
+      .mockResolvedValue({ userStatus: {} });
+
+    await geminiUsageService.refresh();
+
+    expect(ensureRunning).not.toHaveBeenCalled();
+    expect(rpc).toHaveBeenCalledWith('GetUserStatus', {}, hub, 15_000);
+  });
+
   // A GetUserStatus timeout on a busy server Nimbalyst spawned must not drop
   // its endpoint: the child is still alive, and a null endpoint makes the next
   // turn's ensureRunning() spawn a second language server and orphan the first.
