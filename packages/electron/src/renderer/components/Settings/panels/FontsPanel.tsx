@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useSettingState } from '../../../hooks/useSetting';
 import { useInstalledFonts } from '../../../hooks/useInstalledFonts';
 import {
@@ -10,11 +10,7 @@ import {
 const INPUT_CLASS =
   'w-full py-2 px-3 rounded-md text-sm bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] text-[var(--nim-text)] outline-none focus:border-[var(--nim-primary)]';
 
-const MIN_FONT_SIZE = 8;
-const MAX_FONT_SIZE = 32;
-
 interface FamilyFieldProps {
-  id: string;
   label: string;
   description: string;
   value: string;
@@ -25,7 +21,6 @@ interface FamilyFieldProps {
 }
 
 const FamilyField: React.FC<FamilyFieldProps> = ({
-  id,
   label,
   description,
   value,
@@ -35,53 +30,95 @@ const FamilyField: React.FC<FamilyFieldProps> = ({
   onCommit,
 }) => {
   const [draft, setDraft] = useState(value);
+  const [open, setOpen] = useState(false);
   useEffect(() => setDraft(value), [value]);
+
+  const matches = useMemo(() => {
+    const query = draft.trim().toLowerCase();
+    return query === '' ? families : families.filter((family) => family.toLowerCase().includes(query));
+  }, [draft, families]);
 
   const commit = () => {
     const next = draft.trim();
     if (next !== value) onCommit(next);
   };
 
+  const choose = (family: string) => {
+    setDraft(family);
+    onCommit(family);
+    setOpen(false);
+  };
+
   return (
-    <label className="fonts-panel-field block mb-4">
+    <div className="fonts-panel-field mb-4">
       <span className="block text-sm font-medium text-[var(--nim-text)]">{label}</span>
       <span className="block text-xs text-[var(--nim-text-muted)] mb-2">{description}</span>
       <input
         type="text"
         className={INPUT_CLASS}
-        list={`${id}-families`}
         value={draft}
         placeholder="Default"
         spellCheck={false}
-        onFocus={onFocusLoad}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={commit}
+        aria-label={label}
+        onFocus={() => {
+          onFocusLoad();
+          setOpen(true);
+        }}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          setOpen(true);
+        }}
+        onBlur={() => {
+          commit();
+          setOpen(false);
+        }}
         onKeyDown={(event) => {
           if (event.key === 'Enter') event.currentTarget.blur();
+          if (event.key === 'Escape') setOpen(false);
         }}
       />
-      <datalist id={`${id}-families`}>
-        {families.map((family) => (
-          <option key={family} value={family} />
-        ))}
-      </datalist>
+      {open && matches.length > 0 && (
+        <ul
+          role="listbox"
+          aria-label={`${label} suggestions`}
+          className="fonts-panel-list mt-1 mb-0 p-1 max-h-56 overflow-y-auto list-none rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)]"
+        >
+          {matches.map((family) => (
+            <li
+              key={family}
+              role="option"
+              aria-selected={family === value}
+              className="fonts-panel-option py-1 px-2 rounded text-sm cursor-pointer text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
+              // mousedown, not click: the input's blur would otherwise close the list first.
+              onMouseDown={(event) => {
+                event.preventDefault();
+                choose(family);
+              }}
+            >
+              {family}
+            </li>
+          ))}
+        </ul>
+      )}
       <span
         className="fonts-panel-preview block mt-2 text-sm text-[var(--nim-text-muted)]"
         style={{ fontFamily: toFontFamilyCss(draft, fallback) }}
       >
         The quick brown fox jumps over the lazy dog 0123456789 {'{}'} ()
       </span>
-    </label>
+    </div>
   );
 };
 
 interface SizeFieldProps {
   label: string;
   value: number;
+  min: number;
+  max: number;
   onCommit: (value: number) => void;
 }
 
-const SizeField: React.FC<SizeFieldProps> = ({ label, value, onCommit }) => {
+const SizeField: React.FC<SizeFieldProps> = ({ label, value, min, max, onCommit }) => {
   const [draft, setDraft] = useState(String(value));
   useEffect(() => setDraft(String(value)), [value]);
 
@@ -91,7 +128,7 @@ const SizeField: React.FC<SizeFieldProps> = ({ label, value, onCommit }) => {
       setDraft(String(value));
       return;
     }
-    const next = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, parsed));
+    const next = Math.min(max, Math.max(min, parsed));
     setDraft(String(next));
     if (next !== value) onCommit(next);
   };
@@ -102,8 +139,8 @@ const SizeField: React.FC<SizeFieldProps> = ({ label, value, onCommit }) => {
       <input
         type="number"
         className={`${INPUT_CLASS} w-24`}
-        min={MIN_FONT_SIZE}
-        max={MAX_FONT_SIZE}
+        min={min}
+        max={max}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={commit}
@@ -118,6 +155,7 @@ const SizeField: React.FC<SizeFieldProps> = ({ label, value, onCommit }) => {
 export const FontsPanel: React.FC = () => {
   const [uiFamily, setUiFamily] = useSettingState('appearance.uiFontFamily');
   const [codeFamily, setCodeFamily] = useSettingState('appearance.codeFontFamily');
+  const [uiScale, setUiScale] = useSettingState('appearance.uiScale');
   const [editorSize, setEditorSize] = useSettingState('appearance.editorFontSize');
   const [terminalSize, setTerminalSize] = useSettingState('appearance.terminalFontSize');
   const { families, load } = useInstalledFonts();
@@ -125,6 +163,7 @@ export const FontsPanel: React.FC = () => {
   const resetAll = () => {
     void setUiFamily('');
     void setCodeFamily('');
+    void setUiScale(100);
     void setEditorSize(14);
     void setTerminalSize(13);
   };
@@ -137,7 +176,6 @@ export const FontsPanel: React.FC = () => {
       </p>
 
       <FamilyField
-        id="fonts-ui"
         fallback={DEFAULT_UI_FONT_STACK}
         families={families}
         onFocusLoad={load}
@@ -146,8 +184,14 @@ export const FontsPanel: React.FC = () => {
         value={uiFamily}
         onCommit={(value) => void setUiFamily(value)}
       />
+      <SizeField
+        label="Interface zoom (%)"
+        min={50}
+        max={300}
+        value={uiScale}
+        onCommit={(value) => void setUiScale(value)}
+      />
       <FamilyField
-        id="fonts-code"
         fallback={DEFAULT_CODE_FONT_STACK}
         families={families}
         onFocusLoad={load}
@@ -156,8 +200,20 @@ export const FontsPanel: React.FC = () => {
         value={codeFamily}
         onCommit={(value) => void setCodeFamily(value)}
       />
-      <SizeField label="Code editor size (px)" value={editorSize} onCommit={(value) => void setEditorSize(value)} />
-      <SizeField label="Terminal size (px)" value={terminalSize} onCommit={(value) => void setTerminalSize(value)} />
+      <SizeField
+        label="Code editor size (px)"
+        min={8}
+        max={32}
+        value={editorSize}
+        onCommit={(value) => void setEditorSize(value)}
+      />
+      <SizeField
+        label="Terminal size (px)"
+        min={8}
+        max={32}
+        value={terminalSize}
+        onCommit={(value) => void setTerminalSize(value)}
+      />
 
       <button
         type="button"

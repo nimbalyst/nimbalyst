@@ -211,6 +211,7 @@ import { SessionWakeupScheduler } from './services/SessionWakeupScheduler';
 import { createSessionWakeup } from './services/sessionWakeupCreation';
 import { configureUsageLimitAutoResume } from './services/ai/usageLimitAutoResume';
 import { getSettingsService } from './services/SettingsService';
+import { registerUiScale } from './services/UiScale';
 import { getPendingSubmissionStore, getSessionWakeupsStore, repositoryManager } from './services/RepositoryManager';
 import { recoverPendingSubmissionsOnBoot } from './services/ai/pendingSubmissions';
 import { ExtensionDevService } from './services/ExtensionDevService';
@@ -1701,6 +1702,7 @@ app.whenReady().then(ownerOnly('app initialisation', async () => {
     registerWorkspaceHandlers();
     registerWorkspaceWatcherHandlers();
     registerSettingsHandlers();
+    registerUiScale();
     registerWindowHandlers();
     registerWindowChromeHandlers();
     registerEditorStateHandlers();

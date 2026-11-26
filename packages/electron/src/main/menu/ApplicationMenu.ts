@@ -70,6 +70,7 @@ import { ensureExtensionSDKDocsTrusted, getExtensionSDKDocsPath } from '../utils
 import { database } from '../database/PGLiteDatabaseWorker';
 import { getRegisteredWalkthroughs, getRegisteredTips } from '../ipc/WalkthroughHandlers';
 import { BrowserSessionService } from '../services/BrowserSessionService';
+import { getUiScaleFactor } from '../services/UiScale';
 
 /**
  * Applies a zoom factor to the focused window and re-positions any native
@@ -857,7 +858,7 @@ export async function createApplicationMenu() {
                     accelerator: KeyboardShortcuts.view.actualSize,
                     click: async () => {
                         const focused = getFocusedWindow();
-                        if (focused) applyZoomFactor(focused, 1);
+                        if (focused) applyZoomFactor(focused, getUiScaleFactor());
                     }
                 },
                 {

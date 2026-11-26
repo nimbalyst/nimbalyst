@@ -113,6 +113,12 @@ export const SETTINGS_REGISTRY = {
     { store: 'app-settings', path: 'terminalFontSize' },
     13,
   ),
+  // Whole-window scale in percent, applied as the window zoom factor.
+  'appearance.uiScale': setting(
+    z.number().int().min(50).max(300),
+    { store: 'app-settings', path: 'uiScale' },
+    100,
+  ),
   // ---- AI providers (per-key) ----
   'ai.provider.claude': setting(
     ProviderConfigSchema,
