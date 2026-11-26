@@ -10,8 +10,9 @@
  * The poll is strictly read-only and NEVER spawns the language server. That
  * constraint is what shapes the whole file: a background poll that could start
  * a ~120MB process would make merely *displaying* a usage chip an expensive
- * side effect. So `currentEndpoint()` is the gate — no live endpoint means a
- * muted "--" chip with the reason in the tooltip, exactly like Codex's
+ * side effect. With no cached endpoint the poll may attach to an already-running
+ * Antigravity hub (`findRunningEndpoint()`, discovery only); if none is found it
+ * shows a muted "--" chip with the reason in the tooltip, exactly like Codex's
  * unavailable branch, and the first real turn brings it to life.
  *
  * Mirrors CodexUsageService 1:1 in structure: same poll cadence, idle sleep,
@@ -27,6 +28,15 @@ import { AntigravityUsageMeter } from '@nimbalyst/runtime/ai/server/providers/ge
 // Friendly chip/popover text for the normal pre-first-request state, where the
 // language server has not been started yet.
 const GEMINI_NOT_STARTED_MESSAGE = 'Gemini usage will appear after your first request.';
+
+// Errors that mean nothing is listening on the cached port any more, as when an
+// attached hub restarts on a new port. A timeout is not one of them: the server
+// may just be busy.
+function isEndpointGoneError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === 'ECONNREFUSED') return true;
+  return error instanceof Error && error.message.includes('ECONNREFUSED');
+}
 
 export interface GeminiUsageData {
   fiveHour: {
@@ -180,9 +190,12 @@ class GeminiUsageServiceImpl {
   /**
    * Ask the language server for a usage snapshot. Never throws and never
    * spawns: if no endpoint is cached yet, tries a read-only attachment to an
-   * already-running Antigravity hub (`findRunningEndpoint()`). On an RPC error
-   * (for example if the hub restarted on a new port), clears the stale endpoint
-   * and retries hub discovery once before reporting unavailable.
+   * already-running Antigravity hub (`findRunningEndpoint()`). If an attached
+   * hub refuses the connection (it restarted on a new port), clears the stale
+   * endpoint and retries hub discovery once before reporting unavailable.
+   * An owned endpoint, or any other error such as a timeout on a busy server,
+   * is left in place: clearing a live owned server's endpoint would make the
+   * next turn spawn a second language server and orphan the first.
    */
   private async fetchSnapshot(): Promise<GeminiUsageSnapshotResult> {
     const server = AntigravityServerManager.shared();
@@ -196,6 +209,13 @@ class GeminiUsageServiceImpl {
       const snapshot = await new AntigravityUsageMeter(server).getSnapshot();
       return { available: true, snapshot };
     } catch (error) {
+      const endpoint = server.currentEndpoint();
+      if (endpoint?.owned === true || !isEndpointGoneError(error)) {
+        return {
+          available: false,
+          error: error instanceof Error ? error.message : 'Unknown error reading Gemini usage',
+        };
+      }
       server.clearEndpoint();
       const retryHub = await server.findRunningEndpoint().catch(() => null);
       if (retryHub) {

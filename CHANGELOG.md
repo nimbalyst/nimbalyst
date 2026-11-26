@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Bug fixes go here -->
 - AI actions with non-Latin headings in `ai-actions.md` remain separate actions instead of being dropped as duplicates (#1565).
 - Gemini models no longer disappear from the model picker when settings carry an outdated list of Gemini model IDs (#2016).
+- The Gemini usage chip shows usage before the first Gemini request when the Antigravity IDE's language server is already running, instead of waiting for that request (#2018).
 - When signed out, a published team tracker item shows its body right away instead of showing "Connecting..." for about 15 seconds while team lookups retry (#1914).
 - An answer to a permission prompt or question given on another device, such as your phone, now reaches the waiting desktop session when the session has more than 50 messages; before, the prompt waited until it timed out (#2009).
 - When a project has more files than the operating system can watch, the file watcher now retries after 1, 5, 15, then 30 minutes instead of re-scanning the project as often as every second, and the "File updates delayed" warning suggests adding large folders to .gitignore (#2021).

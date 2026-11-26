@@ -110,4 +110,41 @@ describe('GeminiUsageService hub discovery', () => {
     expect(data.available).toBe(true);
     expect(data.fiveHour.utilization).toBeCloseTo(60);
   });
+
+  // A GetUserStatus timeout on a busy server Nimbalyst spawned must not drop
+  // its endpoint: the child is still alive, and a null endpoint makes the next
+  // turn's ensureRunning() spawn a second language server and orphan the first.
+  it('keeps an owned endpoint when the usage RPC times out', async () => {
+    const server = AntigravityServerManager.shared();
+    const owned = { httpsPort: 50010, csrf: 'own-tok', owned: true };
+    (server as unknown as { endpoint: unknown }).endpoint = owned;
+    const clearSpy = vi.spyOn(server, 'clearEndpoint');
+    const findRunning = vi.spyOn(server, 'findRunningEndpoint');
+    vi.spyOn(AntigravityUsageMeter.prototype, 'getSnapshot').mockRejectedValueOnce(
+      new Error('Antigravity GetUserStatus timed out after 15s (port 50010, prompt 0KB, limit 15s)'),
+    );
+
+    const data = await geminiUsageService.refresh();
+
+    expect(clearSpy).not.toHaveBeenCalled();
+    expect(findRunning).not.toHaveBeenCalled();
+    expect(server.currentEndpoint()).toBe(owned);
+    expect(data.available).toBe(false);
+  });
+
+  it('keeps an attached endpoint when the usage RPC times out rather than refusing the connection', async () => {
+    const server = AntigravityServerManager.shared();
+    const attached = { httpsPort: 50011, csrf: 'hub-tok', owned: false };
+    (server as unknown as { endpoint: unknown }).endpoint = attached;
+    const clearSpy = vi.spyOn(server, 'clearEndpoint');
+    vi.spyOn(AntigravityUsageMeter.prototype, 'getSnapshot').mockRejectedValueOnce(
+      new Error('Antigravity GetUserStatus timed out after 15s (port 50011, prompt 0KB, limit 15s)'),
+    );
+
+    const data = await geminiUsageService.refresh();
+
+    expect(clearSpy).not.toHaveBeenCalled();
+    expect(server.currentEndpoint()).toBe(attached);
+    expect(data.available).toBe(false);
+  });
 });
