@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Bug fixes go here -->
 - AI actions with non-Latin headings in `ai-actions.md` remain separate actions instead of being dropped as duplicates (#1565).
 - Gemini models no longer disappear from the model picker when settings carry an outdated list of Gemini model IDs (#2016).
+- When signed out, a published team tracker item shows its body right away instead of showing "Connecting..." for about 15 seconds while team lookups retry (#1914).
 
 ### Removed
 <!-- Removed features go here -->
