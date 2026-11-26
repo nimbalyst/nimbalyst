@@ -110,6 +110,8 @@ export class SQLiteDatabase {
     // 64 MB cache is comfortable for typical session DBs without exploding
     // RSS on machines under pressure.
     handle.pragma('cache_size = -64000');
+    // SQLite's built-in LOWER only folds ASCII. Match the renderer's title filter.
+    handle.function('unicode_lower', { deterministic: true }, (value: string) => value.toLowerCase());
     handle.function('to_timestamp', (seconds: number) =>
       new Date(Number(seconds) * 1000).toISOString(),
     );

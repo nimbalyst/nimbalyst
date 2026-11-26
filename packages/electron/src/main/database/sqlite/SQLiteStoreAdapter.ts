@@ -215,7 +215,7 @@ export function createSQLiteStoreAdapter(
                    FROM ai_sessions AS s
                    LEFT JOIN worktrees AS w ON s.worktree_id = w.id
                    WHERE s.workspace_id = $wid
-                     AND LOWER(COALESCE(s.title, '')) LIKE $needle
+                     AND unicode_lower(COALESCE(s.title, '')) LIKE $needle
                      ${archiveClause}`;
       const { rows } = await db.query<{ session_id: string; rank: number }>(sql, [
         { wid: workspaceId, needle: `%${query.toLowerCase()}%` },
