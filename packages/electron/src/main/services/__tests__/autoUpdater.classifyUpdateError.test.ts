@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest';
 // Electron app global. CI caught this on the first push - prior to the
 // extraction, this test file was the only failed file across 229 passing
 // tests. See #245.
-import { classifyUpdateError } from '../autoUpdaterUtils';
+import { classifyUpdateError, isFlatpak } from '../autoUpdaterUtils';
 
 // Regression coverage for nimbalyst#245. adambhenry reported the auto-update
 // flow failing on macOS arm64 with "The command is disabled and cannot be
@@ -108,5 +108,16 @@ describe('classifyUpdateError (issue #245)', () => {
     // reorder does not silently change behaviour.
     const err = new Error('Network timeout - command is disabled');
     expect(classifyUpdateError(err)).toBe('network');
+  });
+});
+
+describe('isFlatpak', () => {
+  it('is true when FLATPAK_ID is set', () => {
+    expect(isFlatpak({ FLATPAK_ID: 'com.nimbalyst.Nimbalyst' })).toBe(true);
+  });
+
+  it('is false when FLATPAK_ID is unset or empty', () => {
+    expect(isFlatpak({})).toBe(false);
+    expect(isFlatpak({ FLATPAK_ID: '' })).toBe(false);
   });
 });

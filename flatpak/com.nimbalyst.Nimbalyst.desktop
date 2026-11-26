@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Nimbalyst
+Comment=AI-native workspace for markdown, code, diagrams and trackers
+Exec=nimbalyst %U
+Icon=com.nimbalyst.Nimbalyst
+Type=Application
+Terminal=false
+Categories=Development;TextEditor;
+MimeType=text/markdown;x-scheme-handler/nimbalyst;
+StartupWMClass=Nimbalyst
