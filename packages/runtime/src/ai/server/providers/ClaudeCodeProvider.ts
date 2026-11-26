@@ -3250,8 +3250,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       }
 
       try {
-        // Get recent messages for this session
-        const messages = await AgentMessagesRepository.list(sessionId, { limit: 50 });
+        // Get the newest messages for this session. `list` reads from the oldest row,
+        // so in a long session it would never reach an answer written late.
+        const messages = await AgentMessagesRepository.listTail(sessionId, 50);
 
         // Look for a nimbalyst_tool_result that matches our requestId
         for (const msg of messages) {
@@ -3325,8 +3326,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     return pollForAskUserQuestionResponse(
       {
         pendingAskUserQuestions: this.pendingAskUserQuestions,
+        // Newest rows, oldest-first. `list` would return the oldest rows and miss a late answer.
         listRecentMessages: async (resolvedSessionId, limit) =>
-          AgentMessagesRepository.list(resolvedSessionId, { limit }),
+          AgentMessagesRepository.listTail(resolvedSessionId, limit),
         logTimeout: (resolvedQuestionId) =>
           this.logSecurity('[pollForAskUserQuestionResponse] Polling timed out:', { questionId: resolvedQuestionId }),
         logResolved: (resolvedQuestionId, answersCount, respondedBy) =>

@@ -29,6 +29,8 @@ import { ClaudeCodeProvider } from '../ClaudeCodeProvider';
 import { BaseAgentProvider } from '../BaseAgentProvider';
 import { TranscriptRuntime } from '../../transcript/TranscriptRuntime';
 import type { RawMessage } from '../../transcript/TranscriptTransformer';
+import { AgentMessagesRepository } from '../../../../storage/repositories/AgentMessagesRepository';
+import type { AgentMessage } from '../../types';
 
 type TrustStatus = {
   trusted: boolean;
@@ -301,5 +303,85 @@ describe('ClaudeCodeProvider AskUserQuestion dismissal', () => {
     expect(result.behavior).toBe('deny');
     expect(result.message).toBe('User cancelled');
     expect(result.rejected).toBeUndefined();
+  });
+});
+
+// A phone answers a waiting prompt by writing a row to the session transcript. The desktop finds
+// that row by polling. These polls used to read the OLDEST 50 rows, so in a long session they never
+// saw the answer: a permission waited out its timeout and a question waited forever.
+describe('answers written on another device in a long session', () => {
+  const filler = Array.from({ length: 60 }, (_, i): AgentMessage => ({
+    id: i + 1, sessionId: 'session', source: 'claude-code', direction: 'output', content: JSON.stringify({ type: 'text', i }),
+  }));
+  const answerRow = (answer: Record<string, unknown>): AgentMessage => ({
+    id: filler.length + 1, sessionId: 'session', source: 'claude-code', direction: 'input', content: JSON.stringify(answer),
+  });
+  /** A transcript with 60 unrelated rows first and the answer last, read through a store that behaves like the real ones. */
+  function storeWithAnswerLast(answer: Record<string, unknown>) {
+    const rows = [...filler, answerRow(answer)];
+    AgentMessagesRepository.setStore({
+      create: async () => {},
+      // Like the real stores: `list` pages from the oldest row, `listTail` from the newest.
+      list: async (_sessionId, options) => rows.slice(0, options?.limit ?? rows.length),
+      listTail: async (_sessionId, limit) => rows.slice(-limit),
+    });
+  }
+  const permissionAnswer = {
+    type: 'nimbalyst_tool_result',
+    tool_use_id: 'request-1',
+    result: JSON.stringify({ decision: 'allow', scope: 'once' }),
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+    AgentMessagesRepository.clearStore();
+  });
+
+  /** Start a poll, give it a few rounds, then stop it. The answer is already in the transcript. */
+  async function runPoll(poll: (signal: AbortSignal) => Promise<void>) {
+    vi.useFakeTimers();
+    const abort = new AbortController();
+    const done = poll(abort.signal);
+    await vi.advanceTimersByTimeAsync(3000);
+    abort.abort();
+    await vi.advanceTimersByTimeAsync(10000);
+    await done;
+  }
+
+  it('base provider tool permission poll finds the answer', async () => {
+    storeWithAnswerLast(permissionAnswer);
+    const resolve = vi.fn();
+    // The poll only needs the pending-permission map and a logger from its host object.
+    const host = {
+      permissions: { pendingToolPermissions: new Map([['request-1', { resolve, reject: vi.fn() }]]) },
+      logSecurity: vi.fn(),
+    };
+
+    await runPoll((signal) =>
+      (BaseAgentProvider.prototype as any).pollForPermissionResponse.call(host, 'session', 'request-1', signal));
+
+    expect(resolve).toHaveBeenCalledWith({ decision: 'allow', scope: 'once' });
+  });
+
+  it('Claude Code tool result poll finds the answer', async () => {
+    storeWithAnswerLast(permissionAnswer);
+    const provider = new ClaudeCodeProvider();
+    const resolve = vi.fn();
+    (provider as any).permissions.pendingToolPermissions.set('request-1', { resolve, reject: vi.fn() });
+
+    await runPoll((signal) => (provider as any).pollForPermissionResponse('session', 'request-1', signal));
+
+    expect(resolve).toHaveBeenCalledWith({ decision: 'allow', scope: 'once' });
+  });
+
+  it('AskUserQuestion poll finds the answer', async () => {
+    storeWithAnswerLast({ type: 'ask_user_question_response', questionId: 'question-1', answers: { 'Ship it?': 'Yes' } });
+    const provider = new ClaudeCodeProvider();
+    const resolve = vi.fn();
+    (provider as any).pendingAskUserQuestions.set('question-1', { resolve, reject: vi.fn(), questions: [] });
+
+    await runPoll((signal) => (provider as any).pollForAskUserQuestionResponse('session', 'question-1', signal));
+
+    expect(resolve).toHaveBeenCalledWith({ 'Ship it?': 'Yes' });
   });
 });
