@@ -234,6 +234,36 @@ describe('WorkspaceEventBus circuit breaker teardown (#629)', () => {
     );
   });
 
+  it('names the watch limit once per run of ENOSPC failures', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    mockGitignoreReadFileSync.mockImplementation((file: string) => {
+      if (file === '/proc/sys/fs/inotify/max_user_watches') return '524288\n';
+      throw new Error('no .gitignore');
+    });
+    vi.mocked(logger.main.warn).mockClear();
+    await subscribe(WORKSPACE, 'limit', createListener());
+    // The fs.watch mock stands in for chokidar here; only the platform check reads Linux.
+    const failLatest = (code: string) => {
+      const handle = mockFsWatch.mock.results[mockFsWatch.mock.results.length - 1].value;
+      const onError = handle.on.mock.calls.find(([event]: [string]) => event === 'error')[1];
+      Object.defineProperty(process, 'platform', { value: 'linux', writable: true });
+      try { onError(Object.assign(new Error(code), { code })); }
+      finally { Object.defineProperty(process, 'platform', { value: 'darwin', writable: true }); }
+    };
+    const limitWarnings = () => vi.mocked(logger.main.warn).mock.calls
+      .filter(([message]) => String(message).includes('watch limit'));
+
+    failLatest('ENOSPC');
+    expect(limitWarnings()).toEqual([[
+      `[WorkspaceEventBus] inotify watch limit (524288) reached for ${WORKSPACE}; add large folders to .gitignore or raise fs.inotify.max_user_watches. Next retry in 60s.`,
+    ]]);
+    await flushImmediate();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockFsWatch).toHaveBeenCalledTimes(2);
+    failLatest('ENOSPC');
+    expect(limitWarnings()).toHaveLength(1);
+  });
+
   it('recovers delivery to the original subscriber after a storm (#1499)', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const listener = createListener();

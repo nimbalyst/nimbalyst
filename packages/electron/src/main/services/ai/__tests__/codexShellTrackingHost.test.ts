@@ -3,7 +3,11 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
-const fixture = vi.hoisted(() => ({ observed: undefined as undefined | ((event: string, file: string, at: number) => void) }));
+const fixture = vi.hoisted(() => ({
+  observed: undefined as undefined | ((event: string, file: string, at: number) => void),
+  health: undefined as undefined | ((health: { state: string; generation: number; reason?: string }) => void),
+  initialState: 'watching',
+}));
 // Hoisted so the mock factory below can read it without a TDZ hazard.
 const packageRoot = vi.hoisted(() => ({
   value: new URL('../../../../../', import.meta.url).pathname.replace(/\/$/, ''),
@@ -18,7 +22,8 @@ vi.mock('../../../utils/appPaths', () => ({ getPackageRoot: () => packageRoot.va
 vi.mock('../../../file/WorkspaceEventBus', () => ({
   subscribe: async (_workspace: string, _id: string, callbacks: any) => {
     fixture.observed = callbacks.onObserved;
-    callbacks.onHealthChanged({ state: 'watching' });
+    fixture.health = callbacks.onHealthChanged;
+    callbacks.onHealthChanged({ state: fixture.initialState, generation: 1 });
   },
   unsubscribe: vi.fn(), getSubscriberIds: (workspace: string) => ['shell-hooks:' + workspace], drainWorkspaceEvents: async () => {},
 }));
@@ -41,6 +46,7 @@ afterEach(async () => {
   await shellFileAttribution.drain(['host-test']);
   await shellTrackingCoverage.flush(['host-test']);
   vi.restoreAllMocks();
+  fixture.initialState = 'watching';
 });
 
 it('fences foreign identity through the executable hook and loopback host without a coverage fault', async () => {
@@ -97,4 +103,18 @@ it('passes MCP start typing to attribution without marking a pending writer', as
   await shellFileAttribution.drain(['mcp-test']);
   const [coverage] = await shellTrackingCoverage.readMany(['mcp-test']);
   expect(coverage.reasons).toEqual({});
+});
+
+it('accepts a watcher still running its first scan and treats only ready as recovered', async () => {
+  // The bus publishes `watching` once the initial scan is ready; events already flow while it runs.
+  fixture.initialState = 'starting';
+  registration = await prepareShellTracking('scan-test', '/scanning-workspace');
+  expect(registration!.env.NIMBALYST_SHELL_HOOK_URL).toMatch(/^http:/);
+  const recovered = vi.spyOn(shellFileAttribution, 'watcherRecovered');
+  fixture.health!({ state: 'recovering', generation: 2, reason: 'ENOSPC' });
+  fixture.health!({ state: 'starting', generation: 3 });
+  expect(recovered).not.toHaveBeenCalled();
+  fixture.health!({ state: 'watching', generation: 3 });
+  expect(recovered).toHaveBeenCalledExactlyOnceWith('/scanning-workspace');
+  await shellTrackingCoverage.flush(['scan-test']);
 });

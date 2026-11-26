@@ -50,19 +50,21 @@ export async function getShellTrackingCoverage(sessionIds: string[], drain = fal
 export const shellFileAttribution = new ShellFileAttribution({
   subscribe: async (workspace, changed) => {
     const id = 'shell-hooks:' + workspace;
-    let healthy = false;
+    // A watcher still running its first scan (`starting` once subscribe
+    // returns) already delivers events; it becomes `watching` when ready.
+    let available = false;
     await subscribe(workspace, id, {
       onAdd: () => {},
       onChange: () => {},
       onUnlink: () => {},
       onObserved: (_event, file, at) => changed(file, at),
       onHealthChanged: (health) => {
-        healthy = health.state === 'watching';
+        available = health.state === 'watching' || health.state === 'starting';
         if (health.state === 'recovering') shellFileAttribution.watcherLost(workspace);
-        if (healthy) shellFileAttribution.watcherRecovered(workspace);
+        if (health.state === 'watching') shellFileAttribution.watcherRecovered(workspace);
       },
     });
-    if (!healthy || !getSubscriberIds(workspace).includes(id)) {
+    if (!available || !getSubscriberIds(workspace).includes(id)) {
       unsubscribe(workspace, id);
       throw new Error('Workspace watcher unavailable');
     }
