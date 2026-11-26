@@ -22,6 +22,7 @@ import { parse as parseShellCommand } from 'shell-quote';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { jsonKeyAccessor } from '../database/jsonKeyExpr';
 import { logger } from '../utils/logger';
+import { parseJsonObjectColumn } from '../utils/jsonColumn';
 import { TranscriptMigrationRepository } from '@nimbalyst/runtime/storage/repositories/TranscriptMigrationRepository';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import type { TranscriptEvent, ToolCallPayload } from '@nimbalyst/runtime/ai/server/transcript/types';
@@ -999,12 +1000,19 @@ class ToolCallMatcherImpl {
          WHERE session_id = $1 AND link_type = 'edited'`,
         [sessionId]
       );
+      // metadata is an object on PGLite but JSON text on SQLite. Parse it once
+      // here so the toolUseId and bashSideEffect reads below see the same
+      // shape on both backends; unparseable metadata counts as none.
+      const editedFiles: SessionFileRow[] = filesResult.rows.map(row => ({
+        ...row,
+        metadata: parseJsonObjectColumn(row.metadata),
+      }));
       // Deduplicate session_files: keep every row with a distinct toolUseId
       // (each represents a separate tool call edit). For rows WITHOUT a
       // toolUseId (Codex, watcher side-effects), dedup by file path keeping
       // the most recent timestamp.
       const sessionFilesByKey = new Map<string, SessionFileRow>();
-      for (const file of filesResult.rows) {
+      for (const file of editedFiles) {
         const toolUseId = file.metadata?.toolUseId;
         if (toolUseId) {
           // Rows with a toolUseId are unique per tool call — keep all of them.

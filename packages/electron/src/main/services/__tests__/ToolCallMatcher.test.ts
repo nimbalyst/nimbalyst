@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('jotai-family', () => ({ atomFamily: vi.fn() }));
 
@@ -32,7 +32,13 @@ vi.mock('@nimbalyst/runtime/storage/repositories/TranscriptMigrationRepository',
   },
 }));
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { database } from '../../database/PGLiteDatabaseWorker';
+import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
+import { logger } from '../../utils/logger';
+import { createPGLiteSessionFileStore } from '../PGLiteSessionFileStore';
 import { parseToolCallWindows, scoreMatch, scoreWorkspaceFileEdit, toolCallMatcher, type ToolCallWindow } from '../ToolCallMatcher';
 
 describe('ToolCallMatcher', () => {
@@ -1032,7 +1038,11 @@ describe('ToolCallMatcher', () => {
       ]);
     });
 
-    it('preserves out-of-window exact toolUseId matches with an unbounded lookup', async () => {
+    // PGLite hands session_files.metadata back as an object, SQLite as JSON text.
+    it.each([
+      ['object (PGLite)', { toolUseId: 'tool-definitive' }],
+      ['JSON string (SQLite)', JSON.stringify({ toolUseId: 'tool-definitive' })],
+    ])('preserves out-of-window exact toolUseId matches with an unbounded lookup, metadata as %s', async (_shape, metadata) => {
       const sessionId = 'definitive-id-session';
       const fileTimestamp = 1_700_000_000_000;
       const toolTimestamp = fileTimestamp - 60_000;
@@ -1042,7 +1052,7 @@ describe('ToolCallMatcher', () => {
           id: 'file-1',
           file_path: '/workspace/src/kept.ts',
           timestamp_ms: fileTimestamp,
-          metadata: { toolUseId: 'tool-definitive' },
+          metadata,
         }],
         messages: [{
           id: 42,
@@ -1074,6 +1084,7 @@ describe('ToolCallMatcher', () => {
         'file-1',
         42,
         'tool-definitive',
+        100,
       ]));
     });
 
@@ -1168,6 +1179,313 @@ describe('ToolCallMatcher', () => {
       await toolCallMatcher.matchSession('improvable-session');
 
       expect(probe.scannedMessages()).toBe(true);
+    });
+  });
+
+  // SQLite stores session_files.metadata as TEXT and hands it back unparsed;
+  // PGLite hands back an object. matchSession has to read both the same way.
+  describe('matchSession session_files metadata on both backends', () => {
+    const queryMock = database.query as ReturnType<typeof vi.fn>;
+    const T0 = 1_700_000_000_000;
+    const asSQLite = (metadata: Record<string, unknown>) => JSON.stringify(metadata);
+
+    type FileRow = { id: string; file_path: string; timestamp_ms: number; metadata: unknown };
+    type MessageRow = { id: number; created_at_ms: number; metadata: null; content: string };
+
+    function toolUseMessage(id: number, createdAtMs: number, toolUseId: string, filePath: string): MessageRow {
+      return {
+        id,
+        created_at_ms: createdAtMs,
+        metadata: null,
+        content: JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', id: toolUseId, name: 'Edit', input: { file_path: filePath } }] },
+        }),
+      };
+    }
+
+    function textMessage(id: number, createdAtMs: number): MessageRow {
+      return {
+        id,
+        created_at_ms: createdAtMs,
+        metadata: null,
+        content: JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'working' }] } }),
+      };
+    }
+
+    /**
+     * Stateful SQL-dispatch fake. Matches one pass writes are read back by the
+     * next pass, session_files deletes take effect, and the raw-message read
+     * honours the optional created_at bounds ($2/$3) so each scan's work can be
+     * counted.
+     */
+    function fakeSessionDb(files: FileRow[], messages: MessageRow[]) {
+      const matches: Array<{ session_file_id: string; message_id: number; tool_use_id: string | null; match_score: number }> = [];
+      const stats = { scans: 0, boundedScans: 0, rowsScanned: 0, deletedFileIds: [] as string[] };
+      queryMock.mockImplementation(async (sql: string, params: unknown[] = []) => {
+        if (/^\s*DELETE FROM session_files/i.test(sql)) {
+          const ids = params[0] as string[];
+          stats.deletedFileIds.push(...ids);
+          for (const id of ids) {
+            const index = files.findIndex(f => f.id === id);
+            if (index >= 0) files.splice(index, 1);
+          }
+          return { rows: [] };
+        }
+        if (/^\s*DELETE FROM ai_tool_call_file_edits/i.test(sql)) {
+          const ids = new Set(params[1] as string[]);
+          for (let i = matches.length - 1; i >= 0; i--) if (ids.has(matches[i].session_file_id)) matches.splice(i, 1);
+          return { rows: [] };
+        }
+        if (/^\s*INSERT INTO ai_tool_call_file_edits/i.test(sql)) {
+          for (let i = 0; i < params.length; i += 8) {
+            const [, sessionFileId, messageId, , toolUseId, score] = params.slice(i, i + 8) as [string, string, number, unknown, string | null, number];
+            const existing = matches.find(m => m.session_file_id === sessionFileId && m.message_id === messageId);
+            if (existing) existing.match_score = score;
+            else matches.push({ session_file_id: sessionFileId, message_id: messageId, tool_use_id: toolUseId, match_score: score });
+          }
+          return { rows: [] };
+        }
+        if (sql.includes('FROM ai_sessions')) return { rows: [{ workspace_id: '/workspace' }] };
+        if (sql.includes('FROM session_files')) return { rows: files.map(f => ({ ...f })) };
+        if (sql.includes('FROM ai_tool_call_file_edits')) return { rows: matches.map(m => ({ ...m })) };
+        if (sql.includes('FROM ai_agent_messages')) {
+          const bounded = params.length >= 3;
+          const rows = bounded
+            ? messages.filter(m => m.created_at_ms >= (params[1] as number) && m.created_at_ms <= (params[2] as number))
+            : messages;
+          stats.scans++;
+          if (bounded) stats.boundedScans++;
+          stats.rowsScanned += rows.length;
+          return { rows };
+        }
+        return { rows: [] };
+      });
+      return { matches, stats };
+    }
+
+    beforeEach(() => {
+      vi.mocked(logger.main.error).mockClear();
+    });
+
+    it('settles a file whose JSON-string metadata carries its toolUseId, so the next pass skips the scan', async () => {
+      // The tool call names the file 2s before the edit, so without the id the
+      // best the heuristics reach is 40 (name_in_args): never settled, and
+      // every later pass rescans.
+      const { matches, stats } = fakeSessionDb(
+        [{ id: 'f1', file_path: '/workspace/src/a.ts', timestamp_ms: T0, metadata: asSQLite({ toolUseId: 't1' }) }],
+        [toolUseMessage(7, T0 - 2_000, 't1', '/workspace/src/a.ts')],
+      );
+
+      await expect(toolCallMatcher.matchSession('sqlite-settle')).resolves.toBe(1);
+      await expect(toolCallMatcher.matchSession('sqlite-settle')).resolves.toBe(0);
+
+      expect(matches).toEqual([{ session_file_id: 'f1', message_id: 7, tool_use_id: 't1', match_score: 100 }]);
+      expect(stats.scans).toBe(1);
+    });
+
+    it('keeps each tool call\'s edit of the same file when the metadata is a JSON string', async () => {
+      // Rows with distinct toolUseIds are separate edits. Without the id they
+      // collapse to the newest row per path and the older edit is never matched.
+      const { matches } = fakeSessionDb(
+        [
+          { id: 'f1', file_path: '/workspace/src/a.ts', timestamp_ms: T0, metadata: asSQLite({ toolUseId: 't1' }) },
+          { id: 'f2', file_path: '/workspace/src/a.ts', timestamp_ms: T0 + 30_000, metadata: asSQLite({ toolUseId: 't2' }) },
+        ],
+        [
+          toolUseMessage(1, T0 - 1_000, 't1', '/workspace/src/a.ts'),
+          toolUseMessage(2, T0 + 29_000, 't2', '/workspace/src/a.ts'),
+        ],
+      );
+
+      await expect(toolCallMatcher.matchSession('sqlite-same-file')).resolves.toBe(2);
+
+      expect(matches).toEqual([
+        { session_file_id: 'f1', message_id: 1, tool_use_id: 't1', match_score: 100 },
+        { session_file_id: 'f2', message_id: 2, tool_use_id: 't2', match_score: 100 },
+      ]);
+    });
+
+    it.each([
+      ['object (PGLite)', (metadata: Record<string, unknown>) => metadata],
+      ['JSON string (SQLite)', asSQLite],
+    ])('removes unmatched bash side-effect rows and keeps matched ones, metadata as %s', async (_shape, shape) => {
+      const { matches, stats } = fakeSessionDb(
+        [
+          { id: 'bash-matched', file_path: '/workspace/src/kept.ts', timestamp_ms: T0, metadata: shape({ bashSideEffect: true }) },
+          { id: 'bash-orphan', file_path: '/workspace/out/generated.txt', timestamp_ms: T0, metadata: shape({ bashSideEffect: true }) },
+        ],
+        [toolUseMessage(3, T0 - 1_000, 't-other', '/workspace/src/kept.ts')],
+      );
+
+      await expect(toolCallMatcher.matchSession('bash-cleanup')).resolves.toBe(1);
+
+      expect(matches.map(m => m.session_file_id)).toEqual(['bash-matched']);
+      expect(stats.deletedFileIds).toEqual(['bash-orphan']);
+    });
+
+    it('treats empty, invalid or non-object JSON metadata as no metadata without failing the pass', async () => {
+      const { stats } = fakeSessionDb(
+        ['', 'not json', '{"toolUseId":', 'null', '"t1"', '[{"toolUseId":"t1"}]'].map((metadata, i) => ({
+          id: `bad-${i}`,
+          file_path: `/workspace/src/bad-${i}.ts`,
+          timestamp_ms: T0 + i,
+          metadata,
+        })),
+        [],
+      );
+
+      await expect(toolCallMatcher.matchSession('bad-metadata')).resolves.toBe(0);
+
+      expect(logger.main.error).not.toHaveBeenCalled();
+      // No definitive id survives, so the lookup stays bounded to the edits.
+      expect(stats).toEqual({ scans: 1, boundedScans: 1, rowsScanned: 0, deletedFileIds: [] });
+    });
+
+    /**
+     * Raw-message scan work over a session that grows one edit at a time, with
+     * PASSES_PER_EDIT matchSession passes after each edit (the edit's own tool
+     * call, later non-edit tool calls, end of turn). Each edit's tool call
+     * names its file 500ms before the edit, so heuristics alone score it 40.
+     */
+    function runGrowingSession(fileToolUseId: (edit: number) => string) {
+      const LEAD_ROWS = 20; // history before the first edit
+      const FILLER_ROWS_PER_TURN = 10;
+      const EDITS = 5;
+      const PASSES_PER_EDIT = 4;
+      const files: FileRow[] = [];
+      const messages: MessageRow[] = [];
+      let nextId = 1;
+      for (let i = 0; i < LEAD_ROWS; i++) messages.push(textMessage(nextId++, T0 + i * 1_000));
+      const db = fakeSessionDb(files, messages);
+      return (async () => {
+        for (let edit = 1; edit <= EDITS; edit++) {
+          const turnStart = T0 + edit * 60_000;
+          for (let i = 0; i < FILLER_ROWS_PER_TURN; i++) messages.push(textMessage(nextId++, turnStart + i * 1_000));
+          const filePath = `/workspace/src/file-${edit}.ts`;
+          messages.push(toolUseMessage(nextId++, turnStart + 10_000, `t${edit}`, filePath));
+          files.push({ id: `f${edit}`, file_path: filePath, timestamp_ms: turnStart + 10_500, metadata: asSQLite({ toolUseId: fileToolUseId(edit) }) });
+          for (let pass = 0; pass < PASSES_PER_EDIT; pass++) await toolCallMatcher.matchSession('growing-session');
+        }
+        return {
+          scans: db.stats.scans,
+          boundedScans: db.stats.boundedScans,
+          rowsScanned: db.stats.rowsScanned,
+          scores: db.matches.map(m => m.match_score),
+        };
+      })();
+    }
+
+    // Rows in the session when edit k lands: 20 lead rows plus 11 per turn.
+    const sessionRowsAtEdit = (k: number) => 20 + 11 * k;
+    const sumOverEdits = (f: (k: number) => number) => [1, 2, 3, 4, 5].reduce((sum, k) => sum + f(k), 0);
+
+    it('scan work, every toolUseId resolvable: one whole-session scan per new edit, none once settled', async () => {
+      const measured = await runGrowingSession(edit => `t${edit}`);
+      expect(measured).toEqual({
+        scans: 5,
+        boundedScans: 0,
+        rowsScanned: sumOverEdits(sessionRowsAtEdit), // 265
+        scores: [100, 100, 100, 100, 100],
+      });
+    });
+
+    it('scan work, one toolUseId never resolvable: every pass scans the whole session, as on PGLite', async () => {
+      // The first edit's id matches no tool call, so that file never settles
+      // and keeps the unbounded lookup that exact ids require.
+      const measured = await runGrowingSession(edit => (edit === 1 ? 'ghost' : `t${edit}`));
+      expect(measured).toEqual({
+        scans: 20,
+        boundedScans: 0,
+        rowsScanned: 4 * sumOverEdits(sessionRowsAtEdit), // 1060
+        scores: [40, 100, 100, 100, 100],
+      });
+    });
+
+    describe('against a real SQLite database', () => {
+      let tmp: string;
+      let sqlite: SQLiteDatabase;
+
+      beforeEach(async () => {
+        tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-toolcall-metadata-'));
+        const dbDir = path.join(tmp, 'sqlite-db');
+        fs.mkdirSync(dbDir, { recursive: true });
+        sqlite = new SQLiteDatabase({ dbDir, schemaDir: path.resolve(__dirname, '../../database/sqlite/schemas') });
+        await sqlite.initialize();
+      });
+
+      afterEach(async () => {
+        try { await sqlite.close(); } catch { /* ignore */ }
+        fs.rmSync(tmp, { recursive: true, force: true });
+      });
+
+      it('matches by toolUseId, removes the orphaned bash side effect, and skips the scan on the next pass', async () => {
+        const sessionId = 'sqlite-real-session';
+        const fileTs = T0;
+        await sqlite.query(
+          `INSERT INTO ai_sessions (id, workspace_id, provider) VALUES ($1, $2, $3)`,
+          [sessionId, '/workspace', 'claude-code'],
+        );
+        // Written through the production session_files store.
+        const store = createPGLiteSessionFileStore(sqlite);
+        const edited = await store.addFileLink({
+          sessionId,
+          workspaceId: '/workspace',
+          filePath: '/workspace/src/kept.ts',
+          linkType: 'edited',
+          timestamp: fileTs,
+          metadata: { toolName: 'Edit', operation: 'edit', toolUseId: 'toolu_exact' },
+        });
+        const orphan = await store.addFileLink({
+          sessionId,
+          workspaceId: '/workspace',
+          filePath: '/workspace/out/generated.txt',
+          linkType: 'edited',
+          timestamp: fileTs,
+          metadata: { bashSideEffect: true },
+        });
+        // The tool call is 60s before the edit: reachable only through the exact id.
+        await sqlite.query(
+          `INSERT INTO ai_agent_messages (session_id, created_at, source, direction, content) VALUES ($1, $2, $3, $4, $5)`,
+          [
+            sessionId,
+            new Date(fileTs - 60_000).toISOString(),
+            'claude-code',
+            'output',
+            JSON.stringify({
+              type: 'assistant',
+              message: { content: [{ type: 'tool_use', id: 'toolu_exact', name: 'Edit', input: { file_path: '/workspace/src/kept.ts' } }] },
+            }),
+          ],
+        );
+
+        // Premise: SQLite returns the column as JSON text, not an object.
+        const raw = await sqlite.query<{ metadata: unknown }>(`SELECT metadata FROM session_files WHERE id = $1`, [edited.id]);
+        expect(typeof raw.rows[0].metadata).toBe('string');
+
+        const sqlSeen: string[] = [];
+        queryMock.mockImplementation(async (sql: string, params?: unknown[]) => {
+          sqlSeen.push(sql);
+          return sqlite.query(sql, params);
+        });
+
+        await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(1);
+        expect(logger.main.error).not.toHaveBeenCalled();
+
+        const stored = await sqlite.query(
+          `SELECT session_file_id, tool_use_id, match_score FROM ai_tool_call_file_edits WHERE session_id = $1`,
+          [sessionId],
+        );
+        expect(stored.rows).toEqual([{ session_file_id: edited.id, tool_use_id: 'toolu_exact', match_score: 100 }]);
+        const remaining = await sqlite.query<{ id: string }>(`SELECT id FROM session_files WHERE session_id = $1`, [sessionId]);
+        // The orphaned bash side effect is gone; the matched edit stays.
+        expect(orphan.id).not.toBe(edited.id);
+        expect(remaining.rows.map(r => r.id)).toEqual([edited.id]);
+
+        sqlSeen.length = 0;
+        await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(0);
+        expect(sqlSeen.some(sql => sql.includes('FROM ai_agent_messages'))).toBe(false);
+      });
     });
   });
 });
