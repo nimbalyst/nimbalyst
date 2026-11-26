@@ -131,6 +131,18 @@ body
     expect(actions[1].id).toBe('e-cafe-creme');
   });
 
+  it('keeps non-Latin headings as distinct actions', () => {
+    const content = `## 审查已改动文件
+First prompt body.
+
+## 制定实施方案
+Second prompt body.
+`;
+    const { actions, diagnostics } = parseActionPromptsFile(content);
+    expect(diagnostics).toEqual([]);
+    expect(actions.map((a) => a.id)).toEqual(['审查已改动文件', '制定实施方案']);
+  });
+
   describe('action launch config', () => {
     it('leaves config undefined when no known key starts the body', () => {
       const content = `## No Config Action
