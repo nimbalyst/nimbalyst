@@ -31,10 +31,32 @@ export interface AntigravityModelQuota {
   resetTime?: string;         // ISO8601 UTC
 }
 
+export interface AntigravityQuotaBucket {
+  bucketId: string;           // e.g. "gemini-5h", "gemini-weekly"
+  displayName?: string;       // e.g. "Five Hour Limit Remaining"
+  window?: string;            // e.g. "5h" | "weekly"
+  remainingFraction?: number; // 0..1
+  resetTime?: string;         // ISO8601 UTC
+  disabled?: boolean;
+}
+
+export interface AntigravityQuotaGroup {
+  displayName: string;        // e.g. "Gemini Models"
+  description?: string;
+  buckets: AntigravityQuotaBucket[];
+}
+
+export interface AntigravityQuotaSummary {
+  description?: string;
+  groups: AntigravityQuotaGroup[];
+}
+
 export interface AntigravityUsageSnapshot {
   account: AntigravityAccountUsage;
   /** Per-model quotas keyed by enum. */
   models: Record<string, AntigravityModelQuota>;
+  /** Grouped 5-hour / weekly quota pools from RetrieveUserQuotaSummary, when supported. */
+  quotaSummary?: AntigravityQuotaSummary;
   /** True if any low-quota condition is met (for a warning badge). */
   warn: boolean;
 }
@@ -92,12 +114,18 @@ export class AntigravityUsageMeter {
   }
 
   /**
-   * One call returning account usage + all per-model quotas + a warn flag.
+   * One call returning account usage + all per-model quotas + grouped
+   * 5-hour/weekly quota summary (when supported by the server) + a warn flag.
    * Pass `ep` to read from that endpoint only; without it the read goes
    * through ensureRunning(), which may spawn a language server.
    */
   async getSnapshot(ep?: AntigravityEndpoint): Promise<AntigravityUsageSnapshot> {
-    const us = await this.server.getUserStatus(ep);
+    const [us, rawSummary] = await Promise.all([
+      this.server.getUserStatus(ep),
+      typeof this.server.getUserQuotaSummary === 'function'
+        ? this.server.getUserQuotaSummary(ep).catch(() => null)
+        : Promise.resolve(null),
+    ]);
     const plan = us?.planStatus ?? {};
     const pi = plan?.planInfo ?? {};
     const account: AntigravityAccountUsage = {
@@ -130,11 +158,84 @@ export class AntigravityUsageMeter {
       }
     }
 
+    const quotaSummary = parseQuotaSummary(rawSummary);
+    if (quotaSummary) {
+      for (const group of quotaSummary.groups) {
+        for (const bucket of group.buckets) {
+          if (
+            !bucket.disabled &&
+            typeof bucket.remainingFraction === 'number' &&
+            bucket.remainingFraction < LOW_FRACTION
+          ) {
+            lowFraction = true;
+          }
+        }
+      }
+    }
+
     const lowCredits = isLowCredit(account.availablePromptCredits, account.monthlyPromptCredits)
       || isLowCredit(account.availableFlowCredits, account.monthlyFlowCredits);
 
-    return { account, models, warn: lowFraction || lowCredits };
+    return {
+      account,
+      models,
+      ...(quotaSummary ? { quotaSummary } : {}),
+      warn: lowFraction || lowCredits,
+    };
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function parseQuotaSummary(raw: any): AntigravityQuotaSummary | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rawGroups: any[] = Array.isArray(raw.groups) ? raw.groups : [];
+  const groups: AntigravityQuotaGroup[] = [];
+  for (const g of rawGroups) {
+    if (!g || typeof g !== 'object') continue;
+    const rawDisplayName = typeof g.displayName === 'string' && g.displayName.trim()
+      ? g.displayName.trim()
+      : typeof g.name === 'string' && g.name.trim()
+        ? g.name.trim()
+        : '';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rawBuckets: any[] = Array.isArray(g.buckets) ? g.buckets : [];
+    const buckets: AntigravityQuotaBucket[] = [];
+    for (const b of rawBuckets) {
+      if (!b || typeof b !== 'object') continue;
+      const bucketId = typeof b.bucketId === 'string' && b.bucketId.trim()
+        ? b.bucketId.trim()
+        : typeof b.id === 'string' && b.id.trim()
+          ? b.id.trim()
+          : '';
+      if (!bucketId) continue;
+      const remainingFraction = typeof b.remainingFraction === 'number'
+        ? b.remainingFraction
+        : typeof b.remaining?.remainingFraction === 'number'
+          ? b.remaining.remainingFraction
+          : undefined;
+      buckets.push({
+        bucketId,
+        displayName: typeof b.displayName === 'string' ? b.displayName : typeof b.name === 'string' ? b.name : undefined,
+        window: typeof b.window === 'string' ? b.window : undefined,
+        remainingFraction,
+        resetTime: typeof b.resetTime === 'string' ? b.resetTime : undefined,
+        disabled: Boolean(b.disabled),
+      });
+    }
+    if (buckets.length > 0) {
+      groups.push({
+        displayName: rawDisplayName || 'Quota',
+        description: typeof g.description === 'string' ? g.description : undefined,
+        buckets,
+      });
+    }
+  }
+  if (groups.length === 0) return undefined;
+  return {
+    description: typeof raw.description === 'string' ? raw.description : undefined,
+    groups,
+  };
 }
 
 function isLowCredit(available?: number, monthly?: number): boolean {

@@ -1,14 +1,17 @@
 /**
  * GeminiUsagePopover - Detailed Gemini (Antigravity) usage information popover
  *
- * Shows the primary (most-constrained model) and secondary quota with progress
- * bars and reset times. Degrades to the error message when the snapshot is
- * unavailable (e.g. the language server has not been started yet).
+ * Shows the 5-hour session and 7-day weekly quota pools from Antigravity's
+ * RetrieveUserQuotaSummary RPC when available, with pacing markers, elapsed
+ * window percentage, and limit ratio. Falls back to the two most-constrained
+ * per-model quotas from GetUserStatus on older servers (without printing
+ * assumed window durations).
  */
 
 import React, { useEffect, RefObject } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { limitRatio, formatLimitRatio, LIMIT_RATIO_EXPLANATION } from '../limitRatio';
 import {
   geminiUsageAtom,
   geminiUsageSessionColorAtom,
@@ -30,11 +33,12 @@ interface UsageSectionProps {
   utilization: number;
   resetsAt: string | null;
   color: 'green' | 'yellow' | 'red' | 'muted';
-  windowDurationMs: number;
+  windowDurationMs: number | null;
+  showPacingDetails: boolean;
 }
 
-function calculateTimeElapsedPercent(resetsAt: string | null, windowDurationMs: number): number | null {
-  if (!resetsAt || !Number.isFinite(windowDurationMs) || windowDurationMs <= 0) return null;
+function calculateTimeElapsedPercent(resetsAt: string | null, windowDurationMs: number | null): number | null {
+  if (!resetsAt || windowDurationMs === null || !Number.isFinite(windowDurationMs) || windowDurationMs <= 0) return null;
 
   const resetTime = new Date(resetsAt).getTime();
   if (!Number.isFinite(resetTime)) return null;
@@ -53,6 +57,7 @@ const UsageSection: React.FC<UsageSectionProps> = ({
   resetsAt,
   color,
   windowDurationMs,
+  showPacingDetails,
 }) => {
   const colorClasses: Record<string, { text: string; bar: string }> = {
     green: { text: 'text-green-500', bar: 'bg-green-500' },
@@ -63,6 +68,11 @@ const UsageSection: React.FC<UsageSectionProps> = ({
 
   const colors = colorClasses[color] || colorClasses.muted;
   const timeElapsedPercent = calculateTimeElapsedPercent(resetsAt, windowDurationMs);
+  const remainingMs = resetsAt ? Date.parse(resetsAt) - Date.now() : NaN;
+  const windowExpired = Number.isFinite(remainingMs) && remainingMs <= 0;
+  const ratio = showPacingDetails && windowDurationMs !== null
+    ? limitRatio(remainingMs > 0 && remainingMs <= windowDurationMs ? timeElapsedPercent : null, utilization)
+    : null;
   const isOverPacing = timeElapsedPercent !== null && utilization > timeElapsedPercent;
 
   return (
@@ -87,12 +97,20 @@ const UsageSection: React.FC<UsageSectionProps> = ({
           title={`${Math.round(timeElapsedPercent)}% of window elapsed`}
         />}
       </div>
-      {/* No elapsed percentage or limit ratio here: these rows are the two most-constrained
-          per-model quotas, and Gemini does not report how long each quota window is, so the
-          5-hour and 7-day durations above are assumptions too weak to print as numbers. */}
+      {showPacingDetails && resetsAt && !windowExpired && (
+        <div className="text-[11px] text-nim-muted" title={LIMIT_RATIO_EXPLANATION}>
+          Limit ratio: {formatLimitRatio(ratio)}
+        </div>
+      )}
       <div className="flex items-center gap-1 text-[11px] text-nim-muted">
         <MaterialSymbol icon="schedule" size={12} className="opacity-70" />
-        <span>Resets in {formatResetTime(resetsAt)}</span>
+        <span>
+          {resetsAt
+            ? `Resets in ${formatResetTime(resetsAt)}${showPacingDetails && timeElapsedPercent !== null && !windowExpired ? ` [${Math.round(timeElapsedPercent)}% passed]` : ''}`
+            : showPacingDetails
+              ? 'Reset time unavailable'
+              : `Resets in ${formatResetTime(resetsAt)}`}
+        </span>
       </div>
     </div>
   );
@@ -136,9 +154,10 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
   }
 
   const limitsAvailable = usage.limitsAvailable ?? true;
+  const hasSummaryWindows = usage.windowSource === 'summary';
+  const showFiveHour = !hasSummaryWindows || usage.hasFiveHour !== false;
+  const showSevenDay = !hasSummaryWindows || usage.hasSevenDay !== false;
 
-  // Per-model quota windows don't expose a fixed duration, so use the same
-  // session/weekly windows the Codex chip uses for the pacing marker math.
   const sessionWindowMs = 5 * 60 * 60 * 1000; // 5 hours
   const weeklyWindowMs = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -194,22 +213,28 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
                   Usage detected, but Gemini limits are unavailable in recent session data.
                 </div>
               )}
-              <UsageSection
-                title="Session"
-                subtitle="Most-constrained model"
-                utilization={usage.fiveHour.utilization}
-                resetsAt={usage.fiveHour.resetsAt}
-                color={sessionColor as 'green' | 'yellow' | 'red' | 'muted'}
-                windowDurationMs={sessionWindowMs}
-              />
-              <UsageSection
-                title="Secondary"
-                subtitle="Next-most-constrained model"
-                utilization={usage.sevenDay.utilization}
-                resetsAt={usage.sevenDay.resetsAt}
-                color={weeklyColor as 'green' | 'yellow' | 'red' | 'muted'}
-                windowDurationMs={weeklyWindowMs}
-              />
+              {showFiveHour && (
+                <UsageSection
+                  title="Session"
+                  subtitle={hasSummaryWindows ? '5-hour window' : 'Most-constrained model'}
+                  utilization={usage.fiveHour.utilization}
+                  resetsAt={usage.fiveHour.resetsAt}
+                  color={sessionColor as 'green' | 'yellow' | 'red' | 'muted'}
+                  windowDurationMs={hasSummaryWindows ? sessionWindowMs : null}
+                  showPacingDetails={hasSummaryWindows}
+                />
+              )}
+              {showSevenDay && (
+                <UsageSection
+                  title={hasSummaryWindows ? 'Weekly' : 'Secondary'}
+                  subtitle={hasSummaryWindows ? '7-day window' : 'Next-most-constrained model'}
+                  utilization={usage.sevenDay.utilization}
+                  resetsAt={usage.sevenDay.resetsAt}
+                  color={weeklyColor as 'green' | 'yellow' | 'red' | 'muted'}
+                  windowDurationMs={hasSummaryWindows ? weeklyWindowMs : null}
+                  showPacingDetails={hasSummaryWindows}
+                />
+              )}
             </>
           )}
         </div>

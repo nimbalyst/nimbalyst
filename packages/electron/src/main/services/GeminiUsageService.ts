@@ -58,6 +58,12 @@ export interface GeminiUsageData {
   };
   limitsAvailable?: boolean;
   available?: boolean;
+  /** 'summary' when backed by RetrieveUserQuotaSummary 5h/weekly pools; 'models' for per-model fallback. */
+  windowSource?: 'summary' | 'models';
+  /** Present when windowSource === 'summary': whether the plan reports a 5-hour session bucket. */
+  hasFiveHour?: boolean;
+  /** Present when windowSource === 'summary': whether the plan reports a 7-day weekly bucket. */
+  hasSevenDay?: boolean;
   lastUpdated: number; // Unix timestamp
   error?: string;
   /** True when the backend module has not started yet (benign idle state, not an error). */
@@ -75,6 +81,26 @@ interface AntigravityModelQuota {
   resetTime?: string; // ISO8601 UTC
 }
 
+interface AntigravityQuotaBucket {
+  bucketId: string;
+  displayName?: string;
+  window?: string;
+  remainingFraction?: number;
+  resetTime?: string;
+  disabled?: boolean;
+}
+
+interface AntigravityQuotaGroup {
+  displayName: string;
+  description?: string;
+  buckets: AntigravityQuotaBucket[];
+}
+
+interface AntigravityQuotaSummary {
+  description?: string;
+  groups: AntigravityQuotaGroup[];
+}
+
 interface AntigravityAccountUsage {
   name?: string;
   email?: string;
@@ -89,6 +115,7 @@ interface AntigravityAccountUsage {
 interface AntigravityUsageSnapshot {
   account: AntigravityAccountUsage;
   models: Record<string, AntigravityModelQuota>;
+  quotaSummary?: AntigravityQuotaSummary;
   warn: boolean;
 }
 
@@ -248,46 +275,68 @@ class GeminiUsageServiceImpl {
   /**
    * Map an AntigravityUsageSnapshot into the chip's GeminiUsageData shape.
    *
-   * The Codex chip drives its ring off `fiveHour.utilization` (0-100). Gemini's
-   * snapshot exposes per-model `remainingFraction` (0..1) and a `resetTime`, so
-   * we pick the model with the LOWEST remaining quota (most-constrained window)
-   * for the primary ring -- utilization = (1 - remainingFraction) * 100 -- and
-   * the next-most-constrained for the secondary ring. Account credits map onto
-   * the optional `credits` block.
+   * Prefers the explicit 5-hour and weekly quota pools from
+   * `RetrieveUserQuotaSummary` (Gemini Models group) when available. Falls back
+   * to the two most-constrained per-model quotas from `GetUserStatus` on older
+   * Antigravity servers that do not expose the summary RPC. Account credits map
+   * onto the optional `credits` block.
    */
   private convertSnapshot(snapshot: AntigravityUsageSnapshot): GeminiUsageData {
-    const quotas = Object.values(snapshot?.models ?? {}).filter(
-      (q): q is AntigravityModelQuota =>
-        !!q && typeof q.remainingFraction === 'number',
-    );
-
-    // Lowest remaining first = highest utilization first.
-    quotas.sort(
-      (a, b) => (a.remainingFraction ?? 1) - (b.remainingFraction ?? 1),
-    );
-
-    const primary = quotas[0];
-    const secondary = quotas[1];
-
-    const toUtilization = (q?: AntigravityModelQuota): number => {
+    const toUtilization = (q?: { remainingFraction?: number }): number => {
       if (!q || typeof q.remainingFraction !== 'number') return 0;
       const util = (1 - q.remainingFraction) * 100;
       return Math.max(0, Math.min(100, util));
     };
 
-    const data: GeminiUsageData = {
-      fiveHour: {
-        utilization: toUtilization(primary),
-        resetsAt: primary?.resetTime ?? null,
-      },
-      sevenDay: {
-        utilization: toUtilization(secondary),
-        resetsAt: secondary?.resetTime ?? null,
-      },
-      limitsAvailable: quotas.length > 0,
-      available: true,
-      lastUpdated: Date.now(),
-    };
+    const summaryBuckets = this.extractGeminiSummaryBuckets(snapshot?.quotaSummary);
+
+    let data: GeminiUsageData;
+    if (summaryBuckets) {
+      data = {
+        fiveHour: {
+          utilization: toUtilization(summaryBuckets.fiveHour),
+          resetsAt: summaryBuckets.fiveHour?.resetTime ?? null,
+        },
+        sevenDay: {
+          utilization: toUtilization(summaryBuckets.weekly),
+          resetsAt: summaryBuckets.weekly?.resetTime ?? null,
+        },
+        windowSource: 'summary',
+        hasFiveHour: Boolean(summaryBuckets.fiveHour),
+        hasSevenDay: Boolean(summaryBuckets.weekly),
+        limitsAvailable: true,
+        available: true,
+        lastUpdated: Date.now(),
+      };
+    } else {
+      const quotas = Object.values(snapshot?.models ?? {}).filter(
+        (q): q is AntigravityModelQuota =>
+          !!q && typeof q.remainingFraction === 'number',
+      );
+
+      // Lowest remaining first = highest utilization first.
+      quotas.sort(
+        (a, b) => (a.remainingFraction ?? 1) - (b.remainingFraction ?? 1),
+      );
+
+      const primary = quotas[0];
+      const secondary = quotas[1];
+
+      data = {
+        fiveHour: {
+          utilization: toUtilization(primary),
+          resetsAt: primary?.resetTime ?? null,
+        },
+        sevenDay: {
+          utilization: toUtilization(secondary),
+          resetsAt: secondary?.resetTime ?? null,
+        },
+        windowSource: 'models',
+        limitsAvailable: quotas.length > 0,
+        available: true,
+        lastUpdated: Date.now(),
+      };
+    }
 
     const account = snapshot?.account;
     if (account) {
@@ -306,6 +355,41 @@ class GeminiUsageServiceImpl {
     }
 
     return data;
+  }
+
+  private extractGeminiSummaryBuckets(
+    summary?: AntigravityQuotaSummary,
+  ): { fiveHour?: AntigravityQuotaBucket; weekly?: AntigravityQuotaBucket } | null {
+    const groups = summary?.groups ?? [];
+    if (groups.length === 0) return null;
+
+    const geminiGroup =
+      groups.find(
+        (g) =>
+          /gemini/i.test(g.displayName) ||
+          g.buckets.some((b) => /^gemini[-_]/i.test(b.bucketId)),
+      ) ?? groups[0];
+
+    const activeBuckets = geminiGroup.buckets.filter(
+      (b) => !b.disabled && typeof b.remainingFraction === 'number',
+    );
+    if (activeBuckets.length === 0) return null;
+
+    const fiveHour = activeBuckets.find(
+      (b) =>
+        b.window?.toLowerCase() === '5h' ||
+        /(?:^|[-_])5h$/i.test(b.bucketId) ||
+        /5[- ]?hour|five[- ]?hour/i.test(b.displayName ?? ''),
+    );
+    const weekly = activeBuckets.find(
+      (b) =>
+        b.window?.toLowerCase() === 'weekly' ||
+        /(?:^|[-_])weekly$/i.test(b.bucketId) ||
+        /week/i.test(b.displayName ?? ''),
+    );
+
+    if (!fiveHour && !weekly) return null;
+    return { fiveHour, weekly };
   }
 
   private broadcastUpdate(): void {

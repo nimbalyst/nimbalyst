@@ -164,4 +164,135 @@ describe('GeminiUsageService hub discovery', () => {
     expect(server.currentEndpoint()).toBe(attached);
     expect(data.available).toBe(false);
   });
+
+  it('maps 5-hour and weekly Gemini quota pools from RetrieveUserQuotaSummary', async () => {
+    const server = AntigravityServerManager.shared();
+    const hub = { httpsPort: 50030, csrf: 'hub-tok', owned: false };
+    vi.spyOn(server, 'findRunningEndpoint').mockResolvedValue(hub);
+    const rpc = vi
+      .spyOn(server as unknown as { rpc: (...args: unknown[]) => Promise<unknown> }, 'rpc')
+      .mockImplementation(async (method: unknown) => {
+        if (method === 'RetrieveUserQuotaSummary') {
+          return {
+            response: {
+              groups: [
+                {
+                  displayName: 'Claude and GPT models',
+                  buckets: [
+                    { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 0.2, resetTime: '2026-12-02T00:00:00Z' },
+                    { bucketId: '3p-5h', window: '5h', remainingFraction: 0.1, resetTime: '2026-11-26T19:00:00Z' },
+                  ],
+                },
+                {
+                  displayName: 'Gemini Models',
+                  buckets: [
+                    { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.96, resetTime: '2026-12-03T13:17:23Z' },
+                    { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.88, resetTime: '2026-11-26T18:17:23Z' },
+                  ],
+                },
+              ],
+            },
+          };
+        }
+        return {
+          userStatus: {
+            planStatus: { planInfo: { planName: 'Pro' }, availablePromptCredits: 500 },
+            cascadeModelConfigData: {
+              clientModelConfigs: [
+                {
+                  label: 'Gemini 4 Neon (High)',
+                  modelOrAlias: { model: 'MODEL_PLACEHOLDER_M532' },
+                  quotaInfo: { remainingFraction: 0.94, resetTime: '2026-11-26T18:17:23Z' },
+                },
+              ],
+            },
+          },
+        };
+      });
+
+    const data = await geminiUsageService.refresh();
+
+    expect(rpc).toHaveBeenCalledWith('RetrieveUserQuotaSummary', {}, hub, 15_000);
+    expect(rpc).toHaveBeenCalledWith('GetUserStatus', {}, hub, 15_000);
+    expect(data.available).toBe(true);
+    expect(data.limitsAvailable).toBe(true);
+    expect(data.windowSource).toBe('summary');
+    expect(data.hasFiveHour).toBe(true);
+    expect(data.hasSevenDay).toBe(true);
+    expect(data.fiveHour.utilization).toBeCloseTo(12);
+    expect(data.fiveHour.resetsAt).toBe('2026-11-26T18:17:23Z');
+    expect(data.sevenDay.utilization).toBeCloseTo(4);
+    expect(data.sevenDay.resetsAt).toBe('2026-12-03T13:17:23Z');
+    expect(data.credits?.balance).toBe(500);
+  });
+
+  it('supports weekly-only quota summaries (no 5-hour bucket)', async () => {
+    const server = AntigravityServerManager.shared();
+    const hub = { httpsPort: 50031, csrf: 'hub-tok', owned: false };
+    vi.spyOn(server, 'findRunningEndpoint').mockResolvedValue(hub);
+    vi.spyOn(server as unknown as { rpc: (...args: unknown[]) => Promise<unknown> }, 'rpc')
+      .mockImplementation(async (method: unknown) => {
+        if (method === 'RetrieveUserQuotaSummary') {
+          return {
+            response: {
+              groups: [
+                {
+                  displayName: 'Gemini Models',
+                  buckets: [
+                    { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.7, resetTime: '2026-12-03T00:00:00Z' },
+                  ],
+                },
+              ],
+            },
+          };
+        }
+        return { userStatus: {} };
+      });
+
+    const data = await geminiUsageService.refresh();
+
+    expect(data.windowSource).toBe('summary');
+    expect(data.hasFiveHour).toBe(false);
+    expect(data.hasSevenDay).toBe(true);
+    expect(data.sevenDay.utilization).toBeCloseTo(30);
+    expect(data.sevenDay.resetsAt).toBe('2026-12-03T00:00:00Z');
+  });
+
+  it('falls back to per-model GetUserStatus quotas when RetrieveUserQuotaSummary is unsupported', async () => {
+    const server = AntigravityServerManager.shared();
+    const hub = { httpsPort: 50032, csrf: 'hub-tok', owned: false };
+    vi.spyOn(server, 'findRunningEndpoint').mockResolvedValue(hub);
+    vi.spyOn(server as unknown as { rpc: (...args: unknown[]) => Promise<unknown> }, 'rpc')
+      .mockImplementation(async (method: unknown) => {
+        if (method === 'RetrieveUserQuotaSummary') {
+          throw new Error('Antigravity RetrieveUserQuotaSummary HTTP 404: unimplemented');
+        }
+        return {
+          userStatus: {
+            cascadeModelConfigData: {
+              clientModelConfigs: [
+                {
+                  label: 'Gemini 4 Neon (High)',
+                  modelOrAlias: { model: 'MODEL_A' },
+                  quotaInfo: { remainingFraction: 0.65, resetTime: '2026-11-26T18:00:00Z' },
+                },
+                {
+                  label: 'Gemini 4 Carbon (High)',
+                  modelOrAlias: { model: 'MODEL_B' },
+                  quotaInfo: { remainingFraction: 0.85, resetTime: '2026-11-26T19:00:00Z' },
+                },
+              ],
+            },
+          },
+        };
+      });
+
+    const data = await geminiUsageService.refresh();
+
+    expect(data.available).toBe(true);
+    expect(data.limitsAvailable).toBe(true);
+    expect(data.windowSource).toBe('models');
+    expect(data.fiveHour.utilization).toBeCloseTo(35);
+    expect(data.sevenDay.utilization).toBeCloseTo(15);
+  });
 });

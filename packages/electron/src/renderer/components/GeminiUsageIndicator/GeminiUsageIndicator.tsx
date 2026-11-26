@@ -13,6 +13,7 @@ import {
   geminiUsageAtom,
   geminiUsageAvailableAtom,
   geminiUsageSessionColorAtom,
+  geminiUsageWeeklyColorAtom,
   formatResetTime,
 } from '../../store/atoms/geminiUsageAtoms';
 import { GeminiUsagePopover } from './GeminiUsagePopover';
@@ -29,6 +30,7 @@ export const GeminiUsageIndicator: React.FC<GeminiUsageIndicatorProps> = ({ clas
   const usage = useAtomValue(geminiUsageAtom);
   const isAvailable = useAtomValue(geminiUsageAvailableAtom);
   const sessionColor = useAtomValue(geminiUsageSessionColorAtom);
+  const weeklyColor = useAtomValue(geminiUsageWeeklyColorAtom);
 
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -46,7 +48,9 @@ export const GeminiUsageIndicator: React.FC<GeminiUsageIndicatorProps> = ({ clas
   }
 
   const hasLoadError = Boolean(usage?.error);
-  const utilization = hasLoadError ? 0 : usage?.fiveHour?.utilization ?? 0;
+  const useWeeklyForRing = usage?.hasFiveHour === false && Boolean(usage?.hasSevenDay);
+  const ringWindow = useWeeklyForRing ? usage?.sevenDay : usage?.fiveHour;
+  const utilization = hasLoadError ? 0 : ringWindow?.utilization ?? 0;
   const strokeDashoffset = RING_CIRCUMFERENCE * (1 - utilization / 100);
   const limitsAvailable = !hasLoadError && (usage?.limitsAvailable ?? true);
 
@@ -57,7 +61,9 @@ export const GeminiUsageIndicator: React.FC<GeminiUsageIndicatorProps> = ({ clas
     muted: 'stroke-nim-muted',
   };
 
-  const effectiveSessionColor = limitsAvailable ? sessionColor : 'muted';
+  const effectiveSessionColor = limitsAvailable
+    ? (useWeeklyForRing ? weeklyColor : sessionColor)
+    : 'muted';
   const strokeColor = colorClasses[effectiveSessionColor] || colorClasses.muted;
 
   const tooltipContent = usage?.notStarted
@@ -66,7 +72,9 @@ export const GeminiUsageIndicator: React.FC<GeminiUsageIndicatorProps> = ({ clas
       ? `Gemini usage unavailable: ${usage.error}`
       : usage
         ? limitsAvailable
-          ? `Gemini: ${Math.round(utilization)}% (resets ${formatResetTime(usage.fiveHour.resetsAt)})`
+          ? ringWindow?.resetsAt
+            ? `Gemini: ${Math.round(utilization)}% (resets ${formatResetTime(ringWindow.resetsAt)})`
+            : `Gemini: ${Math.round(utilization)}%`
           : 'Gemini usage (limits unavailable)'
         : 'Gemini usage unavailable';
 
