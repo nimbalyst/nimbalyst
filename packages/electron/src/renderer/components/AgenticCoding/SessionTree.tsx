@@ -37,6 +37,7 @@ export type SessionTreeRowHandlers = Omit<SessionTreeProps, 'sessions' | 'root'>
 export interface VisibleSessionTreeRow {
   node: SessionTreeNode<SessionMeta>;
   baseDepth: number;
+  searchResult?: boolean;
   /** Set on a tree's top row: a merged wrapper keeps the pin identity of the hidden root. */
   pinSession?: SessionMeta;
 }
@@ -157,7 +158,7 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
       [row.id, node.ids.join('\0'), activeSessionId]
     )
   );
-  const expanded = status.expanded;
+  const expanded = props.searchResult || status.expanded;
   const indent = treeIndent(node.depth - baseDepth);
   const hasChildren = node.children.length > 0;
   const hiddenCount = node.ids.length - 1;
@@ -193,6 +194,7 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
     hasChildren ? (
       <button
         aria-label={`${expanded ? 'Collapse' : 'Expand'} ${row.title}`}
+        disabled={props.searchResult}
         aria-expanded={expanded}
         className={`session-tree-chevron shrink-0 flex items-center p-0 leading-none ${compact ? "" : "mt-1"}`}
         onClick={(e) => {
@@ -205,7 +207,7 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
     ) : (
       <span className="w-3.5 shrink-0" />
     )
-  ), [hasChildren, expanded, row.title, compact, setState]);
+  ), [hasChildren, expanded, row.title, compact, setState, props.searchResult]);
   return (
     <div
       className="session-tree-row"

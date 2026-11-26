@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSessionTree,
   MAX_TREE_DEPTH,
+  matchingSessionPaths,
   mergedTreeHeader,
   rendersAsSessionTree,
   sessionMoveError,
@@ -18,6 +19,17 @@ const row = (
   extra: Partial<TreeSession> = {}
 ): TreeSession => ({ id, parentSessionId, createdAt: 1, ...extra });
 describe('session tree projection', () => {
+  it('reveals a matching grandchild and its ancestors but counts only title hits', () => {
+    const rows = [row('root'), row('parent', 'root'), row('Пост-запуск', 'parent'), row('other', 'parent')];
+    const { roots, matchCount } = matchingSessionPaths(rows, session => session.id.toLowerCase().includes('пост'));
+    expect(matchCount).toBe(1);
+    expect(roots.map(root => root.ids)).toEqual([['root', 'parent', 'Пост-запуск']]);
+    expect(matchingSessionPaths(rows, () => false).roots).toEqual([]);
+  });
+  it('does not add an unrelated root across a worktree boundary', () => {
+    const rows = [row('root'), row('match', 'root', { worktreeId: 'other' })];
+    expect(matchingSessionPaths(rows, s => s.id === 'match').roots.map(r => r.ids)).toEqual([['match']]);
+  });
   it('sorts siblings by pins then subtree activity and includes the root in file rollups', () => {
     const [root] = buildSessionTree([
       row('root', null, { uncommittedCount: 2 }),
