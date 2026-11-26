@@ -13,6 +13,8 @@ import { TerminalContextMenu } from './TerminalContextMenu';
 import { sanitizeScrollback, stripProblematicEscapeSequences, cleanScrollback } from './scrollbackSanitization';
 import { loadTerminalGhostty, isGhosttyWasmTrap, writeGuardingWasmTrap } from './ghosttyInstance';
 import { logger } from '../../utils/logger';
+import { useSetting } from '../../hooks/useSetting';
+import { DEFAULT_TERMINAL_FONT_STACK, toFontFamilyCss } from '../../utils/fontSettings';
 import {
   isElementMeasurable,
   waitUntilElementMeasurable,
@@ -153,6 +155,11 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
 
   const terminalRef = useRef<HTMLDivElement>(null);
   const terminalInstanceRef = useRef<Terminal | null>(null);
+  const terminalFontFamily = toFontFamilyCss(useSetting('appearance.codeFontFamily'), DEFAULT_TERMINAL_FONT_STACK);
+  const terminalFontSize = useSetting('appearance.terminalFontSize');
+  // The creation effect reads the current font without re-running when it changes.
+  const terminalFontRef = useRef({ fontFamily: terminalFontFamily, fontSize: terminalFontSize });
+  terminalFontRef.current = { fontFamily: terminalFontFamily, fontSize: terminalFontSize };
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const [hasExited, setHasExited] = useState(false);
@@ -442,8 +449,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
         // Create Ghostty Terminal instance
         terminal = new Terminal({
           ghostty,
-          fontSize: 13,
-          fontFamily: '"SF Mono", Monaco, "Courier New", monospace',
+          ...terminalFontRef.current,
           scrollback: 50000,
           cursorBlink: false,
           cursorStyle: 'bar',
@@ -929,6 +935,19 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
       terminalInstanceRef.current.options.theme = getTerminalTheme();
     }
   }, [currentThemeId]);
+
+  // Apply font changes to a running terminal, then refit so rows and columns match the new cell size.
+  useEffect(() => {
+    const terminal = terminalInstanceRef.current;
+    if (!terminal) return;
+    terminal.options.fontFamily = terminalFontFamily;
+    terminal.options.fontSize = terminalFontSize;
+    try {
+      fitAddonRef.current?.fit();
+    } catch (e) {
+      console.warn('[TerminalPanel] Refit after font change failed:', e);
+    }
+  }, [terminalFontFamily, terminalFontSize]);
 
   return (
     <div

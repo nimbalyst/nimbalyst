@@ -92,6 +92,27 @@ export const SETTINGS_REGISTRY = {
     { store: 'app-settings', path: 'allowUnlimitedProjects' },
     false,
   ),
+  // ---- Appearance: fonts. An empty family means the built-in font stack. ----
+  'appearance.uiFontFamily': setting(
+    z.string(),
+    { store: 'app-settings', path: 'uiFontFamily' },
+    '',
+  ),
+  'appearance.codeFontFamily': setting(
+    z.string(),
+    { store: 'app-settings', path: 'codeFontFamily' },
+    '',
+  ),
+  'appearance.editorFontSize': setting(
+    z.number().int().min(8).max(32),
+    { store: 'app-settings', path: 'editorFontSize' },
+    14,
+  ),
+  'appearance.terminalFontSize': setting(
+    z.number().int().min(8).max(32),
+    { store: 'app-settings', path: 'terminalFontSize' },
+    13,
+  ),
   // ---- AI providers (per-key) ----
   'ai.provider.claude': setting(
     ProviderConfigSchema,

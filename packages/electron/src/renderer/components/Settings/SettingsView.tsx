@@ -51,6 +51,7 @@ import { ProviderOverrideWrapper } from './panels/ProviderOverrideWrapper';
 import { InstalledExtensionsPanel } from './panels/InstalledExtensionsPanel';
 import { PrivilegedExtensionsPanel } from './panels/PrivilegedExtensionsPanel';
 import { ThemesPanel } from './panels/ThemesPanel';
+import { FontsPanel } from './panels/FontsPanel';
 import { TrackerConfigPanel } from './panels/TrackerConfigPanel';
 import { GitHubAccountPanel } from './panels/GitHubAccountPanel';
 import { ExtensionMarketplacePanel } from './panels/ExtensionMarketplacePanel';
@@ -1038,6 +1039,8 @@ export function SettingsView({
             workspacePath={workspacePath ?? undefined}
           />
         );
+      case 'fonts':
+        return <FontsPanel />;
       case 'project-appearance':
         return projectTarget?.kind === 'workspace'
           ? <ProjectAppearancePanel key={projectTarget.workspacePath} workspacePath={projectTarget.workspacePath} />

@@ -22,6 +22,7 @@ import '../../../runtime/src/editor/commenting/ui/comments.css';
 import { useIPCHandlers } from './hooks/useIPCHandlers';
 import { useWindowLifecycle } from './hooks/useWindowLifecycle';
 import { useTheme } from './hooks/useTheme';
+import { useApplyFontSettings } from './hooks/useApplyFontSettings';
 import { useConfirmDialog } from './hooks/useConfirmDialog';
 import { useDialogRequestTrigger } from './hooks/useDialogRequestTrigger';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -579,6 +580,7 @@ export default function App() {
 
   // Apply theme for ALL window modes (must run before early returns)
   const { theme, setTheme } = useTheme();
+  useApplyFontSettings();
 
   // General confirm dialog
   const confirmDialog = useConfirmDialog();
