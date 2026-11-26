@@ -85,6 +85,25 @@ describe.skipIf(process.platform !== 'linux')('WorkspaceEventBus on Linux: watch
     expect(dirsAtWatching).toBe(FULL);
   });
 
+  it('C5: keeps an overflowed first scan until it finishes when a path it cannot stat is registered during the episode', async () => {
+    const states: FileWatchHealth[] = [];
+    let dirsAtWatching: number | undefined;
+    await subscribe(root, 'scan', {
+      ...noEvents,
+      onHealthChanged: (health) => {
+        states.push(health);
+        if (health.state === 'watching' && dirsAtWatching === undefined) dirsAtWatching = watchedDirs(recorded.handles.at(-1));
+      },
+    });
+    // The scan is running; a storm overflows the event backlog before it finishes.
+    for (let i = 0; i < 16_600; i++) recorded.handles[0].emit('change', path.join(root, `storm-${i}.md`));
+    expect(states.at(-1)).toMatchObject({ state: 'recovering', reason: 'event_queue_overflow' });
+    addGitignoreBypass(root, path.join(root, 'agent-will-create.md'));
+    await vi.waitFor(() => expect(dirsAtWatching).toBeDefined(), { timeout: 10_000, interval: 20 });
+    expect(dirsAtWatching).toBe(FULL);
+    expect(recorded.handles).toHaveLength(1);
+  });
+
   it('keeps a retry with a stale bypass path starting until its scan finishes, so ENOSPC keeps escalating', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const states: FileWatchHealth[] = [];

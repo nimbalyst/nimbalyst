@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { EventEmitter } from "events";
-import { afterAll, afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const platform = vi.hoisted(() => {
   const original = process.platform;
   Object.defineProperty(process, "platform", {
@@ -13,7 +13,9 @@ vi.mock("chokidar", () => ({ default: { watch: vi.fn() } }));
 import chokidar from "chokidar";
 import {
   createWorkspaceNativeWatcher,
+  drainNativeFileEvents,
   supportsRecursiveWatch,
+  type NativeWatchHandle,
 } from "../WorkspaceNativeWatcher";
 import { RecoveringFileWatcher } from "../RecoveringFileWatcher";
 
@@ -115,4 +117,77 @@ it("publishes watching only after chokidar finishes its initial scan", async () 
   } finally {
     await lifecycle.stop();
   }
+});
+
+describe("C5: a backlog overflow during the initial chokidar scan", () => {
+  const handles: Array<EventEmitter & { close: ReturnType<typeof vi.fn> }> = [];
+  const deliver = vi.fn();
+  const changed = vi.fn();
+  let lifecycle: RecoveringFileWatcher<NativeWatchHandle>;
+  const states = () => changed.mock.calls.map(([health]) => health.state);
+  const storm = (count: number, name: string) => {
+    for (let i = 0; i < count; i++) handles[0].emit("change", `/test/root/${name}-${i}.md`);
+  };
+  const drained = () => drainNativeFileEvents(handles[0] as unknown as NativeWatchHandle);
+
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    handles.length = 0;
+    deliver.mockReset();
+    changed.mockReset();
+    vi.mocked(chokidar.watch).mockImplementation(() => {
+      const handle = Object.assign(new EventEmitter(), {
+        close: vi.fn().mockResolvedValue(undefined),
+      });
+      handles.push(handle);
+      return handle as unknown as ReturnType<typeof chokidar.watch>;
+    });
+    lifecycle = new RecoveringFileWatcher(
+      (current, fail, ready) =>
+        createWorkspaceNativeWatcher("/test/root", current, fail, () => false, deliver, ready),
+      changed,
+      vi.fn()
+    );
+    await lifecycle.start();
+    expect(lifecycle.health.state).toBe("starting");
+  });
+  afterEach(() => lifecycle.stop());
+
+  it("keeps the scan and waits for ready after the backlog is delivered", async () => {
+    storm(16_600, "storm");
+    expect(lifecycle.health).toMatchObject({ state: "recovering", reason: "event_queue_overflow" });
+    await drained();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(handles).toHaveLength(1);
+    expect(handles[0].close).not.toHaveBeenCalled();
+    expect(deliver.mock.calls.at(-1)?.[1]).toBe("/test/root/storm-16599.md");
+    expect(lifecycle.health.state).toBe("recovering");
+    handles[0].emit("ready");
+    expect(states()).toEqual(["starting", "recovering", "watching"]);
+  });
+
+  it("waits for the backlog after a ready that arrives during the episode", async () => {
+    storm(16_384 + 1000, "storm");
+    handles[0].emit("ready");
+    expect(lifecycle.health.state).toBe("recovering");
+    let deliveredAtWatching = -1;
+    changed.mockImplementation((health) => {
+      if (health.state === "watching") deliveredAtWatching = deliver.mock.calls.length;
+    });
+    await drained();
+    expect(states()).toEqual(["starting", "recovering", "watching"]);
+    expect(deliveredAtWatching).toBe(deliver.mock.calls.length);
+    expect(handles).toHaveLength(1);
+  });
+
+  it("waits for a later overflow's backlog after the first one was delivered during the scan", async () => {
+    storm(16_600, "first");
+    await drained();
+    storm(16_384 + 1000, "second");
+    handles[0].emit("ready");
+    expect(lifecycle.health.state).toBe("recovering");
+    await drained();
+    expect(states()).toEqual(["starting", "recovering", "watching"]);
+    expect(deliver.mock.calls.at(-1)?.[1]).toBe("/test/root/second-17383.md");
+  });
 });

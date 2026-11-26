@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   RecoveringFileWatcher,
+  type WatchFailure,
   type WatchHandle,
 } from "../RecoveringFileWatcher";
 
@@ -67,7 +68,7 @@ it("closes a handle returned after stop without publishing it as healthy", async
 
 type Attempt = {
   current: () => boolean;
-  fail: (reason: string) => void;
+  fail: WatchFailure;
   ready: () => void;
   close: ReturnType<typeof vi.fn>;
 };
@@ -184,5 +185,42 @@ it("publishes watching when ready is signalled before the handle is returned", a
     "starting",
     "watching",
   ]);
+  await watcher.stop();
+});
+
+it("C4: a native failure during an overflow episode uses the schedule it would use from watching", async () => {
+  const { attempts, watcher, failAndRetry } = recordingWatcher();
+  await watcher.start();
+  expect(await failAndRetry("EMFILE")).toBe(1000);
+  expect(await failAndRetry("EMFILE")).toBe(5000);
+  attempts[2].ready();
+  await vi.advanceTimersByTimeAsync(60_000);
+  const { generation } = watcher.health;
+  attempts[2].fail.overflowed(16_384);
+  expect(watcher.health).toEqual({ state: "recovering", generation, reason: "event_queue_overflow" });
+  expect(attempts[2].current()).toBe(true);
+  // A minute up after ready still resets the schedule; the episode does not swallow the failure.
+  expect(await failAndRetry("EMFILE")).toBe(1000);
+  expect(attempts[2].close).toHaveBeenCalledTimes(1);
+  await watcher.stop();
+});
+
+it("an overflow schedules no restart and counts toward neither retry schedule", async () => {
+  const { attempts, changed, watcher, failAndRetry } = recordingWatcher(true);
+  await watcher.start();
+  for (let i = 0; i < 3; i++) {
+    attempts[0].fail.overflowed(16_384);
+    attempts[0].fail.resynced();
+  }
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(attempts).toHaveLength(1);
+  expect(attempts[0].close).not.toHaveBeenCalled();
+  expect(changed.mock.calls.map(([health]) => [health.state, health.generation])).toEqual([
+    ["starting", 1],
+    ["watching", 1],
+    ...Array(3).fill([["recovering", 1], ["watching", 1]]).flat(),
+  ]);
+  expect(await failAndRetry("EMFILE")).toBe(1000);
+  expect(await failAndRetry("ENOSPC")).toBe(60_000);
   await watcher.stop();
 });

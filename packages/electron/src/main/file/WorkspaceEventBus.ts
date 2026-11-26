@@ -431,7 +431,7 @@ export async function drainWorkspaceEvents(workspace: string): Promise<void> {
 
 /** Whether the installed handle's initial scan is still running (Linux). */
 function isScanning(entry: BusEntry): boolean {
-  return entry.lifecycle.health.state === 'starting';
+  return entry.lifecycle.scanning;
 }
 
 /** Global registry of shared watchers, keyed by normalized workspace path. */
@@ -490,12 +490,12 @@ export async function subscribe(
       addNativeWatchPath(watcher, file, true);
     }
     return watcher;
-  }, health => {
+  }, (health, overflow) => {
     // Routine startup/stop is diagnostic; retain failures and successful recovery.
     const logHealth = health.state === 'recovering' ? logger.main.warn
-      : health.state === 'watching' && health.generation > 1 ? logger.main.info
+      : health.state === 'watching' && (health.generation > 1 || overflow) ? logger.main.info
       : logger.main.debug;
-    logHealth('[WorkspaceEventBus] Watcher health:', { workspacePath: key, ...health, subscriberCount: entry.listeners.size });
+    logHealth('[WorkspaceEventBus] Watcher health:', { workspacePath: key, ...health, ...overflow, subscriberCount: entry.listeners.size });
     if (health.state === 'recovering' && health.reason === 'ENOSPC' && entry.lifecycle.capacityFailureCount === 1) {
       logger.main.warn(describeWatchLimitFailure(key, health.nextRetryAt));
     }
