@@ -53,7 +53,7 @@ export interface EditorModeRef {
   reopenLastClosedTab: () => Promise<void>;
   handleOpen: () => Promise<void>;
   handleSaveAs: () => Promise<void>;
-  selectFile: (filePath: string) => Promise<void>;
+  selectFile: (filePath: string, options?: { switchToTab?: boolean }) => Promise<void>;
   openHistoryDialog: () => void;
   toggleSidebarCollapsed: () => void;
   toggleAIChatCollapsed: () => void;
@@ -888,7 +888,7 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
   // CRITICAL: Use tabsRef.current to avoid stale closure bug
   // The tabs object changes on every render, so capturing it in a useCallback
   // leads to stale data when the callback is invoked from refs or async contexts
-  const handleWorkspaceFileSelect = useCallback(async (filePath: string) => {
+  const handleWorkspaceFileSelect = useCallback(async (filePath: string, options?: { switchToTab?: boolean }) => {
     const currentTabs = tabsRef.current;
     if (!currentTabs) {
       console.error('[EditorMode.handleWorkspaceFileSelect] tabsRef.current is null!');
@@ -900,7 +900,8 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       filePath,
       currentFilePath: activeFilePath,
       tabs: currentTabs,
-      isInitializedRef
+      isInitializedRef,
+      switchToTab: options?.switchToTab,
     });
   }, []); // No dependencies - uses refs for all mutable state
 

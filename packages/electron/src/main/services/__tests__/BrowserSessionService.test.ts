@@ -469,11 +469,86 @@ describe('selectIdleHeadlessSessions', () => {
   it('returns nothing for an empty session set', () => {
     expect(selectIdleHeadlessSessions([], NOW, TTL)).toEqual([]);
   });
+
+  it('reaps hidden agent-owned tabs past the agent tab TTL, but never while visibly attached', () => {
+    const AGENT_TTL = 60 * 60 * 1000;
+    const candidates = [
+      { sessionId: 'browser-virtual:hidden-stale', headless: false, agentOwned: true, attachedToVisibleWindow: false, lastUsedAt: NOW - AGENT_TTL - 1 },
+      { sessionId: 'browser-virtual:hidden-fresh', headless: false, agentOwned: true, attachedToVisibleWindow: false, lastUsedAt: NOW - 10 * 60 * 1000 },
+      { sessionId: 'browser-virtual:visible-old', headless: false, agentOwned: true, attachedToVisibleWindow: true, lastUsedAt: 0 },
+      { sessionId: 'browser-virtual:user-tab', headless: false, agentOwned: false, attachedToVisibleWindow: false, lastUsedAt: 0 },
+    ];
+    expect(selectIdleHeadlessSessions(candidates, NOW, TTL, AGENT_TTL)).toEqual([
+      'browser-virtual:hidden-stale',
+    ]);
+  });
+});
+
+describe('BrowserSessionService agent-owned tabs', () => {
+  afterEach(() => {
+    BrowserSessionService.__resetForTests();
+    for (const w of fakes.createdWindows as Array<{ destroy(): void }>) w.destroy();
+    fakes.createdWindows.length = 0;
+    fakes.createdViews.length = 0;
+  });
+
+  it('reuses an existing session when only the URL differs, and still rejects a partition mismatch', () => {
+    const service = BrowserSessionService.getInstance();
+    const first = service.createSession({
+      sessionId: 'browser-virtual:agent-1',
+      url: 'https://example.com/step-2',
+      agentOwned: true,
+    });
+    const reused = service.createSession({
+      sessionId: 'browser-virtual:agent-1',
+      url: 'https://example.com/start',
+    });
+    expect(reused.url).toBe(first.url);
+    expect(fakes.createdViews).toHaveLength(1);
+    expect(() =>
+      service.createSession({
+        sessionId: 'browser-virtual:agent-1',
+        url: 'https://example.com/start',
+        partition: 'isolated',
+      }),
+    ).toThrow(/different configuration/);
+  });
+
+  it('parks an agent-owned tab off-screen before mount, unparks on attach, and re-parks on detach', () => {
+    const service = BrowserSessionService.getInstance();
+    const owner = new BrowserWindow() as unknown as {
+      contentView: { children: unknown[] };
+      isDestroyed(): boolean;
+    };
+    service.createSession({
+      sessionId: 'browser-virtual:agent-park',
+      url: 'https://example.com',
+      agentOwned: true,
+    });
+    const view = fakes.createdViews[fakes.createdViews.length - 1];
+    const hiddenHost = (fakes.createdWindows as Array<{ contentView: { children: unknown[] }; isDestroyed(): boolean }>)
+      .find((w) => w !== owner && !w.isDestroyed());
+    expect(hiddenHost?.contentView.children).toContain(view);
+
+    service.attachToWindow('browser-virtual:agent-park', owner as unknown as BrowserWindow, {
+      x: 10,
+      y: 20,
+      width: 640,
+      height: 480,
+    });
+    expect(owner.contentView.children).toContain(view);
+
+    service.detachFromWindow('browser-virtual:agent-park');
+    expect(owner.contentView.children).not.toContain(view);
+    const reparkedHost = (fakes.createdWindows as Array<{ contentView: { children: unknown[] }; isDestroyed(): boolean }>)
+      .find((w) => w !== owner && !w.isDestroyed() && w.contentView.children.includes(view));
+    expect(reparkedHost).toBeDefined();
+  });
 });
 
 describe('resolveBrowserPartitionName', () => {
-  it('uses an in-memory preview partition by default', () => {
-    expect(resolveBrowserPartitionName()).toBe('browser-preview');
+  it('uses the persistent preview partition by default so logins survive restarts', () => {
+    expect(resolveBrowserPartitionName()).toBe('persist:preview');
   });
 
   it('keeps plain partition names in-memory', () => {

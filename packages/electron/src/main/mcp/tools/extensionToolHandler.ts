@@ -2,6 +2,11 @@ import { BrowserWindow } from "electron";
 import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { findWindowIdForWorkspacePath, getAvailableExtensionTools, documentStateBySession } from "../mcpWorkspaceResolver";
 import { requestFromRenderer } from "../rendererRequest";
+import {
+  forgetBrowserAlias,
+  handleAgentBrowserOpenSession,
+  resolveBrowserAlias,
+} from "./agentBrowserTabs";
 
 type McpToolResult = {
   content: Array<{ type: string; text: string }>;
@@ -72,8 +77,30 @@ export async function handleExtensionTool(
     };
   }
 
+  // Open agent browser sessions as real browser tabs in the workspace window
+  // (issue #1728) unless the caller explicitly asked for headless without
+  // foreground, and resolve self-chosen sessionId aliases for all browser.* tools.
+  let toolArgs = args || {};
+  const rawBrowserSessionId =
+    extensionTool.name.startsWith("browser.") && typeof toolArgs.sessionId === "string"
+      ? toolArgs.sessionId
+      : undefined;
+  if (extensionTool.name === "browser.open_session") {
+    const handled = await handleAgentBrowserOpenSession({
+      args: toolArgs,
+      agentSessionId: sessionId,
+      targetWindow,
+    });
+    if (handled) return handled;
+  } else if (rawBrowserSessionId) {
+    const resolvedBrowserSessionId = resolveBrowserAlias(sessionId, rawBrowserSessionId);
+    if (resolvedBrowserSessionId !== rawBrowserSessionId) {
+      toolArgs = { ...toolArgs, sessionId: resolvedBrowserSessionId };
+    }
+  }
+
   // Prefer filePath from tool args (agent targeting a specific file) over session state
-  const activeFilePath = args?.filePath || currentDocState?.filePath;
+  const activeFilePath = toolArgs?.filePath || currentDocState?.filePath;
   const TOOL_TIMEOUT_MS = 30000;
 
   // Send IPC to renderer to execute the tool.
@@ -84,7 +111,7 @@ export async function handleExtensionTool(
     "mcp:executeExtensionTool",
     {
       toolName: extensionTool.name,
-      args: args || {},
+      args: toolArgs,
       context: {
         workspacePath,
         activeFilePath,
@@ -123,6 +150,10 @@ export async function handleExtensionTool(
   const hasExplicitSuccess = typeof result?.success === "boolean";
   const hasError = !!result?.error;
   const success = hasExplicitSuccess ? result.success : !hasError;
+
+  if (success && extensionTool.name === "browser.close_session" && rawBrowserSessionId) {
+    forgetBrowserAlias(sessionId, rawBrowserSessionId);
+  }
 
   // Extract enhanced error details if available
   const extensionId = result?.extensionId;

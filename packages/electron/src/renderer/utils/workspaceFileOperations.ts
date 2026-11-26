@@ -5,6 +5,7 @@
  */
 
 import { errorNotificationService } from '../services/ErrorNotificationService';
+import { isSameVirtualBrowserTab } from './agentBrowserTab';
 
 const LOG_CONFIG = {
   WORKSPACE_FILE_SELECT: false,
@@ -16,6 +17,8 @@ interface FileSelectOptions {
   tabs: any;
   isInitializedRef: React.MutableRefObject<boolean>;
   isCurrent?: () => boolean;
+  /** Default true. Set false to add a tab in the background without switching to it. */
+  switchToTab?: boolean;
 }
 
 export async function handleWorkspaceFileSelect(options: FileSelectOptions): Promise<boolean> {
@@ -25,6 +28,7 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
     tabs,
     isInitializedRef,
     isCurrent = () => true,
+    switchToTab = true,
   } = options;
 
   // NOTE: autoSaveCancellationRef removed - EditorContainer handles all autosave now
@@ -61,13 +65,17 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
   // which triggers EditorContainer's visibility useEffect, which saves dirty tabs before hiding.
 
   // If tabs are enabled, check if file is already open in a tab
-  const existingTab2 = tabs.findTabByPath(filePath);
+  const existingTab2 =
+    tabs.findTabByPath(filePath) ??
+    tabs.tabs?.find((t: any) => typeof t.filePath === 'string' && isSameVirtualBrowserTab(t.filePath, filePath));
   if (existingTab2) {
     // BUGFIX: Same check as above - verify tab is actually in visible tabs array
     const isInVisibleTabs2 = tabs.tabs?.some((t: any) => t.id === existingTab2.id);
     if (isInVisibleTabs2) {
       if (LOG_CONFIG.WORKSPACE_FILE_SELECT) console.log('[WORKSPACE_FILE_SELECT] File already open in tab, switching');
-      tabs.switchTab(existingTab2.id);
+      if (switchToTab) {
+        tabs.switchTab(existingTab2.id);
+      }
       return true;
     }
     // Tab exists in Map but not in tabOrder - fall through to load fresh
@@ -78,7 +86,7 @@ export async function handleWorkspaceFileSelect(options: FileSelectOptions): Pro
   // directly. A custom editor registered for the matching `virtual://…` prefix
   // renders them (e.g. the Browser extension's browser session editor).
   if (filePath.startsWith('virtual://')) {
-    const tabId = tabs.addTab(filePath, '');
+    const tabId = tabs.addTab(filePath, '', switchToTab);
     if (!tabId) {
       console.error('[TABS] Failed to add virtual tab:', filePath);
       errorNotificationService.showError('Cannot open file', filePath);
