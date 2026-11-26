@@ -13,7 +13,7 @@ import { CollapsibleGroup } from './CollapsibleGroup';
 import { WorktreeBaseBranchPicker } from './WorktreeBaseBranchPicker';
 import { SessionListItem } from './SessionListItem';
 import { SessionTreeRow, readTreeExpanded, sessionTreeSearchExpandAtom, useVisibleSessionTreeRows, type VisibleSessionTreeRow } from './SessionTree.tsx';
-import { titleSearchReveal, visibleSessionTreeIds, sessionTreeRootId, rendersAsSessionTree, treeParentIds } from './sessionTreeModel';
+import { bulkTreeExpand, searchExpandEntries, searchExpandKey, titleSearchMatcher, titleSearchReveal, visibleSessionTreeIds, sessionTreeRootId, rendersAsSessionTree, treeParentIds } from './sessionTreeModel';
 import { resolveSessionArchiveSelection, sessionArchiveSubtreeIds } from './sessionArchiveSelection';
 import { WorkstreamGroup } from './WorkstreamGroup';
 import { BlitzGroup } from './BlitzGroup';
@@ -813,13 +813,13 @@ const SessionHistoryComponent: React.FC = () => {
   // and the ancestors of each nested match open for as long as the query is active.
   const titleReveal = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    return query ? titleSearchReveal(sessionRegistry, s => ((s as SessionItem).title ?? '').toLowerCase().includes(query)) : null;
-  }, [searchQuery, sessionRegistry]);
-  const searchExpandKey = titleReveal && !contentSearchTriggered ? [...titleReveal.expandIds].sort().join('\0') : '';
+    return query ? titleSearchReveal(sessionRegistry, titleSearchMatcher(query, showArchived)) : null;
+  }, [searchQuery, sessionRegistry, showArchived]);
+  const expandKey = searchExpandKey(searchQuery, titleReveal && !contentSearchTriggered ? titleReveal.expandIds : null);
   const setSearchExpand = useSetAtom(sessionTreeSearchExpandAtom);
   useEffect(() => {
-    setSearchExpand(new Map(searchExpandKey ? searchExpandKey.split('\0').map(id => [id, true] as const) : []));
-  }, [searchExpandKey, setSearchExpand]);
+    setSearchExpand(searchExpandEntries(expandKey));
+  }, [expandKey, setSearchExpand]);
   useEffect(() => () => setSearchExpand(new Map()), [setSearchExpand]);
 
   // Session list refresh is now handled by centralized listener in sessionListListeners.ts
@@ -2428,10 +2428,10 @@ const SessionHistoryComponent: React.FC = () => {
     return ids;
   }, [groupKeys, groupedItems, sessionRegistry]);
   const setTreeExpandedFor = useSetAtom(setTreeExpandedForAtom);
-  // During a title search the opened ancestors follow Collapse all / Expand all too.
   const setAllTreesExpanded = useCallback((expanded: boolean) => {
-    setTreeExpandedFor({ ids: allTreeParentIds, expanded });
-    setSearchExpand(prev => (prev.size ? new Map([...prev.keys()].map(id => [id, expanded] as const)) : prev));
+    const next = bulkTreeExpand(allTreeParentIds, store.get(sessionTreeSearchExpandAtom), expanded);
+    setTreeExpandedFor({ ids: next.persistIds, expanded });
+    setSearchExpand(next.overrides);
   }, [setTreeExpandedFor, setSearchExpand, allTreeParentIds]);
 
   const flatVirtuosoItems = useMemo(() => {
