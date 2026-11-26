@@ -6,6 +6,10 @@ import { RichTranscriptView } from '../RichTranscriptView';
 
 const vlistState = vi.hoisted(() => ({
   childCount: 0,
+  onScroll: null as ((offset: number) => void) | null,
+  scrollOffset: 0,
+  scrollSize: 300,
+  viewportSize: 100,
   scrollToIndex: vi.fn(),
   scrollBy: vi.fn(),
 }));
@@ -14,21 +18,26 @@ vi.mock('virtua', async () => {
   const ReactModule = await import('react');
 
   return {
-    VList: ReactModule.forwardRef(({ children }: { children: React.ReactNode }, ref) => {
+    VList: ReactModule.forwardRef((
+      { children, className, onScroll }: { children: React.ReactNode; className?: string; onScroll?: (offset: number) => void },
+      ref,
+    ) => {
       const rows = ReactModule.Children.toArray(children);
       vlistState.childCount = rows.length;
+      vlistState.onScroll = onScroll ?? null;
 
       ReactModule.useImperativeHandle(ref, () => ({
         cache: undefined,
-        scrollOffset: 0,
-        scrollSize: 300,
-        viewportSize: 100,
+        get scrollOffset() { return vlistState.scrollOffset; },
+        get scrollSize() { return vlistState.scrollSize; },
+        get viewportSize() { return vlistState.viewportSize; },
         findItemIndex: (offset: number) => offset >= 100 ? 1 : 0,
+        getItemOffset: () => 0,
         scrollToIndex: vlistState.scrollToIndex,
         scrollBy: vlistState.scrollBy,
       }));
 
-      return <div data-testid="mock-vlist">{rows}</div>;
+      return <div data-testid="mock-vlist" className={className}>{rows}</div>;
     }),
   };
 });
@@ -57,12 +66,73 @@ describe('pending question navigation', () => {
       providerToolCallId: `question-${index}`, progress: [],
     },
   });
-  const view = (messages: TranscriptViewMessage[], sessionId = 'questions') => (
+  // Revealed questions outlive the component, so each test gets its own session.
+  let session = '';
+  let sessionCount = 0;
+  const view = (messages: TranscriptViewMessage[], sessionId = session) => (
     <RichTranscriptView sessionId={sessionId} sessionStatus="idle" messages={messages}
       provider="claude-code" persistScrollState={false} />
   );
+  // The transcript hides its list when its pane is hidden (IntersectionObserver).
+  let observers: Array<{ callback: IntersectionObserverCallback; target?: Element }>;
+  const setTranscriptVisible = (isIntersecting: boolean) => act(() => {
+    observers
+      .filter(observer => observer.target?.classList.contains('rich-transcript-view'))
+      .forEach(observer => observer.callback([{ isIntersecting } as IntersectionObserverEntry], {} as IntersectionObserver));
+  });
+  // Gives the (re)mounted scroller a browser-like scrollTop and scrollHeight:
+  // writes clamp to the scroll range and fire the list's onScroll.
+  const instrumentScroller = (container: HTMLElement) => {
+    const scroller = container.querySelector<HTMLElement>('.rich-transcript-vlist')!;
+    const pins: number[] = [];
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => vlistState.scrollSize });
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => vlistState.scrollOffset,
+      set: (top: number) => {
+        pins.push(top);
+        vlistState.scrollOffset = Math.max(0, Math.min(top, vlistState.scrollSize - vlistState.viewportSize));
+        vlistState.onScroll?.(vlistState.scrollOffset);
+      },
+    });
+    return { scroller, pins };
+  };
+  // Rows measured after mount grow the list. virtua 0.51.3 keeps the scroll
+  // offset when rows in or below the viewport grow, so the end moves down; the
+  // browser then delivers the resize to the component's observers.
+  let resizeObservers: ResizeObserverCallback[];
+  const rowsMeasure = (grownScrollSize: number) => act(() => {
+    vlistState.scrollSize = grownScrollSize;
+    resizeObservers.forEach(callback => callback([], {} as ResizeObserver));
+  });
+  const distanceFromEnd = () => vlistState.scrollSize - vlistState.viewportSize - vlistState.scrollOffset;
 
   beforeEach(() => {
+    session = `questions-${++sessionCount}`;
+    vlistState.onScroll = null;
+    vlistState.scrollOffset = 0;
+    vlistState.scrollSize = 3000;
+    vlistState.viewportSize = 300;
+    resizeObservers = [];
+    vi.stubGlobal('ResizeObserver', class {
+      private readonly callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) { this.callback = callback; }
+      observe() { resizeObservers.push(this.callback); }
+      unobserve() {}
+      disconnect() { resizeObservers = resizeObservers.filter(callback => callback !== this.callback); }
+    });
+    observers = [];
+    vi.stubGlobal('IntersectionObserver', class {
+      private readonly entry: { callback: IntersectionObserverCallback; target?: Element };
+      constructor(callback: IntersectionObserverCallback) {
+        this.entry = { callback };
+        observers.push(this.entry);
+      }
+      observe(target: Element) { this.entry.target = target; }
+      unobserve() {}
+      disconnect() {}
+      takeRecords() { return []; }
+    });
     frames = new Map();
     nextFrame = 0;
     vlistState.scrollToIndex.mockReset();
@@ -115,13 +185,366 @@ describe('pending question navigation', () => {
     rerender(view([...messages, question(2)]));
     flushFrames();
     expect(vlistState.scrollToIndex).toHaveBeenLastCalledWith(2, { align: 'start' });
+    // With two cards open, Jump goes to the newest one, the card the agent waits on.
     fireEvent.click(screen.getByLabelText('Jump to question'));
     flushFrames();
-    expect(vlistState.scrollToIndex).toHaveBeenLastCalledWith(1, { align: 'start' });
+    expect(vlistState.scrollToIndex).toHaveBeenLastCalledWith(2, { align: 'start' });
 
     rerender(view([question(0)], 'other-session'));
     flushFrames();
     expect(vlistState.scrollToIndex).toHaveBeenLastCalledWith(0, { align: 'start' });
+
+    // Switching back does not replay the jump the first session already made.
+    vlistState.scrollToIndex.mockClear();
+    rerender(view([...messages, question(2)]));
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+  });
+
+  it('auto-jumps to the newest of several open questions once, not again when the pane is shown again', () => {
+    // An abandoned card stays open above the re-asked question.
+    const messages = [question(0), makeMessage(1, { text: 'Asking again' }), question(2), makeMessage(3, { text: '' })];
+    const { container } = render(view(messages));
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenLastCalledWith(3, { align: 'start' });
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(2, { align: 'start' });
+
+    vlistState.scrollToIndex.mockClear();
+    setTranscriptVisible(false);
+    flushFrames();
+    setTranscriptVisible(true);
+    const { pins } = instrumentScroller(container);
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+    // The remounted list falls back to the usual bottom position: a pin of the
+    // scroller to its last pixel.
+    expect(pins).toContain(3000);
+  });
+
+  it('keeps the end in view as rows measure when the pane is shown again with no open question', () => {
+    const messages = [makeMessage(0, { text: 'Before' }), question(1, 'AskUserQuestion', '{"answers":{"Continue?":"Yes"}}'), makeMessage(2, { text: 'After' })];
+    const { container } = render(view(messages));
+    flushFrames();
+    setTranscriptVisible(false);
+    flushFrames();
+    setTranscriptVisible(true);
+    instrumentScroller(container);
+    flushFrames();
+    rowsMeasure(4200);
+    flushFrames();
+    expect(distanceFromEnd()).toBe(0);
+  });
+
+  // Showing the pane again remounts the list; rows estimated before they are
+  // measured grow after the one-shot pin to the end.
+  const showAgainWithSeenQuestion = () => {
+    const messages = [makeMessage(0, { text: 'Before' }), question(1), makeMessage(2, { text: 'After' })];
+    const rendered = render(view(messages));
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(2, { align: 'start' });
+    vlistState.scrollToIndex.mockClear();
+    setTranscriptVisible(false);
+    flushFrames();
+    setTranscriptVisible(true);
+    const scroller = instrumentScroller(rendered.container);
+    flushFrames();
+    return { ...rendered, ...scroller, messages };
+  };
+
+  it('keeps the end in view as rows measure when the pane is shown again with a question already seen', () => {
+    const { pins } = showAgainWithSeenQuestion();
+    // No replay of the jump, and the list is pinned to its end...
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+    expect(pins).toEqual([3000]);
+    // ...and rows measured after that pin are followed.
+    rowsMeasure(4200);
+    flushFrames();
+    expect(distanceFromEnd()).toBe(0);
+  });
+
+  it('keeps a reader who scrolls up after the pane is shown again where they scrolled', () => {
+    const { scroller, pins } = showAgainWithSeenQuestion();
+    fireEvent.wheel(scroller, { deltaY: -400 });
+    act(() => { vlistState.scrollOffset = 1500; vlistState.onScroll?.(1500); });
+    rowsMeasure(4200);
+    flushFrames();
+    expect(pins).toEqual([3000]);
+    expect(vlistState.scrollOffset).toBe(1500);
+  });
+
+  it('holds the view at a question jumped to after the pane is shown again', () => {
+    const { pins } = showAgainWithSeenQuestion();
+    fireEvent.click(screen.getByLabelText('Jump to question'));
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(2, { align: 'start' });
+    rowsMeasure(4200);
+    flushFrames();
+    expect(pins).toEqual([3000]);
+  });
+
+  it('jumps to and holds a question opened after the pane is shown again', () => {
+    const { pins, messages, rerender } = showAgainWithSeenQuestion();
+    rerender(view([...messages, question(3), makeMessage(4, { text: 'Asked again' })]));
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(4, { align: 'start' });
+    rowsMeasure(4200);
+    flushFrames();
+    expect(pins).toEqual([3000]);
+  });
+
+  it('does not replay the jump when returning to a session remounts the transcript', () => {
+    const sessionA = [makeMessage(0, { text: 'Before' }), question(1), makeMessage(2, { text: 'After' })];
+    const sessionB = [makeMessage(0, { text: 'Other session' })];
+    // WorkstreamSessionTabs and ChatSidebar key the transcript by session.
+    const tabs = (active: 'a' | 'b') => (
+      <RichTranscriptView key={active} sessionId={`${session}-${active}`} sessionStatus="idle"
+        messages={active === 'a' ? sessionA : sessionB} provider="claude-code" persistScrollState={false} />
+    );
+    const { rerender } = render(tabs('a'));
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(2, { align: 'start' });
+
+    rerender(tabs('b'));
+    flushFrames();
+    vlistState.scrollToIndex.mockClear();
+    rerender(tabs('a'));
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+  });
+
+  it('retries a jump cut short by a session switch that remounts the transcript', () => {
+    const before = [makeMessage(0, { text: 'Before' })];
+    const tabs = (active: 'a' | 'b', messages: TranscriptViewMessage[]) => (
+      <RichTranscriptView key={active} sessionId={`${session}-${active}`} sessionStatus="idle"
+        messages={messages} provider="claude-code" persistScrollState={false} />
+    );
+    const { rerender } = render(tabs('a', before));
+    flushFrames();
+    const withQuestion = [...before, question(1), makeMessage(2, { text: 'After' })];
+    // The question lands and the jump is issued, but the reader switches away
+    // before its reveal frame runs.
+    rerender(tabs('a', withQuestion));
+    rerender(tabs('b', [makeMessage(0, { text: 'Other' })]));
+    flushFrames();
+    vlistState.scrollToIndex.mockClear();
+    rerender(tabs('a', withQuestion));
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(2, { align: 'start' });
+  });
+
+  it('retries a jump cut short by hiding the pane, once', () => {
+    const base = [makeMessage(0, { text: 'Before' })];
+    const { rerender } = render(view(base));
+    flushFrames();
+    vlistState.scrollToIndex.mockClear();
+    // The question lands; the jump is issued but its reveal frame has not run.
+    rerender(view([...base, question(1), makeMessage(2, { text: 'After' })]));
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(2, { align: 'start' });
+    setTranscriptVisible(false);
+    flushFrames();
+    vlistState.scrollToIndex.mockClear();
+    setTranscriptVisible(true);
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(2, { align: 'start' });
+    // Hiding and showing again does not replay it.
+    vlistState.scrollToIndex.mockClear();
+    setTranscriptVisible(false);
+    flushFrames();
+    setTranscriptVisible(true);
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+  });
+
+  it('retries a jump cut short by an in-place session switch', () => {
+    const withQuestion = [makeMessage(0, { text: 'Before' }), question(1), makeMessage(2, { text: 'After' })];
+    const { rerender } = render(view([makeMessage(0, { text: 'Before' })], `${session}-a`));
+    flushFrames();
+    rerender(view(withQuestion, `${session}-a`));
+    rerender(view([makeMessage(0, { text: 'Other' })], `${session}-b`));
+    flushFrames();
+    vlistState.scrollToIndex.mockClear();
+    rerender(view(withQuestion, `${session}-a`));
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(2, { align: 'start' });
+  });
+
+  // The mobile SessionView and desktop RemoteSessionTranscript mount the
+  // transcript with no messages and fill it after an async load, so every
+  // return to such a session mounts it empty.
+  const askedMessages = [
+    makeMessage(0, { type: 'user_message', text: 'Start' }), makeMessage(1, { text: 'History' }),
+    question(2), makeMessage(3, { text: 'Which way?' }),
+  ];
+  const persistedView = (messages: TranscriptViewMessage[]) => (
+    <RichTranscriptView sessionId={session} sessionStatus="idle" messages={messages} provider="claude-code" />
+  );
+  const mountEmptyThenFill = (messages: TranscriptViewMessage[], makeView = view) => {
+    const rendered = render(makeView([]));
+    flushFrames();
+    rendered.rerender(makeView(messages));
+    const scroller = instrumentScroller(rendered.container);
+    flushFrames();
+    return { ...rendered, ...scroller };
+  };
+  const returnEmptyThenFill = (makeView = view) => {
+    vlistState.scrollToIndex.mockClear();
+    vlistState.scrollOffset = 0;
+    vlistState.scrollSize = 3000;
+    return mountEmptyThenFill(askedMessages, makeView);
+  };
+
+  it('F4: follows from the end past a seen question when a transcript that mounts empty is returned to', () => {
+    const first = mountEmptyThenFill(askedMessages);
+    // First visit: the new question gets its jump, and no pin to the end overrides it.
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(3, { align: 'start' });
+    expect(first.pins).toEqual([]);
+    first.unmount();
+
+    const { scroller } = returnEmptyThenFill();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+    rowsMeasure(3400);
+    flushFrames();
+    expect(distanceFromEnd()).toBe(0);
+    // A reader who scrolls up from there stays where they scrolled.
+    fireEvent.wheel(scroller, { deltaY: -400 });
+    act(() => { vlistState.scrollOffset = 1500; vlistState.onScroll?.(1500); });
+    rowsMeasure(4200);
+    flushFrames();
+    expect(vlistState.scrollOffset).toBe(1500);
+  });
+
+  it('F4: follows from the end on return even after the reader scrolled up there before leaving', () => {
+    const first = mountEmptyThenFill(askedMessages, persistedView);
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(3, { align: 'start' });
+    act(() => { vlistState.scrollOffset = 1500; vlistState.onScroll?.(1500); });
+    fireEvent.wheel(first.scroller, { deltaY: -400 });
+    first.unmount();
+
+    returnEmptyThenFill(persistedView);
+    rowsMeasure(3400);
+    flushFrames();
+    expect(distanceFromEnd()).toBe(0);
+  });
+
+  it('F4: follows from the end past a seen question when a transcript that mounted empty fills while hidden', () => {
+    mountEmptyThenFill(askedMessages).unmount();
+    vlistState.scrollToIndex.mockClear();
+    vlistState.scrollOffset = 0;
+    const { container, rerender } = render(view([]));
+    flushFrames();
+    setTranscriptVisible(false);
+    rerender(view(askedMessages.slice(0, 2)));
+    flushFrames();
+    rerender(view(askedMessages));
+    flushFrames();
+    setTranscriptVisible(true);
+    instrumentScroller(container);
+    flushFrames();
+    rowsMeasure(3400);
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+    expect(distanceFromEnd()).toBe(0);
+  });
+
+  it('F4: jumps to and holds a question opened after a transcript that mounted empty was returned to', () => {
+    mountEmptyThenFill(askedMessages).unmount();
+    const { pins, rerender } = returnEmptyThenFill();
+    const reasked = [...askedMessages, question(4), makeMessage(5, { text: 'Asked again' })];
+    rerender(view(reasked));
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(5, { align: 'start' });
+    const pinsBefore = [...pins];
+    // Output streamed below the question it jumped to does not pull the view away.
+    rerender(view([...reasked, makeMessage(6, { text: 'More output' })]));
+    flushFrames();
+    rowsMeasure(4200);
+    flushFrames();
+    expect(pins).toEqual(pinsBefore);
+  });
+
+  // RemoteSessionTranscript replays a returning session oldest first over
+  // throttled snapshots, so its open question can land after the first fill.
+  const replayEmptyThenFill = (snapshots = [askedMessages.slice(0, 2), askedMessages]) => {
+    vlistState.scrollToIndex.mockClear();
+    vlistState.scrollOffset = 0;
+    vlistState.scrollSize = 3000;
+    const rendered = render(persistedView([]));
+    flushFrames();
+    let pins: number[] = [];
+    snapshots.forEach((messages, index) => {
+      if (index > 0) rowsMeasure(vlistState.scrollSize + 1500);
+      rendered.rerender(persistedView(messages));
+      if (index === 0) pins = instrumentScroller(rendered.container).pins;
+      flushFrames();
+    });
+    return { ...rendered, pins };
+  };
+
+  it('F4b: follows from the end past a seen question that a returning replay brings in a later snapshot', () => {
+    const first = replayEmptyThenFill();
+    // First visit: the new question in the later snapshot gets its jump and holds.
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(3, { align: 'start' });
+    const pinsAtJump = [...first.pins];
+    rowsMeasure(vlistState.scrollSize + 400);
+    flushFrames();
+    expect(first.pins).toEqual(pinsAtJump);
+    first.unmount();
+
+    replayEmptyThenFill();
+    rowsMeasure(vlistState.scrollSize + 400);
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+    expect(distanceFromEnd()).toBe(0);
+  });
+
+  it('F4b: leaves a reader who scrolls up during a returning replay where they scrolled', () => {
+    replayEmptyThenFill().unmount();
+    const { container, rerender } = replayEmptyThenFill([askedMessages.slice(0, 2)]);
+    const scroller = container.querySelector<HTMLElement>('.rich-transcript-vlist')!;
+    fireEvent.wheel(scroller, { deltaY: -400 });
+    act(() => { vlistState.scrollOffset = 1500; vlistState.onScroll?.(1500); });
+    rowsMeasure(vlistState.scrollSize + 1500);
+    rerender(persistedView(askedMessages));
+    flushFrames();
+    rowsMeasure(vlistState.scrollSize + 400);
+    flushFrames();
+    expect(vlistState.scrollOffset).toBe(1500);
+  });
+
+  it('F4b: follows the resumed reply past an abandoned card once the re-asked question is answered', () => {
+    const transcript = (reaskedResult?: string) => [
+      makeMessage(0, { type: 'user_message', text: 'Start' }), question(1),
+      makeMessage(2, { text: 'Asking again' }), question(3, 'AskUserQuestion', reaskedResult),
+      ...(reaskedResult ? [
+        makeMessage(4, { type: 'user_message', text: '[Resuming after answering a question]\n\nContinue?: Yes' }),
+        makeMessage(5, { text: 'Resumed' }),
+      ] : [makeMessage(4, { text: 'Which way?' })]),
+    ];
+    const { container, rerender } = render(view(transcript()));
+    instrumentScroller(container);
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(4, { align: 'start' });
+    rerender(view(transcript('{"answers":{"Continue?":"Yes"}}')));
+    flushFrames();
+    rowsMeasure(3600);
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(2, { align: 'start' });
+    expect(distanceFromEnd()).toBe(0);
+  });
+
+  it('does not pull the reader back to the question after they return to the end', () => {
+    const messages = [makeMessage(0, { text: 'Before' }), question(1), makeMessage(2, { text: 'After' })];
+    const { container, rerender } = render(view(messages));
+    flushFrames();
+    instrumentScroller(container);
+    vlistState.scrollToIndex.mockClear();
+    act(() => { container.querySelector<HTMLElement>('.rich-transcript-scroll-button')!.click(); });
+    flushFrames();
+    rerender(view([...messages]));
+    flushFrames();
+    rowsMeasure(3500);
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
   });
 
   it('ignores superseded answers and non-question prompts', () => {
@@ -205,6 +628,10 @@ function makeMessage(
 describe('RichTranscriptView permission review banner', () => {
   beforeEach(() => {
     vlistState.childCount = 0;
+    vlistState.onScroll = null;
+    vlistState.scrollOffset = 0;
+    vlistState.scrollSize = 300;
+    vlistState.viewportSize = 100;
     vlistState.scrollToIndex.mockReset();
     vi.stubGlobal('CSS', {
       highlights: {

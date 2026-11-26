@@ -12,7 +12,7 @@ import { TranscriptSearchBar } from './TranscriptSearchBar';
 import { setSessionIsAtBottom, getSessionIsAtBottom } from '../../../store/atoms/transcriptScroll';
 import { isAppleMobileWebKit } from '../../../utils/platform';
 import { usePendingPermissionNavigation } from './usePendingPermissionNavigation';
-import { usePendingQuestionNavigation } from './usePendingQuestionNavigation';
+import { newestPendingQuestion, usePendingQuestionNavigation } from './usePendingQuestionNavigation';
 import { useElapsedTimeRef } from './CustomToolWidgets/useElapsedTime';
 import type { SubagentChildContext, TranscriptToolShared } from './TranscriptToolCard';
 import { TranscriptMessageRow, computeTranscriptRowInfos, type TranscriptRowInfo } from './TranscriptMessageRow';
@@ -585,11 +585,17 @@ export const RichTranscriptView = React.forwardRef<
 
   const { pendingPermissionIndices, pendingPermissionsVisibleRef, showPermissionBanner, setShowPermissionBanner } =
     usePendingPermissionNavigation({ messages, sessionId, sessionStatus, isProcessing, currentTeammates, vlistRef });
-  const { pendingQuestions, jumpToQuestion } = usePendingQuestionNavigation({
+  const { pendingQuestions, jumpToNewestQuestion, hasQuestionToReveal } = usePendingQuestionNavigation({
     messages, sessionId, vlistRef, scrollContainerRef, ready: isScrollReady && isContainerVisible,
   });
-  const hasPendingQuestionsRef = useRef(false);
-  hasPendingQuestionsRef.current = pendingQuestions.length > 0;
+  // Following holds while a question waits above, except past the newest one
+  // when that question was already shown as the view pinned to the end (pane
+  // shown again, session returned to) or as it became the newest. A newer
+  // question or a jump to it holds again.
+  const newestQuestionId = newestPendingQuestion(pendingQuestions)?.id;
+  const newestQuestionIdRef = useRef(newestQuestionId);
+  newestQuestionIdRef.current = newestQuestionId;
+  const followPastQuestionIdRef = useRef<string | undefined>(undefined);
 
   const settings = propsSettings || defaultSettings;
   const previousRenderRef = useRef<{
@@ -635,7 +641,9 @@ export const RichTranscriptView = React.forwardRef<
   // Keep the end in view while following, except while the reader holds the
   // pointer here (scrollbar, selection, touch) or a question waits above.
   const followEnd = useCallback(() => {
-    if (hasPendingQuestionsRef.current || pointerHeldRef.current) return;
+    const questionWaits = newestQuestionIdRef.current !== undefined &&
+      newestQuestionIdRef.current !== followPastQuestionIdRef.current;
+    if (questionWaits || pointerHeldRef.current) return;
     if (shouldAutoScrollTranscript(getAtBottomState(), hasActiveTranscriptSelection(viewRootRef.current))) {
       scrollToEnd();
     }
@@ -966,7 +974,9 @@ export const RichTranscriptView = React.forwardRef<
     // Rows measured after this pin are followed by the resize observer below.
     let frame: number;
     frame = requestAnimationFrame(() => {
-      if (pendingQuestions.length === 0) {
+      // A question not yet shown positions the list itself once ready.
+      if (!hasQuestionToReveal()) {
+        followPastQuestionIdRef.current = newestQuestionIdRef.current;
         setAtBottomState(true);
         scrollToEnd();
       }
@@ -976,6 +986,28 @@ export const RichTranscriptView = React.forwardRef<
     });
     return () => cancelAnimationFrame(frame);
   }, [sessionId, isContainerVisible]); // Re-run when session changes or container becomes visible
+
+  // Hosts that load messages after mounting (the mobile SessionView, remote
+  // session views) mount with none, so the pin above has nothing to pin and the
+  // list mounts at its top when they arrive. Then follow from the end past a
+  // question already shown, as the pin does; the follow below scrolls there.
+  // A question not yet shown keeps the jump the hook issued in this commit: its
+  // reveal frame has not run, so it still counts as one to reveal.
+  const hasMessages = messages.length > 0;
+  useEffect(() => {
+    if (!hasMessages || hasQuestionToReveal()) return;
+    followPastQuestionIdRef.current = newestQuestionIdRef.current;
+    setAtBottomState(true);
+  }, [hasMessages]); // On mount or while hidden, the pin above makes the same choice
+
+  // Nor does a question already shown hold the follow when it becomes the
+  // newest later: a returning replay can bring it in a later snapshot, and an
+  // abandoned card is left when the newer one closes. A new question still
+  // holds for its jump, which the hook issued in this commit and has not yet
+  // revealed. Whether to scroll stays with the follow's own checks.
+  useEffect(() => {
+    if (!hasQuestionToReveal()) followPastQuestionIdRef.current = newestQuestionId;
+  }, [newestQuestionId]);
 
   // Auto-scroll to bottom when messages change (if user was at bottom)
   useEffect(() => {
@@ -1367,7 +1399,10 @@ export const RichTranscriptView = React.forwardRef<
         {pendingQuestions.length > 0 && (
           <div className="rich-transcript-question-navigation shrink-0 flex justify-end border-t border-[var(--nim-border)] bg-[var(--nim-bg)] px-3 py-2">
             <button
-              onClick={() => jumpToQuestion(pendingQuestions[0])}
+              onClick={() => {
+                followPastQuestionIdRef.current = undefined;
+                jumpToNewestQuestion();
+              }}
               aria-label="Jump to question"
               className="rich-transcript-question-button flex items-center gap-1.5 px-3 py-1.5 bg-[var(--nim-primary)] text-[var(--nim-on-primary)] rounded-md text-xs font-medium cursor-pointer border-none hover:brightness-110"
             >
