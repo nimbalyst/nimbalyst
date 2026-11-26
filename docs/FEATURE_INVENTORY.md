@@ -231,6 +231,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - Local file history with diff viewer (Cmd+Y)
 - Document history with configurable retention
 - File links with line or line/column locations open at the referenced position
+- Local desktop chat file links have a context menu to copy the path, reveal the file, or open it in its default app
 
 ## Tab System
 

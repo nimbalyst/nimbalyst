@@ -519,7 +519,10 @@ export function resolveTranscriptFilePathFromHref(href?: string): string | null 
  * a link like `/abs/notes.md:653` can land on line 653 rather than the top.
  * Returns null for non-file/external links.
  */
-export function resolveTranscriptFileTargetFromHref(href?: string): TranscriptFileTarget | null {
+export function resolveTranscriptFileTargetFromHref(
+  href?: string,
+  allowRelative = false,
+): TranscriptFileTarget | null {
   if (!href) return null;
 
   const trimmedHref = href.trim();
@@ -575,7 +578,7 @@ export function resolveTranscriptFileTargetFromHref(href?: string): TranscriptFi
     cleanedPath = cleanedPath.slice('/abs/path/'.length);
   }
 
-  if (!isAbsoluteFilePath(cleanedPath)) return null;
+  if (!allowRelative && !isAbsoluteFilePath(cleanedPath)) return null;
 
   return {
     path: cleanedPath,
@@ -919,11 +922,17 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({
       const fileTarget =
         resolvedAutolink ?? (onOpenFile ? resolveTranscriptFileTargetFromHref(href) : null);
       const filePath = fileTarget?.path ?? null;
+      // Context actions also accept relative markdown hrefs without changing
+      // which links the existing left-click handler opens in the editor.
+      const contextMenuPath = filePath ?? (onOpenFile
+        ? resolveTranscriptFileTargetFromHref(href, true)?.path
+        : undefined);
       const isInternalLink = Boolean(filePath) || appActionLink;
       return (
         <a
           {...props}
           href={href}
+          data-transcript-file-path={contextMenuPath}
           target={isInternalLink ? undefined : '_blank'}
           rel={isInternalLink ? undefined : 'noopener noreferrer'}
           onClick={(event) => {
