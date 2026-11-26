@@ -439,7 +439,7 @@ interface ElectronAPI {
   createFile: (filePath: string, content: string) => Promise<{ success: boolean; filePath?: string; error?: string }>;
   createFolder: (folderPath: string) => Promise<{ success: boolean; error?: string }>;
   switchWorkspaceFile: (filePath: string) => Promise<{ filePath: string; content: string } | { error: string } | null>;
-  readFileContent: (filePath: string, options?: { binary?: boolean }) => Promise<
+  readFileContent: (filePath: string, options?: { binary?: boolean; skipVideoContent?: boolean }) => Promise<
     | { success: true; content: string; isBinary: true }
     | { success: true; content: string; isBinary: false; detectedEncoding?: BufferEncoding }
     | { success: false; error: string }

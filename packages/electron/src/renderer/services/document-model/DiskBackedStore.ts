@@ -25,7 +25,7 @@ export class DiskBackedStore implements DocumentBackingStore {
   }
 
   async load(): Promise<string | ArrayBuffer> {
-    const result = await window.electronAPI.readFileContent(this.filePath);
+    const result = await window.electronAPI.readFileContent(this.filePath, { skipVideoContent: true });
     if (!result || !result.success) {
       throw new Error(`Failed to load file: ${this.filePath}`);
     }

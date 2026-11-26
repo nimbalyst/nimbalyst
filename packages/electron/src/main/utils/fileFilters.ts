@@ -7,6 +7,9 @@
 
 import { hasCustomEditor } from '../extensions/RegisteredFileTypes';
 
+// The built-in Media Viewer streams MP4 from its asset URL.
+export const isStreamedVideo = (filePath: string): boolean => filePath.toLowerCase().endsWith('.mp4');
+
 // File extensions to exclude from search and scanning
 // Note: Extensions with custom editors (like .pdf) are allowed even if in this list
 export const EXCLUDED_EXTENSIONS = new Set([
