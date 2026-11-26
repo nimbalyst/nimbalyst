@@ -7,7 +7,7 @@
  * waste, hence a test.
  */
 import React from 'react';
-import { render } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TranscriptViewMessage } from '../../../../ai/server/types';
 import { setTranscriptToolWidgets, clearTranscriptToolWidgets } from '../../contributions/TranscriptToolWidgetContributions';
@@ -104,7 +104,21 @@ describe('transcript row memoization', () => {
     segmentRenders.byText.clear();
     setTranscriptToolWidgets('render-cost-test', { CountTool: CountingWidget });
   });
-  afterEach(() => clearTranscriptToolWidgets('render-cost-test'));
+  afterEach(() => { clearTranscriptToolWidgets('render-cost-test'); cleanup(); });
+
+  it.each([false, true])('separates human and child-report authors across tool-only turns (reportFirst=%s)', reportFirst => {
+    const human = msg(0, { type: 'user_message', text: 'Continue', promptActor: 'human' });
+    const report = msg(2, { type: 'user_message', promptActor: 'agent',
+      text: '[Child Session Update]\nSession: "Worker" (child)\nStatus: idle\nEvent: session:completed\nRecent messages:\n- Assistant: ' + 'Done. '.repeat(40) });
+    const messages = reportFirst ? [report, toolMsg, human] : [human, toolMsg, report];
+    const infos = infosFor(messages, null);
+    expect(infos[0].isNewGroup).toBe(true);
+    expect(infos[2].isNewGroup).toBe(true);
+    render(<Rows messages={messages} infos={infos} tick={0} />);
+    expect(screen.getAllByText('You')).toHaveLength(1);
+    expect(screen.getAllByText('Child session update')).toHaveLength(1);
+    expect(screen.queryByTitle('Collapse message')).toBeNull();
+  });
 
   it('a tool card re-renders its widget only when its own props change', () => {
     const card = (tick: number, isExpanded: boolean) => (
