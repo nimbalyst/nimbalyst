@@ -526,7 +526,11 @@ export function useTrackerItemBody({
       isCodeHighlighted: true,
       hasLinkAttributes: true,
       markdownOnly: true,
-      initialContent: contentMarkdown || '',
+      // The baseline, not `contentMarkdown`: our own saves advance only the
+      // baseline, and this editor can remount mid-session when sign-in flips
+      // the team answer (#1914). Seeding from the open-time snapshot would
+      // hide the saved text and let the next keystroke save over it.
+      initialContent: loadedBaselineRef.current ?? contentMarkdown ?? '',
       onGetContent: (getContentFn: () => string) => {
         getContentFnRef.current = getContentFn;
       },
@@ -561,7 +565,8 @@ export function useTrackerItemBody({
   const collabEditorConfig = useMemo((): EditorConfig | null => {
     if (contentMode !== 'collaborative' || !collabConfig || collabLoading) return null;
     if (!contentLoaded) return null;
-    const mdContent = contentMarkdown;
+    // Same as the local editor: the latest saved body, not the open-time one.
+    const mdContent = loadedBaselineRef.current ?? contentMarkdown;
     // Prefer the body-cache cold paint when the hook supplies it (the
     // `tracker_body_cache` row matching the current body_version). Fall
     // back to the per-item PGLite markdown for new items that have never
