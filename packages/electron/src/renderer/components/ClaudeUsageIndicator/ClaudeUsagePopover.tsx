@@ -71,6 +71,9 @@ const UsageSection: React.FC<UsageSectionProps> = ({
   const colors = colorClasses[color] || colorClasses.muted;
   const timeElapsedPercent = calculateTimeElapsedPercent(resetsAt, windowDurationMs);
   const remainingMs = resetsAt ? Date.parse(resetsAt) - Date.now() : NaN;
+  // A reset time in the past means the window has rolled over and the data is stale,
+  // so the elapsed suffix and ratio would describe a window that no longer exists.
+  const windowExpired = remainingMs <= 0;
   const ratio = limitRatio(remainingMs > 0 && remainingMs <= windowDurationMs ? timeElapsedPercent : null, utilization);
   const isOverPacing = timeElapsedPercent !== null && utilization > timeElapsedPercent;
 
@@ -99,10 +102,10 @@ const UsageSection: React.FC<UsageSectionProps> = ({
           title={`${Math.round(timeElapsedPercent)}% of window elapsed`}
         />}
       </div>
-      <div className="text-[11px] text-nim-muted" title={LIMIT_RATIO_EXPLANATION}>Limit ratio: {formatLimitRatio(ratio)}</div>
+      {!windowExpired && <div className="text-[11px] text-nim-muted" title={LIMIT_RATIO_EXPLANATION}>Limit ratio: {formatLimitRatio(ratio)}</div>}
       <div className="flex items-center gap-1 text-[11px] text-nim-muted">
         <MaterialSymbol icon="schedule" size={12} className="opacity-70" />
-        <span>Resets in {formatResetTime(resetsAt)}{timeElapsedPercent !== null ? ` [${Math.round(timeElapsedPercent)}% passed]` : ''}</span>
+        <span>Resets in {formatResetTime(resetsAt)}{timeElapsedPercent !== null && !windowExpired ? ` [${Math.round(timeElapsedPercent)}% passed]` : ''}</span>
       </div>
     </div>
   );

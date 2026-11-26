@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Each window in the Claude, Codex and Gemini usage popovers now shows how much of the window has passed next to its reset time, and a "Limit ratio" line (elapsed share divided by usage share) while the window is still running (#1975).
 
 ### Changed
 <!-- Changes to existing functionality go here -->
