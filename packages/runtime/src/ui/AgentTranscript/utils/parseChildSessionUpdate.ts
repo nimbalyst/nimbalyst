@@ -109,8 +109,11 @@ const SINGLE_REPORT_PREFIX = '[Child Session Update]';
 const SYSTEM_MESSAGE_OPEN = '<NIMBALYST_SYSTEM_MESSAGE>';
 
 /**
- * Same answer as `parseChildSessionUpdate(text, promptActor)?.kind === 'single'`,
- * but rejects ordinary messages with a prefix check instead of a full parse.
+ * Same answer as `parseChildSessionUpdate(text, promptActor)?.kind === 'single'`
+ * for messages whose system blocks sit before or after the report, which is
+ * how every producer emits them; a system block inside the header line is not
+ * recognised here. Rejects ordinary messages with a prefix check instead of a
+ * full parse.
  * Row grouping calls this on every streaming update, so a large pasted user
  * message must not be stripped and split each tick.
  */
