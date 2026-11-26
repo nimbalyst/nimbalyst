@@ -84,6 +84,45 @@ describe('isModelEnabled', () => {
       expect(isModelEnabled({ id: 'claude-code:haiku', provider: 'claude-code' }, entry)).toBe(true);
     });
   });
+
+  describe('antigravity-gemini-agent dynamic catalog', () => {
+    it('ignores stale models allowlists from older ai-settings.json files', () => {
+      const staleEntry = {
+        enabled: true,
+        models: [
+          'antigravity-gemini-agent:gemini-3-flash-agent',
+          'antigravity-gemini-agent:gemini-3.5-flash-low',
+        ],
+      };
+      expect(
+        isModelEnabled(
+          { id: 'antigravity-gemini-agent:gemini-3.7-flash-medium', provider: 'antigravity-gemini-agent' },
+          staleEntry,
+        ),
+      ).toBe(true);
+      expect(
+        isModelEnabled(
+          { id: 'antigravity-gemini-agent:gemini-4-neon-high', provider: 'antigravity-gemini-agent' },
+          staleEntry,
+        ),
+      ).toBe(true);
+    });
+
+    it('still respects enabled: false and hiddenModels for antigravity-gemini-agent', () => {
+      expect(
+        isModelEnabled(
+          { id: 'antigravity-gemini-agent:gemini-3.7-flash-medium', provider: 'antigravity-gemini-agent' },
+          { enabled: false, models: ['antigravity-gemini-agent:gemini-3.7-flash-medium'] },
+        ),
+      ).toBe(false);
+      expect(
+        isModelEnabled(
+          { id: 'antigravity-gemini-agent:gemini-3.7-flash-low', provider: 'antigravity-gemini-agent' },
+          { enabled: true, hiddenModels: ['antigravity-gemini-agent:gemini-3.7-flash-low'] },
+        ),
+      ).toBe(false);
+    });
+  });
 });
 
 /**
