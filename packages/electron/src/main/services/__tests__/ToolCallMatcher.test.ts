@@ -7,6 +7,7 @@ vi.mock('../../database/PGLiteDatabaseWorker', () => ({
     isInitialized: () => true,
     initialize: vi.fn(),
     query: vi.fn(),
+    getEngine: vi.fn(() => 'pglite'),
   },
 }));
 
@@ -35,6 +36,8 @@ vi.mock('@nimbalyst/runtime/storage/repositories/TranscriptMigrationRepository',
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
+import { TranscriptMigrationRepository } from '@nimbalyst/runtime/storage/repositories/TranscriptMigrationRepository';
 import { database } from '../../database/PGLiteDatabaseWorker';
 import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
 import { logger } from '../../utils/logger';
@@ -1088,6 +1091,30 @@ describe('ToolCallMatcher', () => {
       ]));
     });
 
+    it('B1: bounds a Codex edit-group id to the edit window and still scores the window that carries it 100', async () => {
+      const sessionId = 'minted-id-session';
+      const fileTimestamp = 1_700_000_000_000;
+      const editGroupId = 'nimtc|item_3|1700000000000|9';
+
+      const captured = stubSession({
+        files: [{ id: 'file-codex', file_path: '/workspace/src/a.ts', timestamp_ms: fileTimestamp, metadata: { toolUseId: editGroupId } }],
+        messages: [{
+          id: 12,
+          created_at_ms: fileTimestamp - 1_000,
+          metadata: { editGroupId },
+          content: JSON.stringify({
+            type: 'item.completed',
+            item: { type: 'file_change', id: 'item_3', changes: [{ path: '/workspace/src/a.ts', kind: 'update' }] },
+          }),
+        }],
+      });
+
+      await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(1);
+
+      expect(captured.messagesParams).toEqual([sessionId, fileTimestamp - 10_000, fileTimestamp + 10_000]);
+      expect(captured.insertParams).toEqual(expect.arrayContaining([sessionId, 'file-codex', 12, editGroupId, 100]));
+    });
+
     it('falls back to an unbounded lookup when a stored file timestamp is invalid', async () => {
       const sessionId = 'invalid-timestamp-session';
 
@@ -1342,6 +1369,40 @@ describe('ToolCallMatcher', () => {
       expect(stats).toEqual({ scans: 1, boundedScans: 1, rowsScanned: 0, deletedFileIds: [] });
     });
 
+    it('N3: an invalid metadata row does not fail the session diff context', async () => {
+      fakeSessionDb(
+        [
+          { id: 'n3-bad', file_path: '/workspace/src/bad.ts', timestamp_ms: T0, metadata: '{"toolUseId":' },
+          { id: 'n3-ok', file_path: '/workspace/src/ok.ts', timestamp_ms: T0, metadata: asSQLite({ toolUseId: 'n3-tool' }) },
+        ],
+        [],
+      );
+
+      const ctx = await toolCallMatcher.createSessionEnrichmentContext('n3-context');
+
+      expect([...ctx.editedByToolUseId.keys()]).toEqual(['n3-tool']);
+      expect(ctx.sessionFilesById.get('n3-bad')).toEqual({ file_path: '/workspace/src/bad.ts', metadata: {} });
+    });
+
+    it('N3: an invalid metadata row does not fail the per-call diff lookup', async () => {
+      queryMock.mockImplementation(async (sql: string) => {
+        if (sql.includes("metadata->>'toolUseId'")) return { rows: [] }; // no direct session_files link
+        if (/SELECT message_id\s+FROM ai_tool_call_file_edits/.test(sql)) return { rows: [{ message_id: 9 }] };
+        if (sql.includes('FROM ai_tool_call_file_edits')) {
+          return { rows: [{ session_file_id: 'n3-bad', message_id: 9, match_reason: 'name_in_args' }] };
+        }
+        if (sql.includes('FROM session_files')) {
+          return { rows: [{ id: 'n3-bad', file_path: '/workspace/src/bad.ts', metadata: 'not json' }] };
+        }
+        return { rows: [] };
+      });
+
+      const diffs = await toolCallMatcher.getDiffsForToolCall('n3-per-call', 'n3-call');
+
+      expect(diffs.map(d => [d.filePath, d.operation])).toEqual([['/workspace/src/bad.ts', 'edit']]);
+      expect(logger.main.error).not.toHaveBeenCalled();
+    });
+
     /**
      * Raw-message scan work over a session that grows one edit at a time, with
      * PASSES_PER_EDIT matchSession passes after each edit (the edit's own tool
@@ -1401,6 +1462,22 @@ describe('ToolCallMatcher', () => {
         scores: [40, 100, 100, 100, 100],
       });
     });
+
+    it.each(['nimtc|call_', 'watcher-', 'codex-bash-', 'codex-acp-write-'])(
+      'B1: scan work, ids Nimbalyst minted (%s): only bounded scans, as before SQLite metadata was read',
+      async prefix => {
+        // A minted id is no provider tool-call id, so it does not justify a
+        // whole-session read. Each pass reads from 10s before the first edit to
+        // 10s after the latest: 11 rows per turn, less turn 1's opening row.
+        const measured = await runGrowingSession(edit => `${prefix}${edit}`);
+        expect(measured).toEqual({
+          scans: 20,
+          boundedScans: 20,
+          rowsScanned: 4 * sumOverEdits(k => 11 * k - 1), // 640
+          scores: [40, 40, 40, 40, 40],
+        });
+      },
+    );
 
     describe('against a real SQLite database', () => {
       let tmp: string;
@@ -1485,6 +1562,109 @@ describe('ToolCallMatcher', () => {
         sqlSeen.length = 0;
         await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(0);
         expect(sqlSeen.some(sql => sql.includes('FROM ai_agent_messages'))).toBe(false);
+      });
+
+      it('B1: a Codex app-server session reads no more raw rows than before SQLite metadata was read', async () => {
+        // Rows as OpenAICodexProvider stores them on the app-server transport
+        // ({method, params} content) and session_files rows as SessionFileTracker
+        // writes them (toolUseId = the nimtc| edit-group id). No window carries
+        // that id, so these files never settle.
+        const sessionId = 'b1-codex-app-server';
+        await sqlite.query(`INSERT INTO ai_sessions (id, workspace_id, provider) VALUES ($1, $2, $3)`, [sessionId, '/workspace', 'openai-codex']);
+        const store = createPGLiteSessionFileStore(sqlite);
+        const stats = { scans: 0, unboundedScans: 0, rowsScanned: 0 };
+        queryMock.mockImplementation(async (sql: string, params?: unknown[]) => {
+          const result = await sqlite.query(sql, params);
+          if (sql.includes('FROM ai_agent_messages')) {
+            stats.scans++;
+            if (!params || params.length < 3) stats.unboundedScans++;
+            stats.rowsScanned += result.rows.length;
+          }
+          return result;
+        });
+
+        let t = T0;
+        let item = 0;
+        const row = async (method: string, body: Record<string, unknown>, turnId: string, editGroupId?: string) => {
+          t += 3_000;
+          await sqlite.query(
+            `INSERT INTO ai_agent_messages (session_id, created_at, source, direction, content, metadata) VALUES ($1, $2, $3, $4, $5, $6)`,
+            [sessionId, new Date(t).toISOString(), 'openai-codex', 'output',
+              JSON.stringify({ method, params: { threadId: 'thr-1', turnId, item: body } }),
+              JSON.stringify({ eventType: method, codexProvider: true, transport: 'app-server', ...(editGroupId ? { editGroupId } : {}) })],
+          );
+        };
+        const command = async (turnId: string, cmd: string) => {
+          const id = `call_${++item}`;
+          const editGroupId = `nimtc|${id}|${t}|${item}`;
+          await row('item/completed', { type: 'reasoning', id: `rs_${item}`, summary: ['Looking at the code'], content: [] }, turnId);
+          await row('item/started', { type: 'commandExecution', id, command: cmd, status: 'inProgress' }, turnId, editGroupId);
+          await row('item/completed', { type: 'commandExecution', id, command: cmd, aggregatedOutput: 'output\n', exitCode: 0, status: 'completed' }, turnId, editGroupId);
+          await toolCallMatcher.matchSession(sessionId);
+        };
+        // One task over five turns (explore, edit, verify); a.ts is edited twice.
+        const turns = [
+          { explore: 12, edits: ['/workspace/src/a.ts', '/workspace/src/b.ts'], verify: 4 },
+          { explore: 6, edits: ['/workspace/src/a.ts'], verify: 3 },
+          { explore: 8, edits: [] as string[], verify: 0 },
+          { explore: 5, edits: ['/workspace/src/c.ts'], verify: 3 },
+          { explore: 10, edits: [] as string[], verify: 0 },
+        ];
+        for (const [k, turn] of turns.entries()) {
+          const turnId = `turn-${k}`;
+          for (let i = 0; i < turn.explore; i++) await command(turnId, `rg -n thing src/file${i}.ts`);
+          for (const filePath of turn.edits) {
+            const id = `call_${++item}`;
+            const editGroupId = `nimtc|${id}|${t}|${item}`;
+            await row('item/completed', { type: 'fileChange', id, status: 'completed', changes: [{ path: filePath, kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-a\n+b\n' }] }, turnId, editGroupId);
+            await store.addFileLink({ sessionId, workspaceId: '/workspace', filePath, linkType: 'edited', timestamp: t, metadata: { toolName: 'file_change', operation: 'edit', toolUseId: editGroupId } });
+            await toolCallMatcher.matchSession(sessionId);
+          }
+          for (let i = 0; i < turn.verify; i++) await command(turnId, 'pnpm test');
+          await row('item/completed', { type: 'agentMessage', id: `msg_${k}`, text: 'Done.' }, turnId);
+          await row('turn/completed', { id: turnId }, turnId);
+          await toolCallMatcher.matchSession(sessionId); // end of turn
+          t += 60_000; // the user reads and answers
+        }
+
+        const stored = await sqlite.query(`SELECT id FROM ai_tool_call_file_edits WHERE session_id = $1`, [sessionId]);
+        expect(stored.rows).toEqual([]);
+        expect(logger.main.error).not.toHaveBeenCalled();
+        // Before SQLite metadata was read, the same replay made 48 bounded scans
+        // of 2339 rows in total (the parse alone made them unbounded: 4856 rows).
+        expect(stats).toEqual({ scans: 48, unboundedScans: 0, rowsScanned: 2339 });
+      });
+
+      it('B2: the per-call diff of a Write that created a file reports create on SQLite', async () => {
+        const sessionId = 'b2-diff-operation';
+        await sqlite.query(`INSERT INTO ai_sessions (id, workspace_id, provider) VALUES ($1, $2, $3)`, [sessionId, '/workspace', 'claude-code']);
+        await createPGLiteSessionFileStore(sqlite).addFileLink({
+          sessionId,
+          workspaceId: '/workspace',
+          filePath: '/workspace/src/new.ts',
+          linkType: 'edited',
+          timestamp: T0,
+          metadata: { toolName: 'Write', operation: 'create', toolUseId: 'toolu_b2_write' },
+        });
+        queryMock.mockImplementation((sql: string, params?: unknown[]) => sqlite.query(sql, params));
+        AISessionsRepository.setStore({ get: async () => ({ provider: 'claude-code' }) } as unknown as Parameters<typeof AISessionsRepository.setStore>[0]);
+        const hasService = vi.spyOn(TranscriptMigrationRepository, 'hasService').mockReturnValue(true);
+        const getService = vi.spyOn(TranscriptMigrationRepository, 'getService').mockReturnValue({
+          findToolCallByProviderId: async (_session: string, id: string) => (id === 'toolu_b2_write'
+            ? { payload: { toolName: 'Write', arguments: { file_path: '/workspace/src/new.ts', content: 'export const x = 1;\n' } } }
+            : null),
+        } as unknown as ReturnType<typeof TranscriptMigrationRepository.getService>);
+        try {
+          const result = await toolCallMatcher.getDiffsForToolCallResult(sessionId, 'toolu_b2_write');
+
+          expect(result.diffs.map(d => [d.filePath, d.operation, d.content])).toEqual([
+            ['/workspace/src/new.ts', 'create', 'export const x = 1;\n'],
+          ]);
+        } finally {
+          hasService.mockRestore();
+          getService.mockRestore();
+          AISessionsRepository.clearStore();
+        }
       });
     });
   });

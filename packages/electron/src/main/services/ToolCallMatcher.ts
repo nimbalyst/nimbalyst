@@ -204,6 +204,34 @@ const MIN_MATCH_SCORE = 30; // Must have at least a filename match
  * which is what makes it safe to leave such files out of the candidate set.
  */
 const MAX_MATCH_SCORE = 100;
+
+/**
+ * Prefixes of the session_files toolUseIds Nimbalyst mints itself instead of
+ * copying a provider's tool-call id:
+ * - `nimtc|`: Codex edit-group ids (runtime `toolLookupIds.ts`).
+ * - `watcher-`: WorkspaceFileEditAttributionService, when the winning window had no id.
+ * - `codex-bash-`: HooklessAgentFileWatcher, when the command had no item id.
+ * - `codex-acp-write-`: Codex ACP writes (main `index.ts`).
+ * parseToolCallWindows only finds such an id in the metadata of the Codex rows
+ * of the tool call that made the edit (never as a tool_use id), and those rows
+ * sit next to the edit, so it does not justify reading the whole session. On
+ * the Codex app-server transport no window carries it at all: the file never
+ * settles, and an unbounded lookup would reread the whole session every pass.
+ */
+const MINTED_TOOL_USE_ID_PREFIXES = ['nimtc|', 'watcher-', 'codex-bash-', 'codex-acp-write-'];
+
+/**
+ * The provider tool-call id an edited session_files row carries, or null when
+ * it has none or only an id Nimbalyst minted. Only a definitive id keeps its
+ * own row through dedup and keeps the raw-message lookup unbounded; scoreMatch
+ * still compares a minted id, so a window that carries it scores 100.
+ */
+function definitiveToolUseId(file: SessionFileRow): string | null {
+  const toolUseId = file.metadata?.toolUseId;
+  if (typeof toolUseId !== 'string' || toolUseId.length === 0) return null;
+  return MINTED_TOOL_USE_ID_PREFIXES.some(prefix => toolUseId.startsWith(prefix)) ? null : toolUseId;
+}
+
 const WORKSPACE_CLEAR_WINNER_MARGIN = 12;
 const WORKSPACE_MIN_CONFIDENCE_SCORE = 55;
 
@@ -1007,13 +1035,15 @@ class ToolCallMatcherImpl {
         ...row,
         metadata: parseJsonObjectColumn(row.metadata),
       }));
-      // Deduplicate session_files: keep every row with a distinct toolUseId
-      // (each represents a separate tool call edit). For rows WITHOUT a
-      // toolUseId (Codex, watcher side-effects), dedup by file path keeping
-      // the most recent timestamp.
+      // Deduplicate session_files: keep every row with a distinct definitive
+      // toolUseId (each represents a separate tool call edit). For rows WITHOUT
+      // one (Codex, watcher side-effects, ids Nimbalyst minted), dedup by file
+      // path keeping the most recent timestamp. Minted ids never settle on the
+      // Codex app-server transport, so keeping every such row would pin the
+      // bounded scan below to the session's first edit.
       const sessionFilesByKey = new Map<string, SessionFileRow>();
       for (const file of editedFiles) {
-        const toolUseId = file.metadata?.toolUseId;
+        const toolUseId = definitiveToolUseId(file);
         if (toolUseId) {
           // Rows with a toolUseId are unique per tool call — keep all of them.
           // Use toolUseId as key so duplicates from watcher + tracker collapse.
@@ -1071,13 +1101,12 @@ class ToolCallMatcherImpl {
       // Bound raw history for providers whose file rows have no definitive
       // tool IDs (notably Codex). Exact metadata toolUseId matches deliberately
       // bypass scoreMatch's time cutoff, so sessions carrying any such ID must
-      // retain the unbounded lookup to preserve those matches.
+      // retain the unbounded lookup to preserve those matches. Ids Nimbalyst
+      // minted itself do not count (see MINTED_TOOL_USE_ID_PREFIXES).
       // Computed over filesNeedingWork, not all files: a session whose only
       // outstanding rows are Codex-style now gets the bounded window even if
       // settled Claude Code rows exist alongside them.
-      const hasDefinitiveToolUseIds = filesNeedingWork.some(file =>
-        typeof file.metadata?.toolUseId === 'string' && file.metadata.toolUseId.length > 0
-      );
+      const hasDefinitiveToolUseIds = filesNeedingWork.some(file => definitiveToolUseId(file) !== null);
       let rawWindowOptions: { afterDate: Date; beforeDate: Date } | undefined;
       if (!hasDefinitiveToolUseIds) {
         const fileTimestamps = filesNeedingWork.map(file => ensureNumber(file.timestamp_ms));
@@ -1364,7 +1393,7 @@ class ToolCallMatcherImpl {
       [sessionId]
     );
     for (const row of editedResult.rows) {
-      const metadata = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata || {});
+      const metadata = parseJsonObjectColumn(row.metadata);
       ctx.sessionFilesById.set(row.id, { file_path: row.file_path, metadata });
       const toolUseId = metadata?.toolUseId;
       if (typeof toolUseId === 'string' && toolUseId.length > 0) {
@@ -1660,7 +1689,7 @@ class ToolCallMatcherImpl {
         for (const row of filesResult.rows) {
           filesById.set(row.id, {
             filePath: row.file_path,
-            metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata || {}),
+            metadata: parseJsonObjectColumn(row.metadata),
           });
         }
       }
@@ -2374,7 +2403,8 @@ class ToolCallMatcherImpl {
              AND metadata->>'toolUseId' = ANY($2)`,
           [sessionId, lookupIds]
         );
-        linkRows = linkResult.rows;
+        // Parsed here so the operation read below works on SQLite's JSON text.
+        linkRows = linkResult.rows.map(row => ({ ...row, metadata: parseJsonObjectColumn(row.metadata) }));
       }
 
       if (linkRows.length === 0) return [];
