@@ -29,6 +29,7 @@ export function buildToolDescription(toolName: string, input: any): string {
     case 'Grep':
       return input?.pattern ? `grep ${input.pattern}` : '';
     case 'Task':
+    case 'Agent':
       return input?.description || input?.prompt?.slice(0, 50) || 'spawn task';
     case 'WebFetch':
       return input?.url ? `fetch ${input.url}` : '';
@@ -51,6 +52,15 @@ export function buildToolDescription(toolName: string, input: any): string {
       // For completely unknown tools, just return the tool name
       return toolName;
   }
+}
+
+/**
+ * The model's own one-line explanation of a Bash call (the Bash tool's
+ * `description` input), shown above the raw command in the permission UI.
+ */
+export function getCommandDescription(toolName: string, input: any): string | undefined {
+  if (toolName !== 'Bash' || typeof input?.description !== 'string') return undefined;
+  return input.description.trim() || undefined;
 }
 
 /**
