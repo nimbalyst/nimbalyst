@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When signed out, a published team tracker item shows its body right away instead of showing "Connecting..." for about 15 seconds while team lookups retry (#1914).
 - An answer to a permission prompt or question given on another device, such as your phone, now reaches the waiting desktop session when the session has more than 50 messages; before, the prompt waited until it timed out (#2009).
 - When a project has more files than the operating system can watch, the file watcher now retries after 1, 5, 15, then 30 minutes instead of re-scanning the project as often as every second, and the "File updates delayed" warning suggests adding large folders to .gitignore (#2021).
+- In Claude Agent sessions, the approval prompt for a shell command now shows the agent's one-line description of the command above it, and the prompt for starting a sub-agent shows its task instead of just "Agent" (#1792).
 
 ### Removed
 <!-- Removed features go here -->
@@ -453,7 +454,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clicking a notification for a session in another open project opens that session, instead of the session that was open there before.
 - Choosing "Always" on one of several tool permission prompts that are waiting at once now approves the others too, instead of asking again
 - The @-mention file list in the chat box now shows all of a project's stored recent files (up to 50) instead of only the 20 most recent
-- In Claude Agent sessions, the approval prompt for a shell command now shows the agent's one-line description of the command above it, and the prompt for starting a sub-agent shows its task instead of just "Agent"
 
 ### Removed
 <!-- Removed features go here -->
