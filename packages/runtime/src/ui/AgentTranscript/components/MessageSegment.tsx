@@ -241,7 +241,11 @@ export const MessageSegment = React.memo(function MessageSegment({
     }
 
     if (isUser && childUpdate) {
-      return <ChildSessionUpdateCard key={message.id} messageId={message.id} display={childUpdate} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />;
+      return (
+        <div className={isCollapsed ? 'max-h-20 overflow-hidden relative' : ''}>
+          <ChildSessionUpdateCard key={message.id} messageId={message.id} display={childUpdate} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />
+        </div>
+      );
     }
 
     // Render commit request user messages as a collapsible card

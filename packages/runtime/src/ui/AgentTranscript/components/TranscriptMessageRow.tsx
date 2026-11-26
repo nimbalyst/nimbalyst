@@ -742,7 +742,7 @@ export const TranscriptMessageRow = React.memo(function TranscriptMessageRow({
             </span>
           </div>
           <div className="rich-transcript-message-actions flex items-center gap-1">
-            {!childUpdate && (message.text ?? '').length > 200 && (
+            {(message.text ?? '').length > 200 && (
               <button
                 onClick={() => onToggleCollapse(index)}
                 className="rich-transcript-collapse-button p-1 rounded-md bg-transparent border-none text-[var(--nim-text-faint)] cursor-pointer transition-colors hover:bg-[var(--nim-bg-secondary)] hover:text-[var(--nim-text-muted)]"

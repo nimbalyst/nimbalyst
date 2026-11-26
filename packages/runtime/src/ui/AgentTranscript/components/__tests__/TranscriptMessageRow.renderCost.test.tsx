@@ -117,7 +117,8 @@ describe('transcript row memoization', () => {
     render(<Rows messages={messages} infos={infos} tick={0} />);
     expect(screen.getAllByText('You')).toHaveLength(1);
     expect(screen.getAllByText('Child session update')).toHaveLength(1);
-    expect(screen.queryByTitle('Collapse message')).toBeNull();
+    // Both messages exceed 200 chars only on the report side; it keeps the whole-message collapse control.
+    expect(screen.getAllByTitle('Collapse message')).toHaveLength(1);
   });
 
   it('a tool card re-renders its widget only when its own props change', () => {
