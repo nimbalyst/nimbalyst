@@ -197,6 +197,30 @@ export class AntigravityServerManager {
     return this.endpoint;
   }
 
+  /**
+   * Return the cached endpoint or attach to an already-running Antigravity hub
+   * without spawning a standalone server. Returns null if Antigravity is not
+   * currently running.
+   */
+  async findRunningEndpoint(): Promise<AntigravityEndpoint | null> {
+    if (this.endpoint) return this.endpoint;
+    const attached = await this.discoverRunningHub();
+    if (attached) {
+      this.endpoint = attached;
+    }
+    return attached;
+  }
+
+  /**
+   * Drop the cached endpoint (and per-endpoint model enum cache) without
+   * killing any owned child. Used by read-only consumers like usage polling
+   * to recover when an attached hub restarts on a new port.
+   */
+  clearEndpoint(): void {
+    this.endpoint = null;
+    this.enumCache.clear();
+  }
+
   /** Stop the server if we own it. No-op when attached to the IDE's hub. */
   stop(): void {
     if (this.child && !this.child.killed) {
@@ -430,6 +454,9 @@ export class AntigravityServerManager {
   // ---- mode A: discover a running hub ------------------------------------
 
   private async discoverRunningHub(): Promise<AntigravityEndpoint | null> {
+    const daemonHub = await this.discoverDaemonHub();
+    if (daemonHub) return daemonHub;
+
     if (process.platform === 'darwin') {
       return this.discoverMacOSHub();
     }
@@ -459,6 +486,79 @@ export class AntigravityServerManager {
       if (await this.isHealthy(ep)) return ep;
     }
     return null;
+  }
+
+  /**
+   * Discover an already-running Antigravity hub from daemon metadata files
+   * (`~/.gemini/antigravity/daemon/hub_*.json`).
+   *
+   * Antigravity 2.34+ no longer passes `--csrf_token` on the language_server
+   * command line; instead it writes `{ pid, httpsPort, csrfToken }` to a daemon
+   * JSON file. Checking these files first works cross-platform (macOS, Linux,
+   * Windows) and avoids spawning `ps`/`lsof` when the metadata is present.
+   */
+  private async discoverDaemonHub(
+    daemonDir = path.join(os.homedir(), '.gemini', 'antigravity', 'daemon'),
+  ): Promise<AntigravityEndpoint | null> {
+    let entries: string[];
+    try {
+      entries = await fs.promises.readdir(daemonDir);
+    } catch {
+      return null;
+    }
+
+    const candidates: Array<{ httpsPort: number; csrf: string; pid?: number; mtimeMs: number }> = [];
+    for (const entry of entries) {
+      if (!/^hub_.*\.json$/i.test(entry)) continue;
+      const fullPath = path.join(daemonDir, entry);
+      try {
+        const [stat, raw] = await Promise.all([
+          fs.promises.stat(fullPath),
+          fs.promises.readFile(fullPath, 'utf8'),
+        ]);
+        const parsed = JSON.parse(raw) as {
+          pid?: unknown;
+          httpsPort?: unknown;
+          csrfToken?: unknown;
+        };
+        const httpsPort = typeof parsed.httpsPort === 'number' ? parsed.httpsPort : NaN;
+        const csrf = typeof parsed.csrfToken === 'string' ? parsed.csrfToken.trim() : '';
+        const pid = typeof parsed.pid === 'number' && Number.isInteger(parsed.pid) && parsed.pid > 0
+          ? parsed.pid
+          : undefined;
+        if (!Number.isInteger(httpsPort) || httpsPort <= 0 || httpsPort > 65_535 || !csrf) {
+          continue;
+        }
+        candidates.push({ httpsPort, csrf, pid, mtimeMs: stat.mtimeMs });
+      } catch {
+        /* ignore malformed or concurrently removed daemon files */
+      }
+    }
+
+    // Prefer the most recently written daemon metadata file first.
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    for (const candidate of candidates) {
+      if (candidate.pid !== undefined && !this.isPidAlive(candidate.pid)) {
+        continue;
+      }
+      const ep: AntigravityEndpoint = {
+        httpsPort: candidate.httpsPort,
+        csrf: candidate.csrf,
+        owned: false,
+      };
+      if (await this.isHealthy(ep)) return ep;
+    }
+    return null;
+  }
+
+  private isPidAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException)?.code === 'EPERM';
+    }
   }
 
   /**

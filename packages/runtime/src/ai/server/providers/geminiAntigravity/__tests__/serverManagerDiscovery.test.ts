@@ -1,9 +1,14 @@
 // @vitest-environment node
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AntigravityServerManager, type AntigravityEndpoint } from '../AntigravityServerManager';
 
 type TestableAntigravityServerManager = {
   discoverRunningHub: () => Promise<AntigravityEndpoint | null>;
+  discoverDaemonHub: (daemonDir?: string) => Promise<AntigravityEndpoint | null>;
+  isPidAlive: (pid: number) => boolean;
   isHealthy: (endpoint: AntigravityEndpoint) => Promise<boolean>;
   runCommand: (executable: string, args: readonly string[]) => Promise<string>;
   runPowerShell: (script: string) => Promise<string>;
@@ -21,11 +26,47 @@ function testable(manager: AntigravityServerManager): TestableAntigravityServerM
 afterEach(() => vi.restoreAllMocks());
 
 describe('AntigravityServerManager running hub discovery', () => {
+  it('attaches to a healthy hub via ~/.gemini/antigravity/daemon/hub_*.json and skips dead PIDs', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-daemon-test-'));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, 'hub_dead.json'),
+        JSON.stringify({ pid: 99991, httpsPort: 51717, csrfToken: 'stale-csrf' }),
+        'utf8',
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, 'hub_live.json'),
+        JSON.stringify({ pid: 40591, httpsPort: 63063, csrfToken: 'daemon-csrf' }),
+        'utf8',
+      );
+
+      const manager = freshManager();
+      const tm = testable(manager);
+      vi.spyOn(tm, 'isPidAlive').mockImplementation((pid) => pid === 40591);
+      const healthy = vi.spyOn(tm, 'isHealthy').mockResolvedValue(true);
+
+      await expect(tm.discoverDaemonHub(tmpDir)).resolves.toEqual({
+        httpsPort: 63063,
+        csrf: 'daemon-csrf',
+        owned: false,
+      });
+      expect(healthy).toHaveBeenCalledTimes(1);
+      expect(healthy).toHaveBeenCalledWith({
+        httpsPort: 63063,
+        csrf: 'daemon-csrf',
+        owned: false,
+      });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it('attaches to a healthy macOS IDE hub using its live CSRF token and HTTPS port', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
 
     const manager = freshManager();
     const tm = testable(manager);
+    vi.spyOn(tm, 'discoverDaemonHub').mockResolvedValue(null);
     vi.spyOn(tm, 'runCommand').mockImplementation(async (executable) => {
       if (executable === '/bin/ps') {
         return '45198 /Applications/Antigravity.app/Contents/Resources/bin/language_server ' +
@@ -67,6 +108,7 @@ describe('AntigravityServerManager running hub discovery', () => {
 
     const manager = freshManager();
     const tm = testable(manager);
+    vi.spyOn(tm, 'discoverDaemonHub').mockResolvedValue(null);
     vi.spyOn(tm, 'runPowerShell').mockResolvedValue('live-csrf|1792,51717\n');
     const healthy = vi.spyOn(tm, 'isHealthy').mockImplementation(async (endpoint) => (
       endpoint.httpsPort === 51717
@@ -85,6 +127,7 @@ describe('AntigravityServerManager running hub discovery', () => {
 
     const manager = freshManager();
     const tm = testable(manager);
+    vi.spyOn(tm, 'discoverDaemonHub').mockResolvedValue(null);
     vi.spyOn(tm, 'runPowerShell').mockResolvedValue('live-csrf|1792,51717\n');
     vi.spyOn(tm, 'isHealthy').mockResolvedValue(false);
 
