@@ -1,0 +1,59 @@
+name: Flatpak
+
+# Manual only. Builds the Flatpak bundle from the checked-out ref for x86_64 and aarch64.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flatpak:
+    name: Flatpak (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-24.04
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+          pipx install "git+https://github.com/flatpak/flatpak-builder-tools.git#subdirectory=node"
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      # Ubuntu 24.04 blocks unprivileged user namespaces, which bubblewrap needs.
+      - name: Allow user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Generate offline sources
+        run: flatpak/generate-sources.sh
+
+      - name: Build
+        run: >
+          flatpak-builder --user --force-clean --disable-rofiles-fuse
+          --install-deps-from=flathub --default-branch=stable --repo=repo
+          build-dir flatpak/com.nimbalyst.Nimbalyst.yml
+
+      - name: Bundle
+        run: >
+          flatpak build-bundle repo Nimbalyst-${{ matrix.arch }}.flatpak
+          com.nimbalyst.Nimbalyst stable
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Nimbalyst-flatpak-${{ matrix.arch }}
+          path: Nimbalyst-${{ matrix.arch }}.flatpak
+          if-no-files-found: error
+          retention-days: 14
