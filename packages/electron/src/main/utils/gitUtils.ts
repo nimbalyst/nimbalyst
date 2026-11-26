@@ -4,6 +4,7 @@ import { join, relative, resolve } from 'path';
 import { promisify } from 'util';
 
 import { createGitRemoteCache } from './gitRemoteCache';
+import { runGit } from '../services/git/runGit';
 
 const execFileAsync = promisify(execFile);
 
@@ -171,20 +172,10 @@ export async function getUntrackedFilesInDirectories(
   let stdout: string;
   try {
     const chunks = chunkPathspecs(Array.from(inputsByPathspec.keys()));
-    const outputs = await Promise.all(chunks.map(chunk => new Promise<string>((resolveOutput, rejectOutput) => {
-      execFile(
-        'git',
-        ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard', '-z', '--', ...chunk],
-        { windowsHide: true, cwd: repoRoot, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER },
-        (error, chunkStdout) => {
-          if (error) {
-            rejectOutput(error);
-            return;
-          }
-          resolveOutput(chunkStdout);
-        }
-      );
-    })));
+    const outputs = await Promise.all(chunks.map(async chunk => (await runGit(
+      ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard', '-z', '--', ...chunk],
+      { cwd: repoRoot, maxBuffer: LS_FILES_MAX_BUFFER },
+    )).stdout));
     stdout = outputs.join('\0');
   } catch (error) {
     // Don't swallow this silently: a failure here makes untracked files vanish

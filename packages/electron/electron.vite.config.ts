@@ -12,6 +12,7 @@ import {
   stripRequireCacheSelfEviction,
 } from '../../scripts/main-bundle-require-policy.mjs'
 import dedupeWatcherAddsPlugin from './scripts/dedupeWatcherAddsPlugin.mjs'
+import { utilityEntryGraphGuard } from './scripts/utilityEntryGraphGuard.ts'
 
 // Plugin to optimize Shiki language imports
 const optimizeShikiPlugin = () => {
@@ -301,6 +302,9 @@ const config = {
     plugins: [
       resolveWorkspaceSubpaths(),
       guardMainBundleGraph(),
+      // Utility-process entries must not reach electron, electron-log, the
+      // main logger or the app store through any import.
+      utilityEntryGraphGuard(['gitRunner']),
       neutralizeRequireCacheSelfEviction(),
       staticFileTypeInJimp(),
       {
@@ -358,7 +362,10 @@ const config = {
           extensionBackendBootstrap: resolve(
             __dirname,
             'src/main/extensions/extensionBackendBootstrap.ts'
-          )
+          ),
+          // The git runner utility process (services/git/gitRunnerService.ts).
+          // A standalone entry for the same reason.
+          gitRunner: resolve(__dirname, 'src/main/services/git/gitRunnerEntry.ts')
         },
         external: [
           '@anthropic-ai/claude-agent-sdk', // Exclude from bundle - loaded dynamically at runtime

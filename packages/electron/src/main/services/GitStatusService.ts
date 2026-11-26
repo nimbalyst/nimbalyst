@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'fs';
 import * as path from 'path';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { getUntrackedFilesInDirectories, isGitAvailable, logEbadfDiagnostic } from '../utils/gitUtils';
+import { runGit } from './git/runGit';
 
 export interface FileGitStatus {
   filePath: string;
@@ -302,23 +303,13 @@ export class GitStatusService {
     }
 
     let statusPromise: Promise<string>;
-    statusPromise = new Promise<string>((resolve, reject) => {
-      // `--no-optional-locks` keeps this read-only call from refreshing (and so
-      // locking) `.git/index`, where it would contend with concurrent git
-      // writers such as the commit path (NIM-2285).
-      execFile('git', ['--no-optional-locks', 'status', '--porcelain'], {
-        windowsHide: true,
-        cwd: workspacePath,
-        encoding: 'utf8',
-        timeout: 5000, // Preserve the existing 5 second timeout.
-      }, (error, stdout) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve(stdout);
-      });
-    }).finally(() => {
+    // `--no-optional-locks` keeps this read-only call from refreshing (and so
+    // locking) `.git/index`, where it would contend with concurrent git
+    // writers such as the commit path (NIM-2285).
+    statusPromise = runGit(['--no-optional-locks', 'status', '--porcelain'], {
+      cwd: workspacePath,
+      timeout: 5000, // Preserve the existing 5 second timeout.
+    }).then(({ stdout }) => stdout).finally(() => {
       if (this.inFlightGitStatus.get(workspacePath) === statusPromise) {
         this.inFlightGitStatus.delete(workspacePath);
       }
