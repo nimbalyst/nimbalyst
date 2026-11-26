@@ -90,7 +90,7 @@ describe('usage popover elapsed time', () => {
     }
   });
 
-  it('keeps Gemini session and secondary marker/text values synchronized', () => {
+  it('shows no elapsed percentage or limit ratio for Gemini, whose quota durations are unknown', () => {
     const store = createStore();
     store.set(geminiUsageAtom, {
       fiveHour: { utilization: 20, resetsAt: new Date(fixedNow.getTime() + fiveHours * 0.51).toISOString() },
@@ -98,9 +98,11 @@ describe('usage popover elapsed time', () => {
       lastUpdated: fixedNow.getTime(), notStarted: false,
     } as never);
     render(<Provider store={store}><GeminiUsagePopover {...popoverProps} /></Provider>);
-    expectWindowElapsed(screen.getByText('Session').closest('.gemini-usage-section'), 49);
-    expectWindowElapsed(screen.getByText('Secondary').closest('.gemini-usage-section'), 49);
-    expect(screen.getAllByText('Limit ratio: 2.5×')).toHaveLength(2);
+    for (const heading of ['Session', 'Secondary']) {
+      const section = screen.getByText(heading).closest('.gemini-usage-section');
+      expect(section?.textContent).toContain('Resets in');
+      expect(section?.textContent).not.toMatch(/passed|Limit ratio/);
+    }
   });
 
   it('clamps elapsed time at both reset boundaries and omits invalid reset data', () => {
@@ -121,19 +123,5 @@ describe('usage popover elapsed time', () => {
     const invalid = screen.getByText('Invalid (Weekly)').closest('.claude-usage-section');
     expect(invalid?.querySelector('[title$="of window elapsed"]')).toBeNull();
     expect(invalid?.textContent).not.toMatch(/passed/);
-  });
-
-  it('omits the elapsed suffix and ratio line for an expired Gemini window', () => {
-    const store = createStore();
-    store.set(geminiUsageAtom, {
-      fiveHour: { utilization: 20, resetsAt: new Date(fixedNow.getTime() - 1).toISOString() },
-      sevenDay: { utilization: 20, resetsAt: new Date(fixedNow.getTime() + sevenDays * 0.51).toISOString() },
-      lastUpdated: fixedNow.getTime(), notStarted: false,
-    } as never);
-    render(<Provider store={store}><GeminiUsagePopover {...popoverProps} /></Provider>);
-    const expired = screen.getByText('Session').closest('.gemini-usage-section');
-    expect(expired?.textContent).toContain('Resets in Now');
-    expect(expired?.textContent).not.toMatch(/passed|Limit ratio/);
-    expect(screen.getByText('Secondary').closest('.gemini-usage-section')?.textContent).toContain('Limit ratio: 2.5×');
   });
 });
