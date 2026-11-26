@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { atom, useAtom, useAtomValue, type Getter } from 'jotai';
+import { atom, useAtom, useAtomValue, useStore, type Getter } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
   sessionRegistryAtom,
@@ -37,13 +37,21 @@ export type SessionTreeRowHandlers = Omit<SessionTreeProps, 'sessions' | 'root'>
 export interface VisibleSessionTreeRow {
   node: SessionTreeNode<SessionMeta>;
   baseDepth: number;
-  searchResult?: boolean;
   /** Set on a tree's top row: a merged wrapper keeps the pin identity of the hidden root. */
   pinSession?: SessionMeta;
 }
 
-/** Explicit toggle wins; otherwise a node opens while any member needs attention or is active. */
-function readTreeExpanded(get: Getter, node: { id: string; ids: readonly string[] }, activeSessionId: string | null): boolean {
+/**
+ * Title search opens the ancestors of nested matches without writing the saved
+ * expansion. A chevron click during search flips only this entry, so clearing the
+ * query restores each tree as the user left it.
+ */
+export const sessionTreeSearchExpandAtom = atom<ReadonlyMap<string, boolean>>(new Map());
+
+/** Search reveal wins, then the explicit toggle; otherwise a node opens while any member needs attention or is active. */
+export function readTreeExpanded(get: Getter, node: { id: string; ids: readonly string[] }, activeSessionId: string | null): boolean {
+  const searchOverride = get(sessionTreeSearchExpandAtom).get(node.id);
+  if (searchOverride !== undefined) return searchOverride;
   const explicit = get(workstreamStateAtom(node.id)).treeExpanded;
   if (explicit !== undefined && explicit !== null) return explicit;
   return node.ids.some(
@@ -140,6 +148,7 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
   const row = node.session;
   const pinSession = props.pinSession ?? row;
   const [, setState] = useAtom(workstreamStateAtom(row.id));
+  const store = useStore();
   const compact = useAtomValue(compactRowsAtom);
   const status = useAtomValue(
     useMemo(
@@ -158,7 +167,7 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
       [row.id, node.ids.join('\0'), activeSessionId]
     )
   );
-  const expanded = props.searchResult || status.expanded;
+  const expanded = status.expanded;
   const indent = treeIndent(node.depth - baseDepth);
   const hasChildren = node.children.length > 0;
   const hiddenCount = node.ids.length - 1;
@@ -194,12 +203,13 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
     hasChildren ? (
       <button
         aria-label={`${expanded ? 'Collapse' : 'Expand'} ${row.title}`}
-        disabled={props.searchResult}
         aria-expanded={expanded}
         className={`session-tree-chevron shrink-0 flex items-center p-0 leading-none ${compact ? "" : "mt-1"}`}
         onClick={(e) => {
           e.stopPropagation();
-          setState({ treeExpanded: !expanded });
+          const overrides = store.get(sessionTreeSearchExpandAtom);
+          if (overrides.has(row.id)) store.set(sessionTreeSearchExpandAtom, new Map(overrides).set(row.id, !expanded));
+          else setState({ treeExpanded: !expanded });
         }}
       >
         <MaterialSymbol icon={expanded ? 'expand_more' : 'chevron_right'} size={14} />
@@ -207,7 +217,7 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
     ) : (
       <span className="w-3.5 shrink-0" />
     )
-  ), [hasChildren, expanded, row.title, compact, setState, props.searchResult]);
+  ), [hasChildren, expanded, row.id, row.title, compact, setState, store]);
   return (
     <div
       className="session-tree-row"

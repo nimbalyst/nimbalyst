@@ -30,24 +30,6 @@ export function treeIndent(depth: number) {
   return { level: Math.min(Math.max(0, depth), 3), rail: depth > 3 };
 }
 
-/** Project matches and their ancestor paths without including unrelated siblings. */
-export function matchingSessionPaths<T extends TreeSession>(rows: readonly T[], matches: (row: T) => boolean) {
-  const byId = new Map(rows.map(row => [row.id, row]));
-  const visible = new Map<string, T>();
-  let matchCount = 0;
-  for (const row of rows) {
-    if (!matches(row)) continue;
-    matchCount++;
-    let current: T | undefined = row;
-    while (current && !visible.has(current.id)) {
-      visible.set(current.id, current);
-      const parent: T | undefined = current.parentSessionId ? byId.get(current.parentSessionId) : undefined;
-      current = parent && (parent.worktreeId ?? null) === (current.worktreeId ?? null) ? parent : undefined;
-    }
-  }
-  return { roots: buildSessionTree([...visible.values()]), matchCount };
-}
-
 /** Missing parents become visible roots; corrupt cycles are cut without losing rows. */
 export function buildSessionTree<T extends TreeSession>(rows: readonly T[]): SessionTreeNode<T>[] {
   const byId = new Map(rows.map((row) => [row.id, row]));
@@ -147,7 +129,9 @@ export function visibleSessionTreeIds<T extends TreeSession>(
   return ids;
 }
 
-export function sessionTreeRootId(id: string, rows: ReadonlyMap<string, TreeSession>): string {
+/** The session and its ancestors up to the sidebar root; stops at a blitz parent, a worktree boundary, or a cycle. */
+export function sessionTreePath(id: string, rows: ReadonlyMap<string, TreeSession>): string[] {
+  const path = [id];
   const visited = new Set<string>();
   let current = id;
   while (!visited.has(current)) {
@@ -163,8 +147,34 @@ export function sessionTreeRootId(id: string, rows: ReadonlyMap<string, TreeSess
     )
       break;
     current = parent.id;
+    path.push(current);
   }
-  return current;
+  return path;
+}
+
+export function sessionTreeRootId(id: string, rows: ReadonlyMap<string, TreeSession>): string {
+  const path = sessionTreePath(id, rows);
+  return path[path.length - 1];
+}
+
+/**
+ * Title search: the sidebar roots whose tree holds a match, and the ancestors to open
+ * so a nested match is visible. A match's own expansion is left alone, so a matching
+ * parent keeps its children behind its chevron.
+ */
+export function titleSearchReveal(
+  rows: ReadonlyMap<string, TreeSession>,
+  matches: (row: TreeSession) => boolean
+): { rootIds: Set<string>; expandIds: Set<string> } {
+  const rootIds = new Set<string>();
+  const expandIds = new Set<string>();
+  for (const row of rows.values()) {
+    if (!matches(row)) continue;
+    const path = sessionTreePath(row.id, rows);
+    rootIds.add(path[path.length - 1]);
+    for (const id of path.slice(1)) expandIds.add(id);
+  }
+  return { rootIds, expandIds };
 }
 
 /** Server is authoritative; this check supplies immediate drag and picker feedback. */

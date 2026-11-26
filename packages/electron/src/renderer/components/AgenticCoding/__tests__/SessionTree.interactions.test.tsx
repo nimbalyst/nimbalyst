@@ -10,7 +10,7 @@ vi.mock('../../../services/ErrorNotificationService', () => ({
   errorNotificationService: { showInfo: vi.fn(), showError: vi.fn() },
 }));
 import { store } from '@nimbalyst/runtime/store';
-import { SessionTree, useVisibleSessionTreeRows } from '../SessionTree.tsx';
+import { SessionTree, sessionTreeSearchExpandAtom, useVisibleSessionTreeRows } from '../SessionTree.tsx';
 import { SessionMovePicker } from '../SessionMovePicker';
 import { WorkstreamEmptyState } from '../WorkstreamEmptyState';
 import { activeWorkspacePathAtom } from '../../../store/atoms/openProjects';
@@ -110,6 +110,21 @@ function tree() {
   );
 }
 describe('tree interactions', () => {
+  it('opens the ancestors of a title match during search without saving it, and its chevron still collapses', () => {
+    store.set(workstreamStateAtom('root'), { treeExpanded: false });
+    tree();
+    expect(screen.queryByText('leaf')).toBeNull();
+    act(() => store.set(sessionTreeSearchExpandAtom, new Map([['root', true], ['middle', true]])));
+    expect(screen.queryByText('leaf')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse root' }));
+    expect(screen.queryByText('middle')).toBeNull();
+    expect(store.get(workstreamStateAtom('root')).treeExpanded).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Expand root' }));
+    expect(screen.queryByText('leaf')).not.toBeNull();
+    act(() => store.set(sessionTreeSearchExpandAtom, new Map()));
+    expect(screen.queryByText('middle')).toBeNull();
+    expect(store.get(workstreamStateAtom('root')).treeExpanded).toBe(false);
+  });
   it('keeps an empty workstream distinct from an ordinary session when its children disappear', () => {
     const wrapper = row('workstream', null, { sessionType: 'workstream' });
     const child = row('child', 'workstream');

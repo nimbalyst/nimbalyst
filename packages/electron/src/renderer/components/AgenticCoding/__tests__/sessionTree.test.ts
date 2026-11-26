@@ -3,11 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSessionTree,
   MAX_TREE_DEPTH,
-  matchingSessionPaths,
   mergedTreeHeader,
   rendersAsSessionTree,
   sessionMoveError,
   sessionTreeRootId,
+  titleSearchReveal,
   treeIndent,
   treeParentIds,
   visibleSessionTreeIds,
@@ -19,16 +19,27 @@ const row = (
   extra: Partial<TreeSession> = {}
 ): TreeSession => ({ id, parentSessionId, createdAt: 1, ...extra });
 describe('session tree projection', () => {
-  it('reveals a matching grandchild and its ancestors but counts only title hits', () => {
+  const reveal = (rows: TreeSession[], match: (s: TreeSession) => boolean) => {
+    const { rootIds, expandIds } = titleSearchReveal(new Map(rows.map(r => [r.id, r])), match);
+    return { rootIds: [...rootIds].sort(), expandIds: [...expandIds].sort() };
+  };
+  it('keeps the root of a nested title match and opens only its ancestors', () => {
     const rows = [row('root'), row('parent', 'root'), row('Пост-запуск', 'parent'), row('other', 'parent')];
-    const { roots, matchCount } = matchingSessionPaths(rows, session => session.id.toLowerCase().includes('пост'));
-    expect(matchCount).toBe(1);
-    expect(roots.map(root => root.ids)).toEqual([['root', 'parent', 'Пост-запуск']]);
-    expect(matchingSessionPaths(rows, () => false).roots).toEqual([]);
+    expect(reveal(rows, s => s.id.toLowerCase().includes('пост'))).toEqual({ rootIds: ['root'], expandIds: ['parent', 'root'] });
+    expect(reveal(rows, () => false)).toEqual({ rootIds: [], expandIds: [] });
   });
   it('does not add an unrelated root across a worktree boundary', () => {
     const rows = [row('root'), row('match', 'root', { worktreeId: 'other' })];
-    expect(matchingSessionPaths(rows, s => s.id === 'match').roots.map(r => r.ids)).toEqual([['match']]);
+    expect(reveal(rows, s => s.id === 'match')).toEqual({ rootIds: ['match'], expandIds: [] });
+  });
+  it('leaves a matching parent on its own expansion so its children stay behind its chevron', () => {
+    const rows = [row('Launch'), row('draft', 'Launch'), row('notes', 'Launch')];
+    expect(reveal(rows, s => s.id === 'Launch')).toEqual({ rootIds: ['Launch'], expandIds: [] });
+  });
+  it('stops at a blitz parent the way the sidebar root lookup does', () => {
+    const rows = [row('blitz', null, { sessionType: 'blitz' }), row('match', 'blitz')];
+    expect(reveal(rows, s => s.id === 'match')).toEqual({ rootIds: ['match'], expandIds: [] });
+    expect(sessionTreeRootId('match', new Map(rows.map(r => [r.id, r])))).toBe('match');
   });
   it('sorts siblings by pins then subtree activity and includes the root in file rollups', () => {
     const [root] = buildSessionTree([

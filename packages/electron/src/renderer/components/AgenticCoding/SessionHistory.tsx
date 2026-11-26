@@ -12,8 +12,8 @@ import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { CollapsibleGroup } from './CollapsibleGroup';
 import { WorktreeBaseBranchPicker } from './WorktreeBaseBranchPicker';
 import { SessionListItem } from './SessionListItem';
-import { SessionTreeRow, useVisibleSessionTreeRows, type VisibleSessionTreeRow } from './SessionTree.tsx';
-import { matchingSessionPaths, visibleSessionTreeIds, sessionTreeRootId, rendersAsSessionTree, treeParentIds } from './sessionTreeModel';
+import { SessionTreeRow, readTreeExpanded, sessionTreeSearchExpandAtom, useVisibleSessionTreeRows, type VisibleSessionTreeRow } from './SessionTree.tsx';
+import { titleSearchReveal, visibleSessionTreeIds, sessionTreeRootId, rendersAsSessionTree, treeParentIds } from './sessionTreeModel';
 import { resolveSessionArchiveSelection, sessionArchiveSubtreeIds } from './sessionArchiveSelection';
 import { WorkstreamGroup } from './WorkstreamGroup';
 import { BlitzGroup } from './BlitzGroup';
@@ -46,8 +46,8 @@ import {
 import { alphaFeatureEnabledAtom, worktreesFeatureAvailableAtom } from '../../store/atoms/appSettings';
 import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
 import { useGitRepoProbe } from '../../hooks/useGitRepoProbe';
-import { workstreamStateAtom, setTreeExpandedForAtom } from '../../store/atoms/workstreamState';
-import { sessionProcessingAtom, sessionUnreadAtom, sessionHasPendingInteractivePromptAtom, activeSessionIdAtom as globalActiveSessionIdAtom, sessionPinnedUpdateAtom, createWorkstreamAtom } from '../../store/atoms/sessions';
+import { setTreeExpandedForAtom } from '../../store/atoms/workstreamState';
+import { activeSessionIdAtom as globalActiveSessionIdAtom, sessionPinnedUpdateAtom, createWorkstreamAtom } from '../../store/atoms/sessions';
 import { collapsedGroupsAtom, compactRowsAtom, setCompactRowsAtom, showContextUsageAtom, setShowContextUsageAtom, sortOrderAtom, setCollapsedGroupsAtom, setSortOrderAtom } from '../../store/atoms/agentMode';
 import {
   recentlyRenamedSessionAtom,
@@ -809,22 +809,24 @@ const SessionHistoryComponent: React.FC = () => {
     };
   }, [workspacePath, updateSessionStore]);
 
+  // Title search also matches sessions nested under a root: the root stays in the list
+  // and the ancestors of each nested match open for as long as the query is active.
+  const titleReveal = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    return query ? titleSearchReveal(sessionRegistry, s => ((s as SessionItem).title ?? '').toLowerCase().includes(query)) : null;
+  }, [searchQuery, sessionRegistry]);
+  const searchExpandKey = titleReveal && !contentSearchTriggered ? [...titleReveal.expandIds].sort().join('\0') : '';
+  const setSearchExpand = useSetAtom(sessionTreeSearchExpandAtom);
+  useEffect(() => {
+    setSearchExpand(new Map(searchExpandKey ? searchExpandKey.split('\0').map(id => [id, true] as const) : []));
+  }, [searchExpandKey, setSearchExpand]);
+  useEffect(() => () => setSearchExpand(new Map()), [setSearchExpand]);
+
   // Session list refresh is now handled by centralized listener in sessionListListeners.ts
   // Components just read from sessionListAtom which updates automatically
 
-  const titlePaths = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query || contentSearchTriggered) return null;
-    const rows = Array.from(sessionRegistry.values()).filter(s =>
-      (!workspacePath || !s.workspaceId || s.workspaceId === workspacePath) &&
-      (s.remoteHostDeviceId ?? '') === selectedRemoteHost && (showArchived || !s.isArchived)
-    );
-    return matchingSessionPaths(rows, s => (s.title ?? '').toLowerCase().includes(query) &&
-      (!hiddenPhases.length || matchesSessionListPhases(s, hiddenPhases, sessionRegistry)) &&
-      (!tagFilter.tags.length || tagFilter.tags.some(tag => matchesSessionListTag(s, tag, sessionRegistry))));
-  }, [sessionRegistry, searchQuery, contentSearchTriggered, workspacePath, selectedRemoteHost, showArchived, tagFilter.tags, hiddenPhases]);
-
   // Client-side title filtering (instant, no database query)
+  // Note: Archived session filtering is handled by sessionListRootAtom based on showArchivedSessionsAtom
   //
   // Bug fix (Temp/yogi_v0681/bug_session_search_contents_reset_to_zero.md): this effect used to
   // unconditionally reset `contentSearchTriggered` and overwrite `sessions` with a title-only
@@ -853,23 +855,32 @@ const SessionHistoryComponent: React.FC = () => {
 
     const activeTags = tagFilter.tags;
     const hasTagFilter = activeTags.length > 0;
+    const titleQuery = searchQuery.trim().toLowerCase();
+    const hasTitleQuery = titleQuery.length > 0;
     const hasPhaseFilter = hiddenPhases.length > 0;
-    if (titlePaths) {
-      setSessions(titlePaths.roots.map(root => root.session).sort(compareSessionOrder));
-      return;
-    }
-    if (!hasTagFilter && !hasPhaseFilter) {
+
+    if (!hasTitleQuery && !hasTagFilter && !hasPhaseFilter) {
       // No filters - show all sessions (filtered by mode)
       setSessions([...sessionsToFilter].sort(compareSessionOrder));
       return;
     }
 
-    const filtered = sessionsToFilter.filter(session =>
-      (!hasPhaseFilter || matchesSessionListPhases(session, hiddenPhases, sessionRegistry)) &&
-      (!hasTagFilter || activeTags.some(tag => matchesSessionListTag(session, tag, sessionRegistry)))
-    );
+    // Filter sessions by title (case-insensitive) AND tags (OR within tags) AND phase.
+    const filtered = sessionsToFilter.filter(session => {
+      if (hasPhaseFilter && !matchesSessionListPhases(session, hiddenPhases, sessionRegistry)) {
+        return false;
+      }
+      if (hasTitleQuery && !(session.title ?? '').toLowerCase().includes(titleQuery) && !titleReveal?.rootIds.has(session.id)) {
+        return false;
+      }
+      if (hasTagFilter) {
+        const matchesAny = activeTags.some(t => matchesSessionListTag(session, t, sessionRegistry));
+        if (!matchesAny) return false;
+      }
+      return true;
+    });
     setSessions(filtered.sort(compareSessionOrder));
-  }, [searchQuery, tagFilter.tags, hiddenPhases, allSessions, mode, compareSessionOrder, sessionRegistry, contentSearchTriggered, titlePaths]);
+  }, [searchQuery, tagFilter.tags, hiddenPhases, allSessions, mode, compareSessionOrder, sessionRegistry, contentSearchTriggered, titleReveal]);
 
   useEffect(() => {
     const commitOrderMap = (nextMap: Map<string, number>) => {
@@ -2120,7 +2131,6 @@ const SessionHistoryComponent: React.FC = () => {
   // Group worktree sessions by worktreeId and compute worktree timestamps
   const worktreeGroupsData = useMemo(() => {
     const groups = new Map<string, { sessions: SessionItem[]; timestamp: number }>();
-    if (titlePaths) return groups;
     const allowedRoots = new Set(sessions.map(session => session.id));
     for (const session of sessionRegistry.values()) {
       if (!allowedRoots.has(sessionTreeIndex.rootOf.get(session.id) ?? session.id)) continue;
@@ -2143,7 +2153,7 @@ const SessionHistoryComponent: React.FC = () => {
     }
 
     return groups;
-  }, [sessions, sortBy, sessionRegistry, sessionTreeIndex, showArchived, getDisplayedOrderTimestamp, titlePaths]);
+  }, [sessions, sortBy, sessionRegistry, sessionTreeIndex, showArchived, getDisplayedOrderTimestamp]);
 
   // Get all worktree IDs for batch fetching
   const sortedWorktreeIds = useMemo(() => {
@@ -2151,24 +2161,10 @@ const SessionHistoryComponent: React.FC = () => {
   }, [worktreeGroupsData]);
 
   // Build unified time-grouped data with both sessions and worktrees interleaved
-  const unifiedItems = useMemo(() => {
+  const groupedItems = useMemo(() => {
     const timestampField = sortBy === 'updated' ? 'updatedAt' : 'createdAt';
     const items: UnifiedListItem[] = [];
     const pinnedItems: UnifiedListItem[] = [];
-    if (titlePaths) {
-      for (const root of titlePaths.roots) {
-        const common = {
-          session: root.session,
-          timestamp: getDisplayedOrderTimestamp(root.session),
-          rank: getDisplayedOrderRank(root.session.id),
-        };
-        const item: UnifiedListItem = root.children.length || rendersAsSessionTree(root.session)
-          ? { ...common, type: 'workstream', sessions: [] }
-          : { ...common, type: 'session', isWorktreeSession: !!root.session.worktreeId };
-        (root.session.isPinned ? pinnedItems : items).push(item);
-      }
-      return { items, pinnedItems };
-    }
     // Add regular sessions and workstreams (those without worktreeId)
     for (const session of sessions) {
       // Skip blitz sessions - they're rendered via BlitzGroup, not as individual items
@@ -2344,11 +2340,6 @@ const SessionHistoryComponent: React.FC = () => {
       }
     }
 
-    return { items, pinnedItems };
-  }, [sessions, worktreeGroupsData, sortBy, worktreeCache, sessionTreeIndex, blitzCache, superLoops, showArchived, getDisplayedOrderRank, getDisplayedOrderTimestamp, titlePaths]);
-
-  const groupedItems = useMemo(() => {
-    const { items, pinnedItems } = unifiedItems;
     // Group non-pinned items into time buckets
     const groups: Record<TimeGroupKey, UnifiedListItem[]> = {
       'Today': [],
@@ -2371,7 +2362,7 @@ const SessionHistoryComponent: React.FC = () => {
     }
 
     // Sort pinned items by timestamp (newest first)
-    const sortedPins = [...pinnedItems].sort(compareUnifiedItems);
+    pinnedItems.sort(compareUnifiedItems);
 
     // Build pinned and time groups
     const result: Record<string, UnifiedListItem[]> = {};
@@ -2381,7 +2372,7 @@ const SessionHistoryComponent: React.FC = () => {
 
     // If we have pinned items, add them as a "Pinned" group
     if (pinnedItems.length > 0) {
-      result['Pinned'] = sortedPins;
+      result['Pinned'] = pinnedItems;
     }
 
     // Add time-based groups
@@ -2392,7 +2383,7 @@ const SessionHistoryComponent: React.FC = () => {
     }
 
     return result as Record<TimeGroupKey | 'Pinned' | 'Meta Agent', UnifiedListItem[]>;
-  }, [unifiedItems, compareUnifiedItems]);
+  }, [sessions, worktreeGroupsData, sortBy, worktreeCache, workstreamChildrenCache, sessionTreeIndex, blitzCache, superLoops, showArchived, isMetaAgentEnabled, getDisplayedOrderRank, getDisplayedOrderTimestamp, compareSessionOrder, compareUnifiedItems]);
 
   const groupKeys = useMemo(
     () => Object.keys(groupedItems) as (TimeGroupKey | 'Pinned' | 'Meta Agent')[],
@@ -2409,7 +2400,6 @@ const SessionHistoryComponent: React.FC = () => {
 
   const workstreamTrees = useMemo(() => {
     const trees: { key: string; rows: SessionItem[] }[] = [];
-    if (titlePaths) return trees;
     for (const groupKey of groupKeys) {
       if (collapsedGroups.includes(groupKey)) continue;
       for (const item of groupedItems[groupKey]) {
@@ -2419,21 +2409,8 @@ const SessionHistoryComponent: React.FC = () => {
       }
     }
     return trees;
-  }, [groupKeys, groupedItems, collapsedGroups, sessionRegistry, titlePaths]);
+  }, [groupKeys, groupedItems, collapsedGroups, sessionRegistry]);
   const workstreamTreeRows = useVisibleSessionTreeRows(workstreamTrees, activeSessionId, workspacePath);
-  const searchTreeRows = useMemo(() => {
-    const trees = new Map<string, VisibleSessionTreeRow[]>();
-    for (const root of titlePaths?.roots ?? []) {
-      const rows: VisibleSessionTreeRow[] = [];
-      const visit = (node: typeof root) => {
-        rows.push({ node, baseDepth: 0, searchResult: true });
-        node.children.forEach(visit);
-      };
-      visit(root);
-      trees.set(root.session.id, rows);
-    }
-    return trees;
-  }, [titlePaths]);
 
   // Every parent with children in the list, expanded or not, for Collapse all / Expand all.
   const allTreeParentIds = useMemo(() => {
@@ -2451,17 +2428,22 @@ const SessionHistoryComponent: React.FC = () => {
     return ids;
   }, [groupKeys, groupedItems, sessionRegistry]);
   const setTreeExpandedFor = useSetAtom(setTreeExpandedForAtom);
+  // During a title search the opened ancestors follow Collapse all / Expand all too.
+  const setAllTreesExpanded = useCallback((expanded: boolean) => {
+    setTreeExpandedFor({ ids: allTreeParentIds, expanded });
+    setSearchExpand(prev => (prev.size ? new Map([...prev.keys()].map(id => [id, expanded] as const)) : prev));
+  }, [setTreeExpandedFor, setSearchExpand, allTreeParentIds]);
 
   const flatVirtuosoItems = useMemo(() => {
     const flat: FlatVirtuosoItem[] = [];
     for (const groupKey of groupKeys) {
       const items = groupedItems[groupKey];
-      const isExpanded = !!titlePaths || !collapsedGroups.includes(groupKey);
+      const isExpanded = !collapsedGroups.includes(groupKey);
       flat.push({ kind: 'group-header', key: `group:${groupKey}`, groupKey, itemCount: items.length, isExpanded });
       if (isExpanded) {
         for (const item of items) {
           if (item.type === 'workstream') {
-            for (const row of (titlePaths ? searchTreeRows : workstreamTreeRows).get(item.session.id) ?? []) {
+            for (const row of workstreamTreeRows.get(item.session.id) ?? []) {
               flat.push({ kind: 'tree-row', key: `tree:${row.node.session.id}`, groupKey, row });
             }
             continue;
@@ -2471,7 +2453,7 @@ const SessionHistoryComponent: React.FC = () => {
       }
     }
     return flat;
-  }, [groupKeys, groupedItems, collapsedGroups, workstreamTreeRows, searchTreeRows, titlePaths]);
+  }, [groupKeys, groupedItems, collapsedGroups, workstreamTreeRows]);
 
   // Keep visual order ref in sync with the flattened list for shift-click range selection.
   // Must include ALL visible session IDs in exact visual order -- including sessions nested
@@ -2479,7 +2461,7 @@ const SessionHistoryComponent: React.FC = () => {
   visualOrderRef.current = () => {
     const ids: string[] = [];
     const treeOrder = (rows: SessionItem[]) => visibleSessionTreeIds(rows.map(row => ({...row, updatedAt: Math.max(row.updatedAt, workspaceTurnActivity.get(row.id) ?? 0)})), node =>
-      store.get(workstreamStateAtom(node.session.id)).treeExpanded ?? node.ids.some(id => id === activeSessionId || store.get(sessionProcessingAtom(id)) || store.get(sessionUnreadAtom(id)) || store.get(sessionHasPendingInteractivePromptAtom(id)))
+      readTreeExpanded(store.get, { id: node.session.id, ids: node.ids }, activeSessionId)
     );
     for (const entry of flatVirtuosoItems) {
       if (entry.kind === 'tree-row') {
@@ -3261,11 +3243,11 @@ const SessionHistoryComponent: React.FC = () => {
             <path d="M6 8h4" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round"/>
           </svg>
         </button>
-        {!titlePaths && allTreeParentIds.length > 0 && (
+        {allTreeParentIds.length > 0 && (
           <>
         <button
           className="session-history-collapse-all flex items-center justify-center px-1 py-1 text-xs rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text-faint)] cursor-pointer transition-all duration-150 outline-none hover:bg-[var(--nim-bg-tertiary)] hover:border-[var(--nim-primary)] hover:text-[var(--nim-text)]"
-          onClick={() => setTreeExpandedFor({ ids: allTreeParentIds, expanded: false })}
+          onClick={() => setAllTreesExpanded(false)}
           title="Collapse all"
           aria-label="Collapse all"
         >
@@ -3273,7 +3255,7 @@ const SessionHistoryComponent: React.FC = () => {
         </button>
         <button
           className="session-history-expand-all flex items-center justify-center px-1 py-1 text-xs rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text-faint)] cursor-pointer transition-all duration-150 outline-none hover:bg-[var(--nim-bg-tertiary)] hover:border-[var(--nim-primary)] hover:text-[var(--nim-text)]"
-          onClick={() => setTreeExpandedFor({ ids: allTreeParentIds, expanded: true })}
+          onClick={() => setAllTreesExpanded(true)}
           title="Expand all"
           aria-label="Expand all"
         >
@@ -3283,7 +3265,7 @@ const SessionHistoryComponent: React.FC = () => {
         )}
         {(() => {
           const hasFilter = searchQuery.trim().length > 0 || tagFilter.tags.length > 0 || hasPhaseFilter;
-          const visibleCount = titlePaths?.matchCount ?? sessions.length;
+          const visibleCount = sessions.length;
           const totalLabel = `${iosMatchCount} non-archived session${iosMatchCount === 1 ? '' : 's'} in this workspace (matches the iOS project list count)`;
           const title = hasFilter
             ? `${visibleCount} of ${iosMatchCount} visible after current filters -- ${totalLabel}`
@@ -3485,7 +3467,6 @@ const SessionHistoryComponent: React.FC = () => {
                     <div className="collapsible-group pb-1">
                       <button
                         className="collapsible-group-header flex items-center gap-2 w-full py-2 px-3 bg-transparent border-none cursor-pointer text-xs font-semibold text-nim-muted text-left transition-colors duration-150 hover:bg-nim-hover"
-                        disabled={!!titlePaths}
                         onClick={() => handleToggleGroup(entry.groupKey)}
                         aria-expanded={entry.isExpanded}
                         aria-label={`${entry.groupKey} group, ${entry.isExpanded ? 'expanded' : 'collapsed'}`}
