@@ -1,8 +1,17 @@
 name: Flatpak
 
-# Manual only. Builds the Flatpak bundle from the checked-out ref for x86_64 and aarch64.
+# Builds the Flatpak bundle for x86_64 and aarch64 from the ref that triggered it.
+# Manual runs can pick any branch or tag. Pull requests build only when they touch the Flatpak files.
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'flatpak/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/flatpak.yml'
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: read
