@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When a project has more files than the operating system can watch, the file watcher now retries after 1, 5, 15, then 30 minutes instead of re-scanning the project as often as every second, and the "File updates delayed" warning suggests adding large folders to .gitignore (#2021).
 - In Claude Agent sessions, the approval prompt for a shell command now shows the agent's one-line description of the command above it, and the prompt for starting a sub-agent shows its task instead of just "Agent" (#1792).
 - Jump to question now goes to the newest open question instead of the oldest, the automatic jump to a new question runs once instead of again each time the pane is shown or the session is reopened, and reopening a session whose open question was already shown now keeps the transcript at the end (#1867).
+- Folders excluded through a repository's local or global git exclude settings are no longer watched for changes, so a large excluded folder no longer slows the app down.
 
 ### Removed
 <!-- Removed features go here -->
