@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- AI actions with non-Latin headings in `ai-actions.md` remain separate actions instead of being dropped as duplicates (#1565).
 
 ### Removed
 <!-- Removed features go here -->
