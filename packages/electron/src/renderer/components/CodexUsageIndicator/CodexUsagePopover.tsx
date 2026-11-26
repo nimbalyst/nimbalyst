@@ -5,6 +5,7 @@
  */
 
 import React, { useEffect, RefObject } from 'react';
+import { limitRatio, formatLimitRatio, LIMIT_RATIO_EXPLANATION } from '../limitRatio';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
@@ -34,16 +35,17 @@ interface UsageSectionProps {
   windowDurationMs: number | null;
 }
 
-function calculateTimeElapsedPercent(resetsAt: string | null, windowDurationMs: number | null): number {
-  if (!resetsAt || !windowDurationMs) return 0;
+function calculateTimeElapsedPercent(resetsAt: string | null, windowDurationMs: number | null): number | null {
+  if (!resetsAt || !Number.isFinite(windowDurationMs) || !windowDurationMs || windowDurationMs <= 0) return null;
 
   const resetTime = new Date(resetsAt).getTime();
+  if (!Number.isFinite(resetTime)) return null;
   const now = Date.now();
   const windowStartTime = resetTime - windowDurationMs;
   const elapsedMs = now - windowStartTime;
 
   const percent = (elapsedMs / windowDurationMs) * 100;
-  return Math.max(0, Math.min(100, percent));
+  return Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
 }
 
 const UsageSection: React.FC<UsageSectionProps> = ({
@@ -63,7 +65,9 @@ const UsageSection: React.FC<UsageSectionProps> = ({
 
   const colors = colorClasses[color] || colorClasses.muted;
   const timeElapsedPercent = calculateTimeElapsedPercent(resetsAt, windowDurationMs);
-  const isOverPacing = utilization > timeElapsedPercent;
+  const remainingMs = resetsAt ? Date.parse(resetsAt) - Date.now() : NaN;
+  const ratio = limitRatio(windowDurationMs !== null && remainingMs > 0 && remainingMs <= windowDurationMs ? timeElapsedPercent : null, utilization);
+  const isOverPacing = timeElapsedPercent !== null && utilization > timeElapsedPercent;
 
   return (
     <div className="codex-usage-section mb-3 last:mb-0">
@@ -78,7 +82,7 @@ const UsageSection: React.FC<UsageSectionProps> = ({
           className={`h-full rounded-full transition-all duration-300 ${colors.bar}`}
           style={{ width: `${Math.min(utilization, 100)}%` }}
         />
-        {resetsAt && windowDurationMs && (
+        {timeElapsedPercent !== null && (
           <div
             className={`absolute top-0 h-full w-0.5 transition-all duration-300 ${isOverPacing ? 'bg-red-400' : 'bg-nim-text-muted'}`}
             style={{ left: `${timeElapsedPercent}%` }}
@@ -90,9 +94,10 @@ const UsageSection: React.FC<UsageSectionProps> = ({
         <span>{subtitle}</span>
         <span className="flex items-center gap-1">
           <MaterialSymbol icon="schedule" size={12} className="shrink-0 opacity-70" />
-          <span>{resetsAt ? `Resets in ${formatResetTime(resetsAt)}` : 'Reset time unavailable'}</span>
+          <span>{resetsAt ? `Resets in ${formatResetTime(resetsAt)}${timeElapsedPercent !== null ? ` [${Math.round(timeElapsedPercent)}% passed]` : ''}` : 'Reset time unavailable'}</span>
         </span>
       </div>
+      <div className="text-[11px] text-nim-muted" title={LIMIT_RATIO_EXPLANATION}>Limit ratio: {formatLimitRatio(ratio)}</div>
     </div>
   );
 };
