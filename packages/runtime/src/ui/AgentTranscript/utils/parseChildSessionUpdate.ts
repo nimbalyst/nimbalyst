@@ -104,3 +104,20 @@ export function parseChildSessionUpdate(text: string, promptActor?: string): Chi
   const report = parseReport(content);
   return report ? { kind: 'single', segments: [{ text: content, report }] } : null;
 }
+
+const SINGLE_REPORT_PREFIX = '[Child Session Update]';
+const SYSTEM_MESSAGE_OPEN = '<NIMBALYST_SYSTEM_MESSAGE>';
+
+/**
+ * Same answer as `parseChildSessionUpdate(text, promptActor)?.kind === 'single'`,
+ * but rejects ordinary messages with a prefix check instead of a full parse.
+ * Row grouping calls this on every streaming update, so a large pasted user
+ * message must not be stripped and split each tick.
+ */
+export function isStandaloneChildSessionUpdate(text: string, promptActor?: string): boolean {
+  if (promptActor === 'human' || promptActor === 'system') return false;
+  let start = 0;
+  while (start < text.length && /\s/.test(text[start])) start++;
+  if (!text.startsWith(SINGLE_REPORT_PREFIX, start) && !text.startsWith(SYSTEM_MESSAGE_OPEN, start)) return false;
+  return parseChildSessionUpdate(text, promptActor)?.kind === 'single';
+}

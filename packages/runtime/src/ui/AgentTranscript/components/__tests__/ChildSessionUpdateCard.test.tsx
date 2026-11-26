@@ -9,7 +9,7 @@ afterEach(cleanup);
 
 describe('child report disclosure', () => {
   it('keeps questions visible and only mounts exact file links when opened', () => {
-    const paths = ['C:\\Users\\Egor Sokolov\\текст.md', 'packages\\.claude\\settings.json', 'LICENSE'];
+    const paths = ['C:\\Users\\Jane Doe\\текст.md', 'packages\\.claude\\settings.json', 'LICENSE'];
     const text = '[Child Session Update]\nSession: "Worker" (child)\nStatus: waiting_for_input\nEvent: session:waiting\nRecent messages:\n- Assistant: Done\nFiles modified:\n'
       + paths.map(path => '- ' + path).join('\n') + '\n\nACTION REQUIRED: answer\n  promptId: abc';
     const display = parseChildSessionUpdate(text)!;

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
-import { parseChildSessionUpdate } from '../parseChildSessionUpdate';
+import { isStandaloneChildSessionUpdate, parseChildSessionUpdate } from '../parseChildSessionUpdate';
 
 const header = '[Child Session Update]\nSession: "Worker (one)" (child)\nStatus: idle\nEvent: session:completed';
 const report = (body: string) => header + '\n' + body;
@@ -15,7 +15,7 @@ describe('child report presentation', () => {
   });
 
   it('preserves Windows paths literally and handles CRLF and system suffix', () => {
-    const paths = ['C:\\Users\\Egor Sokolov\\x.md', 'packages\\.claude\\settings.json', 'docs\\_drafts\\текст.md'];
+    const paths = ['C:\\Users\\Jane Doe\\x.md', 'packages\\.claude\\settings.json', 'docs\\_drafts\\текст.md'];
     const text = report('Files modified:\n' + paths.map(p => '- ' + p).join('\n')).replace(/\n/g, '\r\n');
     expect(parseChildSessionUpdate(text + '\n<NIMBALYST_SYSTEM_MESSAGE>context</NIMBALYST_SYSTEM_MESSAGE>')!.segments[0].report!.files).toEqual(paths);
   });
@@ -83,5 +83,25 @@ describe('child report presentation', () => {
       + report('Files modified:\n- a.md').replace('(child)', '(12345678-abcd-4000-8000-000000000000)');
     expect(parseChildSessionUpdate(text)!.segments[1].report!.files).toEqual(['a.md']);
     expect(parseChildSessionUpdate(text.replace('Worker (12345678)', 'Worker (87654321)'))).toBeNull();
+  });
+
+  it('standalone check agrees with the full parser for every message shape', () => {
+    const single = report('Files modified:\n- a.md');
+    const cases: Array<[string, string | undefined]> = [
+      [single, 'agent'],
+      [single, undefined],
+      [single, 'human'],
+      ['  \n' + single, 'agent'],
+      ['<NIMBALYST_SYSTEM_MESSAGE>ctx</NIMBALYST_SYSTEM_MESSAGE>\n' + single, 'agent'],
+      ['<NIMBALYST_SYSTEM_MESSAGE>ctx</NIMBALYST_SYSTEM_MESSAGE>\nPlain text', 'agent'],
+      ['[08:12 · session: Worker (child)]\n' + single, 'agent'],
+      ['Please look at this:\n' + single, 'agent'],
+      ['x'.repeat(100_000), 'agent'],
+    ];
+    for (const [text, actor] of cases) {
+      expect(isStandaloneChildSessionUpdate(text, actor)).toBe(parseChildSessionUpdate(text, actor)?.kind === 'single');
+    }
+    expect(isStandaloneChildSessionUpdate(single, 'agent')).toBe(true);
+    expect(isStandaloneChildSessionUpdate('<NIMBALYST_SYSTEM_MESSAGE>ctx</NIMBALYST_SYSTEM_MESSAGE>\n' + single)).toBe(true);
   });
 });

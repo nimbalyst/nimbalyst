@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { parseChildSessionUpdate } from '../utils/parseChildSessionUpdate';
+import { isStandaloneChildSessionUpdate, parseChildSessionUpdate } from '../utils/parseChildSessionUpdate';
 import type { TranscriptViewMessage } from '../../../ai/server/types';
 import { isInteractiveWidgetTool } from '../../../ai/server/interactivePromptTools';
 import { MessageSegment } from './MessageSegment';
@@ -390,8 +390,8 @@ export function computeTranscriptRowInfos(
     const message = messages[i];
     const prior = messages[prevNonToolIdx];
     const changedUserAuthor = message.type === 'user_message' && prior?.type === 'user_message'
-      && (parseChildSessionUpdate(message.text ?? '', message.promptActor)?.kind === 'single')
-        !== (parseChildSessionUpdate(prior.text ?? '', prior.promptActor)?.kind === 'single');
+      && isStandaloneChildSessionUpdate(message.text ?? '', message.promptActor)
+        !== isStandaloneChildSessionUpdate(prior.text ?? '', prior.promptActor);
     const info: TranscriptRowInfo = {
       kind: 'message',
       isNewGroup: prevNonToolIdx < 0 || messages[prevNonToolIdx].type !== message.type || changedUserAuthor,
