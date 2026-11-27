@@ -29,6 +29,7 @@ import { WORKSPACE_ACTIVATE_CHANNEL } from '../window/workspaceWindowMatch';
 import { startFileWatcher, stopFileWatcher } from '../file/FileWatcher';
 import { getFolderContents, listFolderFilesRecursive } from '../utils/FileTree';
 import { decodeTextFileBuffer } from '../utils/textEncoding';
+import { isStreamedVideo } from '../utils/fileFilters';
 import {
     getWorkspaceRecentFiles,
     addWorkspaceRecentFile,
@@ -160,7 +161,7 @@ export function registerWorkspaceHandlers() {
     // Options:
     //   - encoding: 'utf-8' (default), 'latin1', 'ascii', etc., or 'binary' for base64, or 'auto' to auto-detect
     //   - binary: true to force binary/base64 reading (auto-detected by extension if not specified)
-    safeHandle('read-file-content', async (event, filePath: string, options?: { encoding?: BufferEncoding | 'binary' | 'auto'; binary?: boolean }) => {
+    safeHandle('read-file-content', async (event, filePath: string, options?: { encoding?: BufferEncoding | 'binary' | 'auto'; binary?: boolean; skipVideoContent?: boolean }) => {
         // Skip virtual files - they don't exist on disk
         if (filePath.startsWith('virtual://')) {
             return null;
@@ -173,6 +174,11 @@ export function registerWorkspaceHandlers() {
 
         try {
             const forceBinary = options?.binary || options?.encoding === 'binary';
+
+            // Opening or reconciling a video tab only needs a live file. The player requests byte ranges separately.
+            if (options?.skipVideoContent && !forceBinary && isStreamedVideo(filePath)) {
+                return { success: true, content: '', isBinary: true };
+            }
 
             // Auto-detect binary files by extension if not explicitly specified
             let isBinary = forceBinary;

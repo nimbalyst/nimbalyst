@@ -255,7 +255,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
     }
 
     try {
-      const result = await window.electronAPI.readFileContent(filePath);
+      const result = await window.electronAPI.readFileContent(filePath, { skipVideoContent: true });
       if (result && typeof result === 'object' && 'content' in result) {
         return result.content || '';
       }

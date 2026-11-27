@@ -16,7 +16,7 @@ import { BrowserWindow, dialog } from 'electron';
 import { readFileSync, existsSync } from 'fs';
 import { basename, extname } from 'path';
 import * as path from 'path';
-import { shouldExcludeFile } from '../utils/fileFilters';
+import { isStreamedVideo, shouldExcludeFile } from '../utils/fileFilters';
 import {
   windowStates,
   getWindowId,
@@ -180,7 +180,7 @@ export async function openFile(options: OpenFileOptions): Promise<OpenFileResult
   // Read file content
   let content: string;
   try {
-    content = readFileSync(filePath, 'utf-8');
+    content = isStreamedVideo(filePath) ? '' : readFileSync(filePath, 'utf-8');
   } catch (error) {
     console.error('[FileOpener] Failed to read file:', error);
     throw new Error(`Failed to read file: ${filePath}`);
