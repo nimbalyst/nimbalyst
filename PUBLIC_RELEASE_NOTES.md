@@ -1,25 +1,58 @@
-## Nimbalyst v0.83.0
+## November 27th, 2026 Release
 
-Covers everything since v0.82.8.
+This release covers everything since v0.83.0.
 
 ### New Features
 
-- Claude Fable 5.2 is available in the model picker. Fable 5.1 and Fable 5 remain selectable as previous-generation options.
+- Switch branches from the Git panel, including remote-only branches, and create new branches.
+- Workstreams: a named folder in the session list that groups peer sessions.
+- Phase toggles in the agent session list can hide sessions by phase, such as Complete (#1639, contributed by @neemanjabu).
+- Collapse all and Expand all buttons in the agent session list close or open every parent session and workstream at once (#1969, contributed by @Yogitmeister).
+- Remote MCP servers that need OAuth are now signed in by Nimbalyst itself, so they no longer need Node.js or the `mcp-remote` helper. Existing sign-ins are imported once.
+- Claude and Codex usage popovers show how much of each window has elapsed next to its reset time, plus a "Limit ratio" line while the window is running (#1975, contributed by @Yogitmeister).
+- `nim wiki publish` copies a local wiki into a team project for review, with a Commenter role (requires the updated sync server).
+- Run Manager (alpha, developer mode): a Runs panel that starts, stops and restarts a project's dev servers from named commands in `.nimbalyst/run.json`.
+- Databases too large to migrate to SQLite automatically now get a one-time prompt at launch with the size, the disk space needed and progress.
+- New Codex sessions default to GPT-6.2 Sol, and GPT-6.2 Sol and GPT-6.2 Astra are listed in the Codex model picker. The picker also lists models reported by the bundled Codex CLI.
 
 ### Improvements
 
-- Messages queued while an agent is working, whether typed by you or sent by other sessions, are delivered together in one turn, each labeled with its author. Slash commands and messages with a different document context still go as their own turn.
-- On macOS and Linux, agent sessions, MCP servers, CLIs and git now put your login shell's PATH ahead of the system defaults, so tools from version managers such as mise are found before the `/usr/bin` versions.
-- A file tree subfolder cut off at the 200-entry limit ends with a row saying how many items are hidden.
-- The session machine picker labels the local machine with its device name, followed by "(this device)", instead of "This Mac" on every platform.
+- Session title search in the sidebar matches sessions nested under a parent and matches non-Latin titles regardless of case (#2007, #2006, contributed by @egsok).
+- A child session's update message shows as a card with its modified files collapsed (#2001, contributed by @egsok).
+- In Claude Agent sessions, the approval prompt for a shell command shows the agent's one-line description of it, and the prompt for starting a sub-agent shows its task (#1791, contributed by @Sergio-3).
+- Jump to question goes to the newest open question, and the automatic jump runs once instead of each time the pane is shown (#1867, contributed by @Knifiel).
+- Commit proposals can name a folder, which expands to its changed files for review.
+- New worktrees start from the remote's default branch instead of the main checkout's branch.
+- Existing databases up to 3 GiB (previously 1 GiB) migrate to SQLite automatically, and Settings > Database is shown to every install still on PGLite.
+- Queued messages delivered in one turn each open with the time they were queued and who sent them (#1964, contributed by @Yogitmeister).
+- The open menu bar island can be resized by dragging its edges.
+- The chat picker lists parent sessions that have their own conversation (#1737, contributed by @AnthonyLenglet).
+- `tracker_get` reports archive state and comments (#1225, contributed by @Gerauddasp).
+- A lead session that is waiting on your answer is no longer woken by the idle wake (#1557, contributed by @stephane-camhaji-sx).
+- Nimbalyst runs on Electron 45 and requires macOS 13 Ventura or later. Macs on macOS 12 can keep using 0.84.2.
 
 ### Fixed
 
-- The weekly history in the Claude and Codex usage popovers charts the main weekly limit by default instead of a per-model limit.
-- Nested lists under numbered items stay nested after saving in other Markdown tools, and a nested numbered list under item 10 starts at 1.
-- A question card that a hook denies now shows as blocked with the hook's reason, instead of as answered or still submittable.
-- Orchestrating agents can call `consume_session_inbox` on the `nimbalyst-host` MCP server.
-- Switching workspace clears the Agent Sessions search, and a search still running for the previous workspace no longer replaces the new workspace's list.
-- A prompt queued after you clear the document no longer merges into a turn with the older document content.
-- Creating a local wiki page whose content starts with its own frontmatter writes one frontmatter block instead of two.
-- In workspaces with more than 5,000 uncommitted files, the session list skips matching sessions to those files instead of sending every path to the database in one query.
+- Launching Nimbalyst while it is already running no longer starts a second copy that shows a window for about five seconds and then disappears. The existing window comes back, or the Project Manager opens, even when only a hidden background window is left (#1188, #1189, #1992, contributed by @Knifiel).
+- On Windows and Linux, closing the Project Manager with no project open and no other window visible now quits the app (#1189, contributed by @Knifiel).
+- If the database worker crashes again right after a restart, Nimbalyst tries again instead of leaving database actions failing (#1994, contributed by @Knifiel). When the worker exits unexpectedly it is restarted automatically, and agent messages not yet written are held and written afterwards (#1988).
+- Deleting a session now reaches your other devices even if its transcript was not open, sync was disconnected, or the app restarted before the delete was sent (#1901, contributed by @CaptainMittens).
+- An answer to a permission prompt or question given on another device, such as your phone, reaches the waiting desktop session in sessions with more than 50 messages (#2009, contributed by @CaptainMittens).
+- The @-mention file picker lists all recent files, and a file opened in a side-rail project is recorded under the project on screen (#303, contributed by @CaptainMittens).
+- When a project has more files than the operating system can watch, the file watcher retries after 1, 5, 15, then 30 minutes instead of re-scanning as often as every second (#2014, contributed by @Knifiel).
+- While an agent reply streams, scrolling up keeps you where you scrolled instead of pulling you back to the bottom. With many sessions busy, an agent transcript no longer loses earlier messages or goes blank while the session reloads (#1758, #1962, #1963, contributed by @Knifiel).
+- Cancel is shown on a running session when you open it, and no longer hides during a newer turn or shows after completion (#1970, contributed by @Yogitmeister).
+- A signed-out team tracker item shows its body right away instead of showing "Connecting..." for about 15 seconds (#1914, contributed by @Ben-Vollrath).
+- Gemini models no longer disappear from the model picker when settings carry an outdated list of Gemini model IDs (#2016, contributed by @klaasvk).
+- The Gemini usage chip shows usage before the first Gemini request when the Antigravity IDE's language server is already running (#2018, contributed by @klaasvk).
+- Headings in `ai-actions.md` written in non-Latin scripts stay separate actions instead of being dropped as duplicates (#1565, contributed by @SAY-5).
+- An empty workstream shows as a selected workstream row (#1807, contributed by @Yogitmeister).
+- The new tracker item popup keeps its title field on screen when many items are waiting to publish (#1935, contributed by @hmmmzaDev).
+- A local HTML file an agent works with no longer appears as a box over the top-left of the window (#1923, contributed by @erwamartin).
+- Desktop personal sync encrypts with a different crypto API, avoiding a runtime bug that could abort the app with no crash report (#1979).
+- On Windows, Import earlier sessions no longer fails with "Invalid external session cursor" for session files whose ID is above 2^53 (#1989).
+- Files a Claude Code session changes through a Bash command, such as a python heredoc or `sed -i`, are listed in its edited files even when the command never names the path.
+- Automations in every open project run on schedule and start their session in the project containing the automation file.
+- Reopen Closed Tab (Cmd+Shift+T) in Wiki mode reopens Local wiki pages, item pages and type pages.
+- With auto-commit on, commit proposals into another worktree of the session's repository, and from a subfolder of a checkout, are committed automatically.
+- Deleting tracker items shows an error when a delete fails instead of failing silently.
