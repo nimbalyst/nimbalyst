@@ -989,7 +989,7 @@ describe('ToolCallMatcher', () => {
       files: Array<Record<string, unknown>>;
       messages?: Array<Record<string, unknown>>;
       existingMatches?: Array<{ session_file_id: string; match_score: number; tool_use_id: string | null }>;
-      provider?: string;
+      provider?: string | null;
     }) {
       const captured: {
         messagesSql?: string;
@@ -1052,6 +1052,7 @@ describe('ToolCallMatcher', () => {
       const toolTimestamp = fileTimestamp - 60_000;
 
       const captured = stubSession({
+        provider: 'claude-code',
         files: [{
           id: 'file-1',
           file_path: '/workspace/src/kept.ts',
@@ -1119,12 +1120,18 @@ describe('ToolCallMatcher', () => {
     it.each([
       ['openai-codex', 'bounded'],
       ['openai-codex-acp', 'bounded'],
+      ['cursor-agent', 'bounded'],
+      ['antigravity-gemini-agent', 'bounded'],
+      ['an-unknown-future-agent', 'bounded'],
+      // The session lookup gave no provider (its ai_sessions row is gone).
+      [null, 'bounded'],
       ['claude-code', 'unbounded'],
-    ])('B3: a %s session\'s own tool-call id leaves the lookup %s', async (provider, expected) => {
-      // Codex rows carry their own ids (the shell hook's call id, ACP tool-call
-      // ids), but no window on their transports carries such an id uniquely.
-      // Two commands changed package.json; for Codex only the newest row counts,
-      // so the earlier one cannot widen the window.
+      ['claude-code-cli', 'unbounded'],
+    ])('B3/B4: a %s session\'s own tool-call id leaves the lookup %s', async (provider, expected) => {
+      // Only Claude Code's stored rows were traced to carry the ids its edits
+      // record; every other provider's ids may never resolve. Two commands
+      // changed package.json; outside Claude Code only the newest row counts, so
+      // the earlier one cannot widen the window.
       const sessionId = `provider-id-${provider}`;
       const fileTimestamp = 1_700_000_000_000;
 
@@ -1301,7 +1308,8 @@ describe('ToolCallMatcher', () => {
           }
           return { rows: [] };
         }
-        if (sql.includes('FROM ai_sessions')) return { rows: [{ workspace_id: '/workspace' }] };
+        // A Claude Code session: the provider whose tool_use ids can be definitive.
+        if (sql.includes('FROM ai_sessions')) return { rows: [{ workspace_id: '/workspace', provider: 'claude-code' }] };
         if (sql.includes('FROM session_files')) return { rows: files.map(f => ({ ...f })) };
         if (sql.includes('FROM ai_tool_call_file_edits')) return { rows: matches.map(m => ({ ...m })) };
         if (sql.includes('FROM ai_agent_messages')) {
@@ -1592,6 +1600,36 @@ describe('ToolCallMatcher', () => {
         expect(sqlSeen.some(sql => sql.includes('FROM ai_agent_messages'))).toBe(false);
       });
 
+      /** Counts the raw-message reads matchSession makes against the real database. */
+      function countRawScans() {
+        const stats = { scans: 0, unboundedScans: 0, rowsScanned: 0 };
+        queryMock.mockImplementation(async (sql: string, params?: unknown[]) => {
+          const result = await sqlite.query(sql, params);
+          if (sql.includes('FROM ai_agent_messages')) {
+            stats.scans++;
+            if (!params || params.length < 3) stats.unboundedScans++;
+            stats.rowsScanned += result.rows.length;
+          }
+          return result;
+        });
+        return stats;
+      }
+
+      // One task over five turns (explore, edit, verify); a.ts is edited twice.
+      const TURNS = [
+        { explore: 12, edits: ['/workspace/src/a.ts', '/workspace/src/b.ts'], verify: 4 },
+        { explore: 6, edits: ['/workspace/src/a.ts'], verify: 3 },
+        { explore: 8, edits: [] as string[], verify: 0 },
+        { explore: 5, edits: ['/workspace/src/c.ts'], verify: 3 },
+        { explore: 10, edits: [] as string[], verify: 0 },
+      ];
+
+      async function expectNoMatchesOrErrors(sessionId: string) {
+        const stored = await sqlite.query(`SELECT id FROM ai_tool_call_file_edits WHERE session_id = $1`, [sessionId]);
+        expect(stored.rows).toEqual([]);
+        expect(logger.main.error).not.toHaveBeenCalled();
+      }
+
       /**
        * Replays a Codex session on the app-server transport, running
        * matchSession where the app does (after each tool call and at the end of
@@ -1605,16 +1643,7 @@ describe('ToolCallMatcher', () => {
       async function replayCodexAppServer(sessionId: string, shellWrite?: { turn: number; beforeExplore: number; files: string[] }) {
         await sqlite.query(`INSERT INTO ai_sessions (id, workspace_id, provider) VALUES ($1, $2, $3)`, [sessionId, '/workspace', 'openai-codex']);
         const store = createPGLiteSessionFileStore(sqlite);
-        const stats = { scans: 0, unboundedScans: 0, rowsScanned: 0 };
-        queryMock.mockImplementation(async (sql: string, params?: unknown[]) => {
-          const result = await sqlite.query(sql, params);
-          if (sql.includes('FROM ai_agent_messages')) {
-            stats.scans++;
-            if (!params || params.length < 3) stats.unboundedScans++;
-            stats.rowsScanned += result.rows.length;
-          }
-          return result;
-        });
+        const stats = countRawScans();
 
         let t = T0;
         let item = 0;
@@ -1641,15 +1670,7 @@ describe('ToolCallMatcher', () => {
           await row('item/completed', { type: 'commandExecution', id, command: cmd, aggregatedOutput: 'output\n', exitCode: 0, status: 'completed' }, turnId, editGroupId);
           await toolCallMatcher.matchSession(sessionId);
         };
-        // One task over five turns (explore, edit, verify); a.ts is edited twice.
-        const turns = [
-          { explore: 12, edits: ['/workspace/src/a.ts', '/workspace/src/b.ts'], verify: 4 },
-          { explore: 6, edits: ['/workspace/src/a.ts'], verify: 3 },
-          { explore: 8, edits: [] as string[], verify: 0 },
-          { explore: 5, edits: ['/workspace/src/c.ts'], verify: 3 },
-          { explore: 10, edits: [] as string[], verify: 0 },
-        ];
-        for (const [k, turn] of turns.entries()) {
+        for (const [k, turn] of TURNS.entries()) {
           const turnId = `turn-${k}`;
           for (let i = 0; i < turn.explore; i++) {
             if (shellWrite?.turn === k && shellWrite.beforeExplore === i) await command(turnId, 'pnpm add zod', shellWrite.files);
@@ -1669,9 +1690,7 @@ describe('ToolCallMatcher', () => {
           t += 60_000; // the user reads and answers
         }
 
-        const stored = await sqlite.query(`SELECT id FROM ai_tool_call_file_edits WHERE session_id = $1`, [sessionId]);
-        expect(stored.rows).toEqual([]);
-        expect(logger.main.error).not.toHaveBeenCalled();
+        await expectNoMatchesOrErrors(sessionId);
         return stats;
       }
 
@@ -1689,6 +1708,60 @@ describe('ToolCallMatcher', () => {
         await expect(replayCodexAppServer('b3-codex-shell-write', {
           turn: 0, beforeExplore: 2, files: ['/workspace/package.json', '/workspace/pnpm-lock.yaml'],
         })).resolves.toEqual({ scans: 59, unboundedScans: 0, rowsScanned: 3985 });
+      });
+
+      it('B4: a cursor-agent session reads no more raw rows than before SQLite metadata was read', async () => {
+        // Cursor stores every stream-json record as a visible row (thinking
+        // deltas, tool_call started/completed with its call_id, results). None
+        // yields a window, so the call ids its edits record never resolve.
+        const sessionId = 'b4-cursor-agent';
+        await sqlite.query(`INSERT INTO ai_sessions (id, workspace_id, provider) VALUES ($1, $2, $3)`, [sessionId, '/workspace', 'cursor-agent']);
+        const store = createPGLiteSessionFileStore(sqlite);
+        const stats = countRawScans();
+        let t = T0;
+        let n = 0;
+        const row = (record: Record<string, unknown>, at = t) => sqlite.query(
+          `INSERT INTO ai_agent_messages (session_id, created_at, source, direction, content, metadata) VALUES ($1, $2, $3, $4, $5, $6)`,
+          [sessionId, new Date(at).toISOString(), 'cursor-agent', 'output', JSON.stringify(record), JSON.stringify({ eventType: record.type })],
+        );
+        const call = async (tool: string, args: Record<string, unknown>) => {
+          t += 3_000;
+          for (let i = 0; i < 5; i++) await row({ type: 'thinking', subtype: i < 4 ? 'delta' : 'completed', text: 'Looking' });
+          const id = `tool_${++n}`;
+          await row({ type: 'tool_call', subtype: 'started', call_id: id, tool_call: { [tool]: { args } } });
+          await row({ type: 'tool_call', subtype: 'completed', call_id: id, tool_call: { [tool]: { args, result: { success: {} } } } }, t + 500);
+          return id;
+        };
+        for (const [k, turn] of TURNS.entries()) {
+          t += 1_000;
+          await row({ type: 'system', subtype: 'init', cwd: '/workspace' });
+          await row({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: `Task step ${k}` }] } });
+          for (let i = 0; i < turn.explore; i++) {
+            await call(i % 2 ? 'readToolCall' : 'grepToolCall', { path: `/workspace/src/file${i}.ts` });
+            await toolCallMatcher.matchSession(sessionId);
+          }
+          for (const filePath of turn.edits) {
+            const id = await call('editToolCall', { path: filePath });
+            await store.addFileLink({ sessionId, workspaceId: '/workspace', filePath, linkType: 'edited', timestamp: t, metadata: { toolName: 'edit', toolUseId: id } });
+            await toolCallMatcher.matchSession(sessionId);
+          }
+          for (let i = 0; i < turn.verify; i++) {
+            await call('shellToolCall', { command: 'pnpm test' });
+            await toolCallMatcher.matchSession(sessionId);
+          }
+          t += 2_000;
+          await row({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } });
+          await row({ type: 'result', subtype: 'success', result: 'Done.' });
+          await row({ type: 'item.completed', item: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Done.' }] } });
+          await toolCallMatcher.matchSession(sessionId); // end of turn
+          t += 60_000;
+        }
+
+        await expectNoMatchesOrErrors(sessionId);
+        // Before SQLite metadata was read, the same replay made 48 bounded scans
+        // of 7223 rows; counting Cursor's call ids as definitive made every one
+        // of them a whole-session read (12134 rows).
+        expect(stats).toEqual({ scans: 48, unboundedScans: 0, rowsScanned: 7223 });
       });
 
       it('B2: the per-call diff of a Write that created a file reports create on SQLite', async () => {

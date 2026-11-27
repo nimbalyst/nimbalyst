@@ -221,15 +221,19 @@ const MAX_MATCH_SCORE = 100;
 const MINTED_TOOL_USE_ID_PREFIXES = ['nimtc|', 'watcher-', 'codex-bash-', 'codex-acp-write-'];
 
 /**
- * Providers whose stored rows never give a tool-call id that is unique in the
- * session to a window, so no id in their session_files rows is definitive:
- * - `openai-codex` on the app-server transport and `openai-codex-acp` store
- *   JSON-RPC envelopes parseToolCallWindows reads no window from, so their own
- *   ids (the shell hook's `call_*` ids, ACP tool-call ids) never resolve.
- * - `openai-codex` on the SDK transport reuses item ids across turns (runtime
- *   `toolLookupIds.ts`).
+ * Providers whose stored rows were traced to give windows that carry the
+ * tool-call ids their session_files rows record: Claude Code's raw SDK chunks
+ * and the Claude Code CLI's observed turns hold the `tool_use` blocks whose ids
+ * those rows carry. Only these providers' ids can be definitive.
+ *
+ * Every other provider, including any added later, has no definitive ids:
+ * Codex app-server, Codex ACP, Cursor, Gemini, Grok and Copilot store rows
+ * parseToolCallWindows reads no window from, so their ids never resolve, and
+ * Codex's SDK transport reuses item ids across turns (runtime
+ * `toolLookupIds.ts`). Counting such an id as definitive would make every later
+ * pass read the whole session without ever settling the file.
  */
-const PROVIDERS_WITHOUT_DEFINITIVE_TOOL_USE_IDS: ReadonlySet<string> = new Set(['openai-codex', 'openai-codex-acp']);
+const PROVIDERS_WITH_DEFINITIVE_TOOL_USE_IDS: ReadonlySet<string> = new Set(['claude-code', 'claude-code-cli']);
 
 /**
  * The provider tool-call id an edited session_files row carries, or null when
@@ -239,7 +243,7 @@ const PROVIDERS_WITHOUT_DEFINITIVE_TOOL_USE_IDS: ReadonlySet<string> = new Set([
  * ids, so a window that carries one scores 100.
  */
 function definitiveToolUseId(file: SessionFileRow, provider: string | null | undefined): string | null {
-  if (provider && PROVIDERS_WITHOUT_DEFINITIVE_TOOL_USE_IDS.has(provider)) return null;
+  if (!provider || !PROVIDERS_WITH_DEFINITIVE_TOOL_USE_IDS.has(provider)) return null;
   const toolUseId = file.metadata?.toolUseId;
   if (typeof toolUseId !== 'string' || toolUseId.length === 0) return null;
   return MINTED_TOOL_USE_ID_PREFIXES.some(prefix => toolUseId.startsWith(prefix)) ? null : toolUseId;
@@ -1052,10 +1056,10 @@ class ToolCallMatcherImpl {
       }));
       // Deduplicate session_files: keep every row with a distinct definitive
       // toolUseId (each represents a separate tool call edit). For rows WITHOUT
-      // one (Codex sessions, watcher side-effects, ids Nimbalyst minted), dedup
-      // by file path keeping the most recent timestamp. Codex app-server ids
-      // never settle, so keeping every such row would pin the bounded scan
-      // below to the session's first edit.
+      // one (providers other than Claude Code, watcher side-effects, ids
+      // Nimbalyst minted), dedup by file path keeping the most recent
+      // timestamp. Such ids may never settle, so keeping every such row would
+      // pin the bounded scan below to the session's first edit.
       const sessionFilesByKey = new Map<string, SessionFileRow>();
       for (const file of editedFiles) {
         const toolUseId = definitiveToolUseId(file, provider);
@@ -1117,8 +1121,8 @@ class ToolCallMatcherImpl {
       // tool IDs (notably Codex). Exact metadata toolUseId matches deliberately
       // bypass scoreMatch's time cutoff, so sessions carrying any such ID must
       // retain the unbounded lookup to preserve those matches. Ids Nimbalyst
-      // minted itself and ids of Codex sessions do not count (see
-      // definitiveToolUseId).
+      // minted itself and ids of providers other than Claude Code do not count
+      // (see definitiveToolUseId).
       // Computed over filesNeedingWork, not all files: a session whose only
       // outstanding rows are Codex-style now gets the bounded window even if
       // settled Claude Code rows exist alongside them.
