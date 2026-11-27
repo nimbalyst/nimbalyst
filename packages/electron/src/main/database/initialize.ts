@@ -33,6 +33,12 @@ import { archiveProgressManager } from '../services/ArchiveProgressManager';
 import { GitWorktreeService } from '../services/GitWorktreeService';
 import { timeStartupPhase } from '../utils/startupTiming';
 import { getDatabaseMaintenanceSettings } from '../utils/store';
+import {
+  DEFAULT_FALLBACK_BACKUP_WINDOW_MS,
+  evaluateQuitBackupFreshness,
+  readLatestBackupTimestampMs,
+  type QuitBackupFreshness,
+} from './backupFreshness';
 
 // Backup service instance — only used by the PGLite path now. The SQLite
 // backend constructs SQLiteBackupService inside the worker during init, so
@@ -568,33 +574,14 @@ export function getLiveSqliteDatabaseProxy(): SQLiteDatabaseProxy | null {
 async function runStalenessBackup(trigger: 'startup' | 'resume'): Promise<void> {
   try {
     const userDataPath = resolveDatabaseUserDataPath();
-    const metadataPaths = [
-      path.join(userDataPath, 'sqlite-db.backups', 'backup-metadata.json'),
-      path.join(userDataPath, 'db-backups', 'backup-metadata.json'),
-    ];
-
-    let lastSuccessMs = 0;
-    for (const p of metadataPaths) {
-      if (!fs.existsSync(p)) continue;
-      try {
-        const raw = JSON.parse(fs.readFileSync(p, 'utf-8')) as {
-          lastSuccessfulBackup?: string | null;
-        };
-        const stamp = raw.lastSuccessfulBackup;
-        if (!stamp) continue;
-        // The backup services store this with `:` and `.` replaced by `-`
-        // (e.g. "2026-06-02T03-04-41-264Z"). Reverse before parsing.
-        const ms = Date.parse(unmangleIsoTimestamp(stamp));
-        if (Number.isFinite(ms) && ms > lastSuccessMs) lastSuccessMs = ms;
-      } catch (parseErr) {
-        logger.main.warn(`[Database] Could not read backup metadata at ${p}:`, parseErr);
-      }
-    }
+    const lastSuccessMs = readLatestBackupTimestampMs(userDataPath, (p, parseErr) => {
+      logger.main.warn(`[Database] Could not read backup metadata at ${p}:`, parseErr);
+    });
 
     const ageMs = Date.now() - lastSuccessMs;
     // At "on quit only" there is no window to be stale against, so fall back to
     // a day before a catch-up snapshot is worth the disk write.
-    const stalenessWindowMs = getBackupIntervalMs() || 24 * 60 * 60 * 1000;
+    const stalenessWindowMs = getBackupIntervalMs() || DEFAULT_FALLBACK_BACKUP_WINDOW_MS;
     if (lastSuccessMs > 0 && ageMs < stalenessWindowMs) {
       logger.main.info(`[Database] Backup not stale on ${trigger} (age ${Math.round(ageMs / 60000)}m); skipping`);
       return;
@@ -610,6 +597,17 @@ async function runStalenessBackup(trigger: 'startup' | 'resume'): Promise<void> 
   } catch (err) {
     logger.main.warn(`[Database] Staleness backup (${trigger}) errored:`, err);
   }
+}
+
+/**
+ * Check whether the synchronous `before-quit` backup can be skipped because a
+ * successful backup already exists within the configured periodic backup window.
+ */
+export function checkQuitBackupFreshness(): QuitBackupFreshness {
+  const userDataPath = resolveDatabaseUserDataPath();
+  return evaluateQuitBackupFreshness(userDataPath, getBackupIntervalMs(), Date.now(), (p, parseErr) => {
+    logger.main.warn(`[Database] Could not read backup metadata at ${p}:`, parseErr);
+  });
 }
 
 /**
@@ -654,19 +652,6 @@ async function sweepStrandedTempBackups(userDataPath: string): Promise<void> {
   if (removed > 0) {
     logger.main.info(`[Database] Swept ${removed} stranded temp-backup entries across backend dirs`);
   }
-}
-
-/**
- * Undo the `:` / `.` -> `-` substitution that the backup services apply when
- * naming files. e.g. `2026-06-02T03-04-41-264Z` -> `2026-06-02T03:04:41.264Z`.
- * The date half (before `T`) has no separators to restore.
- */
-function unmangleIsoTimestamp(stamp: string): string {
-  const t = stamp.indexOf('T');
-  if (t < 0) return stamp;
-  const date = stamp.slice(0, t);
-  const timeWithMs = stamp.slice(t + 1).replace(/-(\d{3}Z)$/, '.$1');
-  return `${date}T${timeWithMs.replace(/-/g, ':')}`;
 }
 
 /**

@@ -3813,7 +3813,7 @@ app.on('before-quit', ownerOnly('quit cleanup', async (event) => {
         }
 
         // Import database and create backup (with timeout)
-        const { getDatabase, stopPeriodicBackupTimer } = await import('./database/initialize');
+        const { checkQuitBackupFreshness, getDatabase, stopPeriodicBackupTimer } = await import('./database/initialize');
         const db = getDatabase();
 
         // Stop the 4h periodic backup timer before doing anything else.
@@ -3823,20 +3823,29 @@ app.on('before-quit', ownerOnly('quit cleanup', async (event) => {
         stopPeriodicBackupTimer();
 
         if (db) {
-            const backupPromise = db.createBackup();
-            const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve({ success: false, error: 'Timeout' }), 5000));
-            const backupResult: any = await Promise.race([backupPromise, timeoutPromise]);
-
-            const t11b = Date.now();
-            if (backupResult.success) {
-                console.log(`[QUIT] [${t11b}] Database backup created successfully (${t11b-t11a}ms)`);
+            const quitFreshness = checkQuitBackupFreshness();
+            if (quitFreshness.skip) {
+                const ageMinutes = quitFreshness.ageMs !== null ? Math.round(quitFreshness.ageMs / 60000) : 0;
+                console.log(`[QUIT] Skipping database backup — recent backup succeeded ${ageMinutes}m ago`);
                 if (canWriteLogs && debugLog) {
-                    try { fs.appendFileSync(debugLog, `[QUIT] Database backup created (${t11b-t11a}ms)\n`); } catch (e) {}
+                    try { fs.appendFileSync(debugLog, `[QUIT] Skipping database backup (fresh: ${ageMinutes}m ago)\n`); } catch (e) {}
                 }
             } else {
-                console.log(`[QUIT] [${t11b}] Database backup failed (${t11b-t11a}ms): ${backupResult.error}`);
-                if (canWriteLogs && debugLog) {
-                    try { fs.appendFileSync(debugLog, `[QUIT] Database backup failed: ${backupResult.error}\n`); } catch (e) {}
+                const backupPromise = db.createBackup();
+                const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve({ success: false, error: 'Timeout' }), 5000));
+                const backupResult: any = await Promise.race([backupPromise, timeoutPromise]);
+
+                const t11b = Date.now();
+                if (backupResult.success) {
+                    console.log(`[QUIT] [${t11b}] Database backup created successfully (${t11b-t11a}ms)`);
+                    if (canWriteLogs && debugLog) {
+                        try { fs.appendFileSync(debugLog, `[QUIT] Database backup created (${t11b-t11a}ms)\n`); } catch (e) {}
+                    }
+                } else {
+                    console.log(`[QUIT] [${t11b}] Database backup failed (${t11b-t11a}ms): ${backupResult.error}`);
+                    if (canWriteLogs && debugLog) {
+                        try { fs.appendFileSync(debugLog, `[QUIT] Database backup failed: ${backupResult.error}\n`); } catch (e) {}
+                    }
                 }
             }
 
