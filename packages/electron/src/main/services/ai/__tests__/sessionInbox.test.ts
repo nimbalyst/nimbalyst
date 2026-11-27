@@ -49,7 +49,8 @@ describe.each(["pglite", "sqlite"])("session inbox (%s)", (backend) => {
   let counter = 0;
   async function fixture(
     overrides: Partial<InboxDatabase> = {},
-    isRunning = () => true
+    isRunning = () => true,
+    automaticChildReporting = () => true,
   ) {
     const sessionId = `inbox-${++counter}`;
     await db.query(
@@ -64,7 +65,8 @@ describe.each(["pglite", "sqlite"])("session inbox (%s)", (backend) => {
         ...overrides,
       },
       undefined,
-      isRunning
+      isRunning,
+      automaticChildReporting,
     );
     const turn = await inbox.begin(sessionId, "/workspace");
     await db.query(
@@ -118,6 +120,42 @@ describe.each(["pglite", "sqlite"])("session inbox (%s)", (backend) => {
         }),
     };
   }
+
+  it.each([true, false])('delivers pending lifecycle rows only when automatic is %s', async automatic => {
+    const mode = () => automatic;
+    const f = await fixture({}, undefined, mode);
+    const store = createPGLiteQueuedPromptsStore(db, undefined, mode);
+    const provenance = { actor: 'agent', origin: 'child-session-update', originSessionId: 'child', messageKind: 'report' };
+    const oldId = `${f.sessionId}-a`;
+    await db.query("INSERT INTO ai_sessions(id,provider,status) VALUES ('auto-only','claude-code','idle')");
+    for (const [id, sessionId] of [[oldId, f.sessionId], ['auto-only-row', 'auto-only']]) {
+      await db.query("INSERT INTO queued_prompts(id, session_id, prompt, document_context) VALUES ($1,$2,$3,$4)",
+        [id, sessionId, '[Child Session Update]', JSON.stringify({ promptProvenance: provenance })]);
+    }
+    await f.enqueue('b');
+    await f.enqueue('c', 'instruction', '[Child Session Update] quoted by an explicit sender');
+    expect((await store.listSessionIdsWithPending()).includes('auto-only')).toBe(automatic);
+    expect((await store.listPending(f.sessionId)).map(row => row.id)).toEqual(
+      [...(automatic ? [oldId] : []), `${f.sessionId}-b`, `${f.sessionId}-c`],
+    );
+    expect((await store.listForSession('auto-only')).length).toBe(automatic ? 1 : 0);
+    expect(await store.listForSession('auto-only', { includeCompleted: true })).toHaveLength(1);
+    expect(Boolean(await store.claim('auto-only-row'))).toBe(automatic);
+    expect(JSON.parse(await f.consume()).messages.map((row: { text: string }) => row.text)).toEqual(
+      [...(automatic ? ['[Child Session Update]'] : []), 'b'],
+    );
+    expect((await store.get(`${f.sessionId}-c`))?.status).toBe('pending');
+    await f.inbox.end(f.turn, true);
+  });
+
+  it.skipIf(backend !== 'sqlite')('does not break manual queue reads on malformed historical SQLite context', async () => {
+    const store = createPGLiteQueuedPromptsStore(db, undefined, () => false);
+    await db.query("INSERT INTO ai_sessions(id,provider,status) VALUES ('legacy','claude-code','idle')");
+    await db.query("INSERT INTO queued_prompts(id, session_id, prompt, document_context) VALUES ($1,$2,'legacy','{')",
+      ['legacy-malformed', 'legacy']);
+    expect((await store.listPending('legacy')).map(row => row.id)).toEqual(['legacy-malformed']);
+    expect((await store.claim('legacy-malformed'))?.id).toBe('legacy-malformed');
+  });
 
   it("rolls back an entire guarded transaction after a competing claim", async () => {
     const f = await fixture();

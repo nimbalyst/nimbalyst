@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+vi.mock('../SettingsService', () => ({ getSettingsService: () => ({ get: () => 'automatic' }) }));
 
 // Mirrors the mock surface of MetaAgentService.providerInheritance.test.ts so we
 // can drive createChildSessionInternal hermetically and assert on the parent

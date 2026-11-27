@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { reportingMode } = vi.hoisted(() => ({ reportingMode: vi.fn() }));
+vi.mock('../SettingsService', () => ({ getSettingsService: () => ({ get: reportingMode }) }));
+
 // Same hermetic mock surface as MetaAgentService.parentPromotion.test.ts.
 vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: {
@@ -73,7 +76,7 @@ vi.mock('./ai/AIService', () => ({ AIService: class {} }));
 vi.mock('../../mcp/metaAgentServer', () => ({
   setMetaAgentToolFns: vi.fn(),
 }));
-vi.mock('../metaAgentNotificationSignature', () => ({ computeNotificationSignature: vi.fn() }));
+vi.mock('../metaAgentNotificationSignature', () => ({ computeNotificationSignature: (event: string) => event }));
 vi.mock('../metaAgentMessageText', () => ({
   extractMessageText: vi.fn(),
   extractUserPrompts: vi.fn(),
@@ -109,6 +112,7 @@ function service() {
 
 describe('MetaAgentService session ownership', () => {
   beforeEach(() => {
+    reportingMode.mockReset().mockReturnValue('automatic');
     vi.mocked(AISessionsRepository.create).mockReset();
     vi.mocked(AISessionsRepository.get).mockReset();
     vi.mocked(AISessionsRepository.updateMetadata).mockReset();
@@ -180,26 +184,34 @@ describe('MetaAgentService session ownership', () => {
       }
     });
 
-    it('final makes the final response the report and asks for no messages', async () => {
+    it('final keeps automatic delivery and allows an explicitly authorized actionable return', async () => {
       const { metadata, prompt } = await childPrompt({ reporting: 'final' });
       expect(metadata.notifyParent).toBeUndefined();
-      expect(prompt.slice(prompt.indexOf('Your final response'))).toMatchInlineSnapshot(`
-        "Your final response is delivered to the session that started you (caller) as your report. Do not send it status or acknowledgement messages.
-
-        </addendum>
-        "
-      `);
+      expect(prompt).toContain('Your final response is delivered');
+      expect(prompt).toContain('messageKind=instruction');
+      expect(prompt).toContain('interrupt=false');
     });
 
-    it('messages is the only setting that mentions send_prompt, and defers to the brief', async () => {
+    it('messages distinguishes reports and authorized actionable returns', async () => {
       const { metadata, prompt } = await childPrompt({ reporting: 'messages' });
       expect(metadata.notifyParent).toBeUndefined();
-      expect(prompt.slice(prompt.indexOf('The session that started you'))).toMatchInlineSnapshot(`
-        "The session that started you (caller) asked for reports: send each material change once with send_prompt messageKind=report, unless your brief says otherwise. Your final response is delivered to it automatically.
+      expect(prompt).toContain('messageKind=report');
+      expect(prompt).toContain('do not wake');
+      expect(prompt).toContain('messageKind=instruction');
+      expect(prompt).toContain('Your final response is delivered');
+    });
 
-        </addendum>
-        "
-      `);
+    it.each(['spawnSession', 'createChildSession'] as const)('reads the current mode in %s before queueing the child prompt', async via => {
+      await childPrompt({ reporting: 'final' }, via);
+      vi.mocked(AISessionsRepository.create).mockClear();
+      reportingMode.mockReturnValue('manual');
+      const { metadata, prompt } = await childPrompt({ reporting: 'messages' }, via);
+      expect(reportingMode).toHaveBeenCalledWith('ai.childReportingMode');
+      expect(metadata.childReportingMode).toBe('manual');
+      expect(metadata.notifyParent).toBeUndefined();
+      expect(prompt).toContain('no final response is forwarded automatically');
+      expect(prompt).toContain('messageKind=report');
+      expect(prompt).toContain('messageKind=instruction');
     });
 
     it('rejects an unknown setting before creating anything', async () => {
@@ -211,6 +223,7 @@ describe('MetaAgentService session ownership', () => {
   });
 
   it('a report to an idle session is queued without waking it; an instruction still wakes it', async () => {
+    reportingMode.mockReturnValue('manual');
     const { svc, aiService } = service();
     vi.spyOn(svc as any, 'shouldBypassChildAgentExecutionForTests').mockReturnValue(false);
     vi.spyOn(svc as any, 'getSessionStatusRow').mockResolvedValue({ status: 'idle' });
@@ -223,6 +236,45 @@ describe('MetaAgentService session ownership', () => {
 
     await (svc as any).sendPromptToSession('child', 'parent', '/workspace/path', 'do this next', false, 'instruction');
     expect(aiService.triggerQueuedPromptProcessingForSession).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['automatic', 'manual'] as const)('settles an existing child in %s mode with the intended parent traffic', async mode => {
+    reportingMode.mockReturnValue(mode);
+    const { svc, aiService } = service();
+    const sessionId = `child-${mode}`;
+    const result = { sessionId, title: 'Child', status: 'idle', recentMessages: [], editedFiles: [] };
+    vi.mocked(AISessionsRepository.get).mockImplementation(async id => ({
+      id, workspacePath: '/workspace/path', createdBySessionId: id === sessionId ? 'caller' : undefined,
+    }) as any);
+    const status = vi.spyOn(svc as any, 'getSessionStatusRow').mockResolvedValue({ status: 'idle' });
+    const data = vi.spyOn(svc as any, 'buildSessionResultData').mockResolvedValue(result);
+    try {
+      await (svc as any).handleChildSessionEvent(sessionId, 'session:completed');
+      expect(aiService.queuePromptForSession).toHaveBeenCalledTimes(mode === 'automatic' ? 1 : 0);
+      expect(aiService.triggerQueuedPromptProcessingForSession).toHaveBeenCalledTimes(mode === 'automatic' ? 1 : 0);
+    } finally {
+      status.mockRestore();
+      data.mockRestore();
+    }
+  });
+
+  it('keeps a manual child quiet after re-enabling Automatic and still offers a plan review', async () => {
+    const { svc, aiService } = service();
+    const result = { sessionId: 'child', pendingPrompt: { promptId: 'plan', promptType: 'exit_plan_mode_request' } };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({
+      id: 'child', workspacePath: '/workspace/path', createdBySessionId: 'caller', metadata: { childReportingMode: 'manual' },
+    } as any);
+    const data = vi.spyOn(svc as any, 'buildSessionResultData').mockResolvedValue(result);
+    const plan = vi.spyOn(svc as any, 'ensurePlanTrackerItem').mockResolvedValue(undefined);
+    try {
+      await (svc as any).handleChildSessionEvent('child', 'session:waiting');
+      expect(plan).toHaveBeenCalledWith('/workspace/path', 'child', result);
+      expect(aiService.queuePromptForSession).not.toHaveBeenCalled();
+      expect(aiService.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
+    } finally {
+      data.mockRestore();
+      plan.mockRestore();
+    }
   });
 
   it('an owner-routed child settle queues no [Child Session Update] on the parent', async () => {

@@ -47,11 +47,12 @@ import { registerSettingsChangeListener } from '../../../../store/atoms/settingA
 
 afterEach(cleanup);
 
-it('offers external following only in Agent Features and persists deliberate toggles via main-process broadcasts', async () => {
+it('persists child reporting in Advanced and external following in Agent Features via main-process broadcasts', async () => {
   const settingsSet = vi.fn().mockResolvedValue(undefined);
   let changed!: (event: { key: string; value: unknown }) => void;
   const originalApi = window.electronAPI;
   window.electronAPI = { ...originalApi, settingsSet,
+    terminal: { ...originalApi?.terminal, getAvailableShells: vi.fn().mockResolvedValue([]) },
     claudeCode: { ...originalApi?.claudeCode, getSettings: vi.fn().mockResolvedValue({}) },
     agentWorkflows: { ...originalApi?.agentWorkflows, getSettings: vi.fn().mockResolvedValue({
       sourceSettings: { workspaceClaudeCompatibilityEnabled: false, includeProjectClaudeSources: false, includeUserClaudeSources: false, extensionWorkflowsEnabled: false },
@@ -63,6 +64,15 @@ it('offers external following only in Agent Features and persists deliberate tog
     const advanced = render(<Provider store={store}><AdvancedPanel /></Provider>);
     expect(screen.queryByTestId('external-session-follow-setting')).toBeNull();
     expect(screen.queryByText('Follow external agent sessions')).toBeNull();
+    const reporting = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Child Session Reporting' });
+    expect(reporting.value).toBe('automatic');
+    fireEvent.change(reporting, { target: { value: 'manual' } });
+    expect(settingsSet).toHaveBeenLastCalledWith('ai.childReportingMode', 'manual');
+    expect(reporting.value).toBe('automatic');
+    act(() => changed({ key: 'ai.childReportingMode', value: 'manual' }));
+    expect(reporting.value).toBe('manual');
+    act(() => changed({ key: 'ai.childReportingMode', value: 'automatic' }));
+    settingsSet.mockClear();
     advanced.unmount();
     await act(async () => { render(<Provider store={store}><AgentFeaturesPanel /></Provider>); });
     const checkbox = within(screen.getByTestId('external-session-follow-setting')).getByRole('checkbox') as HTMLInputElement;

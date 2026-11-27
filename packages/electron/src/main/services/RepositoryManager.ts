@@ -20,6 +20,7 @@ import { createSyncedAgentMessagesStore } from './SyncedAgentMessagesStore';
 import { createPGLiteWorkspaceRepository } from './PGLiteWorkspaceRepository';
 import { createPGLiteDocumentsRepository } from './PGLiteDocumentsRepository';
 import { createPGLiteQueuedPromptsStore, type QueuedPromptsStore } from './PGLiteQueuedPromptsStore';
+import { getSettingsService } from './SettingsService';
 import { createPGLiteSessionWakeupsStore, type SessionWakeupsStore } from './PGLiteSessionWakeupsStore';
 import { createPendingSubmissionStore, type PendingSubmissionStore } from './ai/pendingSubmissions';
 import { runAgentMessagesBackfill } from './AgentMessagesBackfill';
@@ -139,7 +140,8 @@ class RepositoryManager {
           if (!database.isInitialized()) {
             await database.initialize();
           }
-        }
+        },
+        () => getSettingsService().get('ai.childReportingMode') === 'automatic',
       );
 
       // Composer prompts between send and turn end. Writes through the base

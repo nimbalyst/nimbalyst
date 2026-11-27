@@ -9,6 +9,7 @@
  */
 
 import { database as databaseWorker } from '../database/PGLiteDatabaseWorker';
+import { automaticChildUpdateFilter } from './ai/automaticChildUpdates';
 
 /** Controllable "max parallel" limit: children currently running. */
 const MAX_IN_FLIGHT = 4;
@@ -55,13 +56,13 @@ export async function getSpawnedSessionRows(metaSessionId: string, workspaceId: 
  * low lifetime cap on normal use. Mirrors the created_by_session_id query in
  * `getSpawnedSessionRows`.
  */
-export async function assertChildSpawnCapacity(workspaceId: string, metaSessionId: string, db: Pick<typeof databaseWorker, 'query'> = databaseWorker, pendingIds: string[] = []): Promise<void> {
+export async function assertChildSpawnCapacity(workspaceId: string, metaSessionId: string, db: Pick<typeof databaseWorker, 'query'> = databaseWorker, pendingIds: string[] = [], automatic = true): Promise<void> {
   // SUM(CASE ...) rather than COUNT(*) FILTER (...) so the aggregate is
   // portable across both PGLite and better-sqlite3 (see DATABASE.md).
   const { rows } = await db.query<{ in_flight: string; total: string }>(
     `SELECT
          SUM(CASE WHEN status IN ('running', 'waiting_for_input')
-                   OR EXISTS (SELECT 1 FROM queued_prompts q WHERE q.session_id = ai_sessions.id AND q.status IN ('pending', 'executing'))
+                   OR EXISTS (SELECT 1 FROM queued_prompts q WHERE q.session_id = ai_sessions.id AND q.status IN ('pending', 'executing')${automaticChildUpdateFilter(automatic, 'q')})
                   THEN 1 ELSE 0 END)::text AS in_flight,
          SUM(CASE WHEN CAST(metadata->>'managerReassignedByUser' AS TEXT) IN ('true', '1')
                    AND (metadata->>'originalSpawnerSessionId' IS NULL OR metadata->>'originalSpawnerSessionId' <> created_by_session_id)
@@ -93,11 +94,11 @@ const pendingSpawns = new Map<string, Set<string>>();
 const reservationLanes = new Map<string, Promise<unknown>>();
 
 /** Reserve before side effects; inserted rows are excluded while their reservation counts them. */
-export async function reserveChildSpawnCapacity(workspaceId: string, managerId: string, childId: string, db: Pick<typeof databaseWorker, 'query'> = databaseWorker): Promise<() => void> {
+export async function reserveChildSpawnCapacity(workspaceId: string, managerId: string, childId: string, db: Pick<typeof databaseWorker, 'query'> = databaseWorker, automaticChildReporting: () => boolean = () => true): Promise<() => void> {
   const key = JSON.stringify([workspaceId, managerId]);
   const reserve = (reservationLanes.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
     const pending = pendingSpawns.get(key) ?? new Set<string>();
-    await assertChildSpawnCapacity(workspaceId, managerId, db, [...pending]);
+    await assertChildSpawnCapacity(workspaceId, managerId, db, [...pending], automaticChildReporting());
     pending.add(childId);
     pendingSpawns.set(key, pending);
     return () => { pending.delete(childId); if (!pending.size && pendingSpawns.get(key) === pending) pendingSpawns.delete(key); };

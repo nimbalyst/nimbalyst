@@ -3,6 +3,7 @@ import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { SettingsToggle } from '../SettingsToggle';
+import { settingAtom } from '../../../store/atoms/settingAtomFamily';
 import { HelpTooltip } from '../../../help';
 import { requestConfirmation } from '../../../dialogs/requestConfirmation';
 import {
@@ -141,6 +142,7 @@ export function AdvancedPanel() {
   const posthog = usePostHog();
   // App-level advanced settings from Jotai atoms
   const [settings] = useAtom(advancedSettingsAtom);
+  const [childReportingMode, setChildReportingMode] = useAtom(settingAtom('ai.childReportingMode'));
   const [, updateSettings] = useAtom(setAdvancedSettingsAtom);
   const [, resetWalkthroughs] = useAtom(resetWalkthroughsAtom);
 
@@ -457,6 +459,24 @@ export function AdvancedPanel() {
       {/* ── General ── */}
       <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
         <h4 className="provider-panel-section-title text-base font-semibold mb-2 text-[var(--nim-text)]">General</h4>
+        <div className="flex items-center justify-between gap-4 py-3">
+          <div>
+            <label htmlFor="child-reporting-mode" className="text-sm font-medium text-[var(--nim-text)]">Child Session Reporting</label>
+            <p id="child-reporting-help" className="mt-0.5 text-xs text-[var(--nim-text-muted)]">
+              Automatic lets opted-in child sessions send updates and wake their parent. Manual requires an explicit message.
+            </p>
+          </div>
+          <select
+            id="child-reporting-mode"
+            aria-describedby="child-reporting-help"
+            value={childReportingMode}
+            onChange={event => setChildReportingMode(event.target.value === 'manual' ? 'manual' : 'automatic')}
+            className="setting-select rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-3 py-2 text-sm text-[var(--nim-text)]"
+          >
+            <option value="automatic">Automatic</option>
+            <option value="manual">Manual</option>
+          </select>
+        </div>
 
         <MultiProjectModeToggle />
 

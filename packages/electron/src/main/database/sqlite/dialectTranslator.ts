@@ -46,6 +46,7 @@ const NOW_PLAIN_RE = /\bNOW\s*\(\s*\)/gi;
 const CURRENT_TIMESTAMP_RE = /\bCURRENT_TIMESTAMP\b/gi;
 const TO_JSONB_RE = /\bto_jsonb\s*\(/gi;
 const JSONB_BUILD_OBJECT_RE = /\bjsonb_build_object\s*\(/gi;
+const IS_JSON_RE = /\b((?:[a-z_][a-z0-9_]*\.)?[a-z_][a-z0-9_]*)\s+IS\s+JSON\b/gi;
 const JSONB_SET_HEAD_RE = /\bjsonb_set\s*\(/gi;
 const OCTET_LENGTH_RE = /\bOCTET_LENGTH\s*\(/gi;
 const NOW_MINUS_INTERVAL_RE = /\bNOW\s*\(\s*\)\s*-\s*INTERVAL\s*'([^']+)'/gi;
@@ -114,6 +115,7 @@ export function translateSql(sql: string): TranslateResult {
 
   // Step 5: jsonb_build_object(...) -> json_object(...). to_jsonb(x) -> x.
   out = out.replace(JSONB_BUILD_OBJECT_RE, 'json_object(');
+  out = out.replace(IS_JSON_RE, 'json_valid($1)');
   out = stripToJsonbWrappers(out);
   out = rewriteJsonDeletes(out);
   out = rewriteJsonConcats(out);

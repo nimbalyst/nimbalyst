@@ -977,6 +977,7 @@ export class AIService {
             childSessionId: sessionId,
             source,
             settledChildErrored,
+            automaticChildReporting: () => getSettingsService().get('ai.childReportingMode') === 'automatic',
             getSession: (id) => AISessionsRepository.get(id),
             getSessionStatus: (id) => getSessionStateManager().getSessionState(id)?.status,
             requestQueueDrive: (id, path) => this.requestQueueDrive(id, path, 'meta-agent'),

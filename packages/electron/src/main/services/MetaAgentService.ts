@@ -35,6 +35,7 @@ import { computeNotificationSignature } from './metaAgentNotificationSignature';
 import { deletePendingChildUpdates } from './ai/pendingChildUpdates';
 import { inheritedOwnership, isParentNotificationSuppressed } from './extensionSessions/sessionOwnership';
 import { childReportingMetadata, resolveChildReporting, type ChildReporting } from './childReporting';
+import { getSettingsService } from './SettingsService';
 import { startExtensionSessionService } from './extensionSessions/extensionSessionsService';
 import { broadcastSessionCreated } from './session/broadcastSessionCreated';
 import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
@@ -206,6 +207,7 @@ export class MetaAgentService {
   private sessionManager: SessionManager | null = null;
   private unsubscribeStateListener: (() => void) | null = null;
   private notificationSignatures = new Map<string, string>();
+  private planReviewsInFlight = new Set<string>();
   private ipcHandlersRegistered = false;
   private showNotificationWithResult: ShowNotificationWithResult | null = null;
   private requestMobilePush: RequestMobilePush | null = null;
@@ -578,7 +580,8 @@ export class MetaAgentService {
     const title = (args.title || this.deriveTitleFromPrompt(args.prompt) || 'Meta Task').trim();
 
     const sessionId = randomUUID();
-    const releaseCapacity = await reserveChildSpawnCapacity(workspaceKey, metaSessionId, sessionId);
+    const releaseCapacity = await reserveChildSpawnCapacity(workspaceKey, metaSessionId, sessionId, databaseWorker,
+      () => getSettingsService().get('ai.childReportingMode') === 'automatic');
     try {
       let worktreeId: string | null = null;
       let worktreePath: string | null = null;
@@ -674,7 +677,7 @@ export class MetaAgentService {
         ...inheritedOwnership(callerMetadata),
         ...(childToolScope ? { toolScope: childToolScope } : {}),
         ...(childEffortLevel ? { effortLevel: childEffortLevel } : {}),
-        ...childReportingMetadata(args.childReporting, metaSessionId),
+        ...childReportingMetadata(args.childReporting, metaSessionId, getSettingsService().get('ai.childReportingMode')),
         ...(args.parentSessionIdOverride === null && !args.useWorktree ? { isolated: true } : {}),
       };
 
@@ -1225,6 +1228,16 @@ export class MetaAgentService {
         return;
       }
 
+      const automatic = () => session.metadata?.childReportingMode !== 'manual'
+        && getSettingsService().get('ai.childReportingMode') === 'automatic';
+      if (!automatic()) {
+        if (eventType === 'session:waiting') {
+          const result = await this.buildSessionResultData(sessionId, session.workspacePath, undefined, false);
+          await this.ensurePlanTrackerItem(session.workspacePath, sessionId, result);
+        }
+        return;
+      }
+
       const metaSession = await AISessionsRepository.get(session.createdBySessionId);
       if (!metaSession?.workspacePath) {
         return;
@@ -1289,7 +1302,9 @@ export class MetaAgentService {
       // stale pending row keeps the parent's queue proportional to the number of
       // children rather than to the number of turns they take.
       //
+      if (!automatic()) return;
       await deletePendingChildUpdates(session.createdBySessionId, session.id);
+      if (!automatic()) return;
 
       await this.aiService.queuePromptForSession(
         session.createdBySessionId,
@@ -1311,7 +1326,7 @@ export class MetaAgentService {
       // spins the meta-agent wakeup loop with no backoff (an antigravity 429
       // child settles instantly into 'error' every cycle). Native children
       // settle 'session:completed', so this gate is a no-op for them.
-      if (eventType !== 'session:error' && (metaStatus === 'idle' || metaStatus === 'interrupted' || metaStatus === 'error')) {
+      if (automatic() && eventType !== 'session:error' && (metaStatus === 'idle' || metaStatus === 'interrupted' || metaStatus === 'error')) {
         await this.aiService.triggerQueuedPromptProcessingForSession(metaSession.id, metaSession.workspacePath, 'meta-agent');
       }
     } catch (error) {
@@ -1651,6 +1666,22 @@ export class MetaAgentService {
     }
 
     const sourceRef = `meta-agent-plan:${sessionId}:${pendingPrompt.promptId}`;
+    if (this.planReviewsInFlight.has(sourceRef)) return;
+    this.planReviewsInFlight.add(sourceRef);
+    try {
+      await this.createPlanTrackerItem(workspaceId, sessionId, sourceRef, result.title, pendingPrompt);
+    } finally {
+      this.planReviewsInFlight.delete(sourceRef);
+    }
+  }
+
+  private async createPlanTrackerItem(
+    workspaceId: string,
+    sessionId: string,
+    sourceRef: string,
+    sessionTitle: string,
+    pendingPrompt: NonNullable<SessionResultData['pendingPrompt']>,
+  ): Promise<void> {
     const { rows: existing } = await databaseWorker.query<{ id: string }>(
       `SELECT id FROM tracker_items WHERE workspace = $1 AND source_ref = $2 LIMIT 1`,
       [workspaceId, sourceRef]
@@ -1660,7 +1691,7 @@ export class MetaAgentService {
     }
 
     const trackerId = randomUUID();
-    const title = `Plan review: ${result.title}`;
+    const title = `Plan review: ${sessionTitle}`;
     const description = typeof pendingPrompt.content.planFilePath === 'string'
       ? `Plan generated by child session ${sessionId}.\nPlan file: ${pendingPrompt.content.planFilePath}`
       : `Plan generated by child session ${sessionId}.`;
