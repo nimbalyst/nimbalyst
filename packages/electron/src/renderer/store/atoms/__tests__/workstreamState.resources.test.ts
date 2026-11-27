@@ -329,13 +329,15 @@ describe('per-tab tracker content focus', () => {
 });
 
 describe('Agent right panel mode', () => {
-  it('defaults to Edited Files and switches modes without hiding the panel', () => {
+  it('defaults to Edited Files with the right sidebar closed and preserves open state when switching modes', () => {
     const testStore = createStore();
     const workstreamId = 'right-panel-workstream';
 
     expect(testStore.get(workstreamRightPanelModeAtom(workstreamId))).toBe('edited-files');
-    expect(testStore.get(workstreamStateAtom(workstreamId)).filesSidebarVisible).toBe(true);
+    expect(testStore.get(workstreamStateAtom(workstreamId)).filesSidebarVisible).toBe(false);
 
+    // Once opened by the user, switching right-panel modes keeps the sidebar open.
+    testStore.set(workstreamStateAtom(workstreamId), { filesSidebarVisible: true });
     testStore.set(setWorkstreamRightPanelModeAtom, {
       workstreamId,
       mode: 'review',

@@ -60,7 +60,7 @@ const DEFAULT_SESSION_EDITOR_STATE: SessionEditorState = {
   layoutMode: 'transcript', // Start with transcript maximized (editor hidden)
   splitRatio: 0.5, // Default 50/50 when split mode activated
   activeTabKey: null,
-  filesSidebarVisible: true, // Show sidebar by default
+  filesSidebarVisible: false, // Keep sidebar collapsed by default until opened
   otherFilesExpanded: false, // Collapsed by default
 };
 
@@ -373,7 +373,7 @@ export async function loadSessionEditorState(sessionId: string): Promise<void> {
         layoutMode: saved.layoutMode ?? 'transcript',
         splitRatio: saved.splitRatio ?? 0.5,
         activeTabKey: null, // Will be set when tabs are restored
-        filesSidebarVisible: saved.filesSidebarVisible ?? true,
+        filesSidebarVisible: saved.filesSidebarVisible ?? false,
         otherFilesExpanded: saved.otherFilesExpanded ?? false,
       });
 
