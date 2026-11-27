@@ -137,6 +137,7 @@ export function startHarnessRunner(side: SpawnSide, options: {
   isAppReady?: () => boolean;
   resolveEntry?: () => string;
   launch?: LaunchUtilityProcess;
+  now?: () => number;
 } = {}): HarnessRunner {
   const children: HarnessChild[] = [];
   const launch = vi.fn<LaunchUtilityProcess>(options.launch ?? (() => {
@@ -151,6 +152,7 @@ export function startHarnessRunner(side: SpawnSide, options: {
     log,
     resolveEntry: options.resolveEntry ?? (() => '/harness/out/main/gitRunner.js'),
     timing: options.timing,
+    now: options.now,
   });
   setGitRunTransport(runner.transport);
   return {

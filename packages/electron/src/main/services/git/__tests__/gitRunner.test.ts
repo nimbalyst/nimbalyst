@@ -305,6 +305,9 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
   });
 
   it('PM-15 (Q2): calls between crashes run in process, the 6th crash stops respawning, and the runner returns after the cool-off', async () => {
+    // The supervisor's clock is Date. Holding it still keeps the burst below
+    // inside the cool-off however long 100 git spawns take on a loaded machine.
+    vi.useFakeTimers({ toFake: ['Date'] });
     const coolOffMs = 1500;
     const h = startHarnessRunner(side, { timing: { ...FAST, coolOffMs } });
     for (let crash = 1; crash <= 6; crash++) {
@@ -317,7 +320,6 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
       await expect(runGit(['sleep-print', '0', 'between'], { env: fakeEnv })).resolves.toMatchObject({ stdout: 'between' });
       expect(mainSpawns()).toHaveLength(1);
     }
-    const exhaustedAt = performance.now();
     expect(h.runner.supervisor.state).toBe('exhausted');
     const budgetWarnings = h.log.warn.mock.calls.filter(([line]) => String(line).includes('failed 6 times'));
     expect(budgetWarnings).toHaveLength(1);
@@ -325,11 +327,16 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
     const logLines = h.log.warn.mock.calls.length + h.log.info.mock.calls.length;
     spawns.length = 0;
     await Promise.all(Array.from({ length: 100 }, () => runGit(['sleep-print', '0', 'down'], { env: fakeEnv })));
-    expect(performance.now() - exhaustedAt).toBeLessThan(coolOffMs);
+    expect(h.runner.supervisor.state).toBe('exhausted');
     expect(mainSpawns()).toHaveLength(100);
     expect(h.launch.mock.calls.length).toBe(launches);
     expect(h.log.warn.mock.calls.length + h.log.info.mock.calls.length).toBe(logLines);
-    await new Promise((resolve) => setTimeout(resolve, coolOffMs + 20 - (performance.now() - exhaustedAt)));
+    vi.setSystemTime(Date.now() + coolOffMs - 1);
+    spawns.length = 0;
+    await runGit(['sleep-print', '0', 'still cooling off'], { env: fakeEnv });
+    expect(mainSpawns()).toHaveLength(1);
+    expect(h.launch.mock.calls.length).toBe(launches);
+    vi.setSystemTime(Date.now() + 1);
     spawns.length = 0;
     await runGit(['sleep-print', '0', 'retry trigger'], { env: fakeEnv });
     expect(mainSpawns()).toHaveLength(1);
@@ -407,8 +414,10 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
     const h = startHarnessRunner(side);
     await h.up();
     const started = performance.now();
-    await Promise.all(Array.from({ length: 6 }, (_, i) => runGit(['sleep-print', '0.3', String(i)], { env: fakeEnv })));
-    expect(performance.now() - started).toBeLessThan(1200);
+    // In series the six calls take at least 6 s. Run together they take about
+    // 1 s, which leaves 2 s for spawn overhead on a loaded machine.
+    await Promise.all(Array.from({ length: 6 }, (_, i) => runGit(['sleep-print', '1', String(i)], { env: fakeEnv })));
+    expect(performance.now() - started).toBeLessThan(3000);
     expect(runnerSpawns()).toHaveLength(6);
     h.runner.stop();
   });
@@ -482,16 +491,20 @@ class WorkerChild extends EventEmitter implements SupervisedChild {
   readonly stdout = null;
   readonly stderr = null;
   private readonly worker: Worker;
-  constructor(replyAfterMs: number) {
+  /** `replied[0]` turns 1 once the worker has posted a result. */
+  constructor(replyAfterMs: number, replied: Int32Array) {
     super();
     this.worker = new Worker(`
-      const { parentPort } = require('node:worker_threads');
+      const { parentPort, workerData } = require('node:worker_threads');
       parentPort.on('message', (m) => {
         if (m.type === 'ping') { parentPort.postMessage({ type: 'pong', seq: m.seq }); return; }
-        if (m.type === 'run') setTimeout(() => parentPort.postMessage({ type: 'result', id: m.id, stdout: 'from runner', stderr: '' }), ${replyAfterMs});
+        if (m.type === 'run') setTimeout(() => {
+          parentPort.postMessage({ type: 'result', id: m.id, stdout: 'from runner', stderr: '' });
+          Atomics.store(workerData.replied, 0, 1);
+        }, ${replyAfterMs});
       });
       parentPort.postMessage({ type: 'ready', protocol: ${GIT_RUNNER_PROTOCOL_VERSION} });
-    `, { eval: true });
+    `, { eval: true, workerData: { replied } });
     this.worker.on('online', () => { this.pid = 424242; this.emit('spawn'); });
     this.worker.on('message', (message) => this.emit('message', message));
     this.worker.on('exit', (code) => { this.pid = undefined; this.emit('exit', code); });
@@ -502,14 +515,22 @@ class WorkerChild extends EventEmitter implements SupervisedChild {
 
 describe('PM-8: main stalls past the deadline with the reply queued', () => {
   it('resolves with the queued reply instead of rejecting with a timeout', async () => {
-    const h = startHarnessRunner(side, { launch: () => new WorkerChild(50), timing: { deadlineMarginMs: 200 } });
+    const replied = new Int32Array(new SharedArrayBuffer(4));
+    // A monotonic clock, so a wall-clock step during the stall cannot make the
+    // late deadline look on time.
+    const h = startHarnessRunner(side, {
+      launch: () => new WorkerChild(50, replied), timing: { deadlineMarginMs: 200 }, now: () => performance.now(),
+    });
     await h.up();
     const call = settleOf(runGit(['status', '--porcelain'], { timeout: 100 }));
-    await new Promise<void>((resolve) => setImmediate(() => {
-      const blockedUntil = performance.now() + 100 + 200 + 1000;
-      while (performance.now() < blockedUntil) { /* main thread blocked */ }
-      resolve();
-    }));
+    // Main blocks in the same task that armed the deadline, so the deadline
+    // cannot fire before the stall. It stays blocked 1 s past the deadline
+    // (timeout + margin), and then until the reply is queued: a loaded machine
+    // can starve the worker thread for longer than that.
+    const started = performance.now();
+    const blocked = () => performance.now() - started;
+    while (blocked() < 100 + 200 + 1000 || (Atomics.load(replied, 0) === 0 && blocked() < 8000)) { /* main thread blocked */ }
+    expect(Atomics.load(replied, 0)).toBe(1);
     await call.done;
     expect(call.state.error).toBeUndefined();
     expect(call.state.value).toEqual({ stdout: 'from runner', stderr: '' });
