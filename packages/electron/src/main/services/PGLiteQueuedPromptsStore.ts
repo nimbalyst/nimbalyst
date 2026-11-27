@@ -6,6 +6,7 @@
  */
 
 import { toMillis } from '../utils/timestampUtils';
+import { automaticChildUpdateFilter } from './ai/automaticChildUpdates';
 import type {
   AgentWakePromptOrigin,
   PromptProvenance,
@@ -205,7 +206,8 @@ const CLEANUP_BATCH_ROWS = 1000;
 
 export function createPGLiteQueuedPromptsStore(
   db: PGliteLike,
-  ensureDbReady?: EnsureReadyFn
+  ensureDbReady?: EnsureReadyFn,
+  automaticChildReporting: () => boolean = () => true,
 ): QueuedPromptsStore {
   const ensureReady = async () => {
     if (ensureDbReady) {
@@ -270,7 +272,7 @@ export function createPGLiteQueuedPromptsStore(
 
       let query = `SELECT * FROM queued_prompts WHERE session_id = $1`;
       if (!includeCompleted) {
-        query += ` AND status NOT IN ('completed', 'failed')`;
+        query += ` AND status NOT IN ('completed', 'failed')${automaticChildUpdateFilter(automaticChildReporting())}`;
       }
       query += ` ORDER BY created_at ASC, id ASC`;
 
@@ -283,7 +285,7 @@ export function createPGLiteQueuedPromptsStore(
 
       const { rows } = await db.query<any>(
         `SELECT * FROM queued_prompts
-         WHERE session_id = $1 AND status = 'pending'
+         WHERE session_id = $1 AND status = 'pending'${automaticChildUpdateFilter(automaticChildReporting())}
          ORDER BY created_at ASC, id ASC`,
         [sessionId]
       );
@@ -295,7 +297,7 @@ export function createPGLiteQueuedPromptsStore(
       await ensureReady();
 
       const { rows } = await db.query<{ session_id: string }>(
-        `SELECT DISTINCT session_id FROM queued_prompts WHERE status = 'pending'`
+        `SELECT DISTINCT session_id FROM queued_prompts WHERE status = 'pending'${automaticChildUpdateFilter(automaticChildReporting())}`
       );
 
       return rows.map((row) => row.session_id);
@@ -329,7 +331,7 @@ export function createPGLiteQueuedPromptsStore(
       const { rows } = await db.query<any>(
         `UPDATE queued_prompts
          SET status = 'executing', claimed_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND status = 'pending'
+         WHERE id = $1 AND status = 'pending'${automaticChildUpdateFilter(automaticChildReporting())}
          RETURNING *`,
         [id]
       );

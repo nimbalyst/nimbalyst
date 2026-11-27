@@ -8,6 +8,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../SettingsService', () => ({ getSettingsService: () => ({ get: () => 'automatic' }) }));
+
 vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: { create: vi.fn(), updateMetadata: vi.fn(), get: vi.fn() },
 }));

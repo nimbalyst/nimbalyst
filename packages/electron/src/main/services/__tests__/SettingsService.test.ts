@@ -57,6 +57,19 @@ const STORE_FALLBACK = path.join(
 );
 
 describe('SettingsService', () => {
+  it('persists child reporting mode and resets to Automatic', async () => {
+    const key = 'ai.childReportingMode';
+    const { getSettingsService } = await import('../SettingsService');
+    const settings = getSettingsService();
+    expect(settings.get(key)).toBe('automatic');
+    expect(() => settings.set(key, 'invalid' as any)).toThrow(/schema validation failed/);
+    settings.set(key, 'manual');
+    vi.resetModules();
+    const reloaded = (await import('../SettingsService')).getSettingsService();
+    expect(reloaded.getAll()[key]).toBe('manual');
+    reloaded.delete(key);
+    expect(reloaded.get(key)).toBe('automatic');
+  });
   it('keeps provider credentials out of JSON and generic snapshots', async () => {
     const { getSettingsService } = await import('../SettingsService');
     const svc = getSettingsService();

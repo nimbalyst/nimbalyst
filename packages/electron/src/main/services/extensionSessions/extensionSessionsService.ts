@@ -33,6 +33,8 @@ import { providerAppliesSessionDirective } from '@nimbalyst/runtime/ai/server/ag
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { database } from '../../database/PGLiteDatabaseWorker';
+import { getSettingsService } from '../SettingsService';
+import { automaticChildUpdateFilter } from '../ai/automaticChildUpdates';
 import { dispatchMetaAgentTool } from '../../mcp/metaAgentServer';
 import { sameWorkspaceIdentity } from '../../utils/workspaceIdentity';
 import { toMillis } from '../../utils/timestampUtils';
@@ -143,10 +145,14 @@ async function deliverSettle(sessionId: string, outcome: OwnedSessionSettleOutco
 
 async function countPendingPrompts(sessionId: string): Promise<number> {
   const { rows } = await database.query<{ count: string }>(
-    `SELECT COUNT(*)::text AS count FROM queued_prompts WHERE session_id = $1 AND status = 'pending'`,
+    `SELECT COUNT(*)::text AS count FROM queued_prompts WHERE session_id = $1 AND status = 'pending'${deliverableChildUpdates()}`,
     [sessionId]
   );
   return Number(rows[0]?.count ?? '0');
+}
+
+function deliverableChildUpdates(alias?: 'q'): string {
+  return automaticChildUpdateFilter(getSettingsService().get('ai.childReportingMode') === 'automatic', alias);
 }
 
 // ---------------------------------------------------------------------------
@@ -336,7 +342,7 @@ async function getStatus(scope: ExtensionSessionScope, sessionId: string): Promi
   const { session } = await requireOwned(scope, sessionId);
   const { rows } = await database.query<{ status: string | null; last_activity: unknown; updated_at: unknown; queued: string }>(
     `SELECT s.status, s.last_activity, s.updated_at,
-            (SELECT COUNT(*) FROM queued_prompts q WHERE q.session_id = s.id AND q.status = 'pending')::text AS queued
+            (SELECT COUNT(*) FROM queued_prompts q WHERE q.session_id = s.id AND q.status = 'pending'${deliverableChildUpdates('q')})::text AS queued
        FROM ai_sessions s WHERE s.id = $1`,
     [sessionId]
   );
@@ -440,7 +446,7 @@ async function listOwned(scope: ExtensionSessionScope, key?: string): Promise<Ow
   const { rows: counts } = await database.query<{ session_id: string; count: string }>(
     `SELECT q.session_id, COUNT(*)::text AS count
        FROM queued_prompts q JOIN ai_sessions s ON s.id = q.session_id
-      WHERE q.status = 'pending'
+      WHERE q.status = 'pending'${deliverableChildUpdates('q')}
         AND s.metadata->'sessionOwner'->>'extensionId' = $1
       GROUP BY q.session_id`,
     [scope.extensionId]

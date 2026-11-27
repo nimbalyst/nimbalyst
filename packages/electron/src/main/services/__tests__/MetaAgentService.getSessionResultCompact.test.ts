@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+vi.mock('../SettingsService', () => ({ getSettingsService: () => ({ get: () => 'automatic' }) }));
+
 // FIX C: get_session_result gained an optional includeFullResponse param
 // (default true, unchanged behavior). This guards the new wiring from the
 // MCP tool schema down through getSessionResultJson to buildSessionResultData

@@ -185,6 +185,11 @@ export const SETTINGS_REGISTRY = {
   ),
 
   // ---- Other AI-domain settings ----
+  'ai.childReportingMode': setting(
+    z.enum(['automatic', 'manual']),
+    { store: 'ai-settings', path: 'childReportingMode' },
+    'automatic',
+  ),
   'ai.defaultProvider': setting(
     z.string(),
     { store: 'ai-settings', path: 'defaultProvider' },

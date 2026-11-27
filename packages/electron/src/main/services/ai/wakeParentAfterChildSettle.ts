@@ -18,11 +18,13 @@ export async function wakeParentAfterChildSettle(args: {
   source: string;
   /** The chain ended in 'error'; captured before endSession evicted the child's state. */
   settledChildErrored: boolean;
+  automaticChildReporting: () => boolean;
   getSession: (sessionId: string) => Promise<SessionLike | null>;
   getSessionStatus: (sessionId: string) => string | undefined;
   requestQueueDrive: (sessionId: string, workspacePath: string) => void;
   logInfo: (message: string) => void;
 }): Promise<void> {
+  if (!args.automaticChildReporting()) return;
   const child = await args.getSession(args.childSessionId);
   if (!child?.createdBySessionId) return;
 
@@ -30,7 +32,7 @@ export async function wakeParentAfterChildSettle(args: {
   // that route child settles to themselves. Without this every child settle
   // wakes the parent and re-drives a meta-agent in a loop. Same gate as
   // MetaAgentService.handleChildSessionEvent.
-  if (isParentNotificationSuppressed(child.metadata)) return;
+  if (isParentNotificationSuppressed(child.metadata) || child.metadata?.childReportingMode === 'manual') return;
 
   // A failed child (e.g. an antigravity 429) has no result to deliver, and
   // waking the parent on every such settle is the meta-agent spin loop.
@@ -40,7 +42,7 @@ export async function wakeParentAfterChildSettle(args: {
   if (!parent?.workspacePath) return;
 
   const status = args.getSessionStatus(parent.id) || 'idle';
-  if (status === 'idle' || status === 'error') {
+  if (args.automaticChildReporting() && (status === 'idle' || status === 'error')) {
     args.logInfo(`[AIService] ${args.source}: waking meta-agent ${parent.id} after child ${args.childSessionId} completed`);
     args.requestQueueDrive(parent.id, parent.workspacePath);
   }

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../SettingsService', () => ({ getSettingsService: () => ({ get: () => 'automatic' }) }));
+
 // NIM-828 (original): MetaAgentService.start() had to wire the standalone
 // meta-agent MCP port into ClaudeCliLauncherConfig so claude-code-cli sessions
 // got an --mcp-config including the meta-agent tools.

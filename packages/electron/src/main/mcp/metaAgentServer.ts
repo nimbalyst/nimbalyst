@@ -174,7 +174,7 @@ const REPORTING_SCHEMA = {
   type: "string",
   enum: ["none", "final", "messages"],
   description:
-    "How the new session reports back to you. \"none\" (default): nothing, fire and forget. \"final\": you are notified when it completes, errors or needs input, and its final response is the report. \"messages\": as final, and it may also send material changes mid-run. Choose messages only when you will act on them before it finishes.",
+    "How the new session reports back to you. \"none\" (default): fire and forget. \"final\": automatic mode forwards lifecycle updates and the final response; manual mode requires a deliberate send_prompt for any return. \"messages\": as final, with informational reports for material changes mid-run. In either mode, explicitly authorize an actionable return in the brief when you need parent inspection, a decision, or continuation.",
 };
 
 /**
@@ -201,7 +201,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
   {
     name: "create_session",
     description:
-      "Create a worker session for part of a task you are coordinating. It nests under you in the session tree, shares your working directory, and is seeded with an initial prompt. Set reporting to \"final\" when you need its result. For unrelated work, or for continuing this work in a fresh session, use spawn_session with isolated=true or besideCaller=true where that tool is available. Pass toolScope to control the child's capabilities: use \"read\" or \"write\" for analyze/research tasks so the child cannot run builds or claim to have run them; \"full\" (default) grants run_command.",
+      "Create a worker session for part of a task you are coordinating. It nests under you in the session tree, shares your working directory, and is seeded with an initial prompt. Set reporting to \"final\" and specify any required return in the brief. For unrelated work, or for continuing this work in a fresh session, use spawn_session with isolated=true or besideCaller=true where that tool is available. Pass toolScope to control the child's capabilities: use \"read\" or \"write\" for analyze/research tasks so the child cannot run builds or claim to have run them; \"full\" (default) grants run_command.",
     inputSchema: {
       type: "object",
       properties: {
@@ -253,7 +253,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
       "Start another session from this one. Choose the setup from what the user asked for:\n" +
       "- Unrelated work (\"start a new session to fix that other bug\", \"track this down separately\"): isolated=true and reporting \"none\". It is an independent top-level session that does and commits its own work; do not wait for it or check on it.\n" +
       "- The same work continued in a fresh session (context is too long, or a handoff to a successor): besideCaller=true and reporting \"none\". It sits beside you, so a chain of handoffs stays flat.\n" +
-      "- Workers for one task you are coordinating (the user asked you to orchestrate, split up or parallelize a piece of work): omit both flags so it nests under you in the session tree, and set reporting \"final\" so you get its result.\n" +
+      "- Workers for one task you are coordinating (the user asked you to orchestrate, split up or parallelize a piece of work): omit both flags so it nests under you in the session tree, set reporting \"final\", and specify any required return in the brief.\n" +
       "The new session runs in your working directory (your worktree, if you are in one); pass useWorktree=true only when the user asks for a separate branch. Reporting defaults to \"none\" (fire and forget). Used by /launch-new-session.",
     inputSchema: {
       type: "object",
@@ -375,13 +375,13 @@ export const META_AGENT_TOOL_DEFS: Array<{
   {
     name: "send_prompt",
     description:
-      "Queue a follow-up prompt for a session. An instruction to an idle session starts processing immediately; a report or status never wakes it and is read on its next turn. Do not message the session that started you unless it asked for reports.",
+      "Queue a follow-up prompt for a session. An instruction to an idle session starts processing immediately; a report or status never wakes it and is read on its next turn. Message the session that started you only when it asked for reports or explicitly authorized an actionable return.",
     inputSchema: {
       type: "object",
       properties: {
         sessionId: {
           type: "string",
-          description: "The target child session ID.",
+          description: "The target session ID.",
         },
         prompt: {
           type: "string",
