@@ -72,9 +72,19 @@ export const GeminiUsageIndicator: React.FC<GeminiUsageIndicatorProps> = ({ clas
       ? `Gemini usage unavailable: ${usage.error}`
       : usage
         ? limitsAvailable
-          ? ringWindow?.resetsAt
-            ? `Gemini: ${Math.round(utilization)}% (resets ${formatResetTime(ringWindow.resetsAt)})`
-            : `Gemini: ${Math.round(utilization)}%`
+          ? Array.isArray(usage.quotaGroups) && usage.quotaGroups.length > 0
+            ? usage.quotaGroups
+                .map((group) => {
+                  const win = group.hasFiveHour ? group.fiveHour : group.sevenDay;
+                  const pct = Math.round(win?.utilization ?? 0);
+                  return win?.resetsAt
+                    ? `${group.displayName}: ${pct}% (resets ${formatResetTime(win.resetsAt)})`
+                    : `${group.displayName}: ${pct}%`;
+                })
+                .join(' · ')
+            : ringWindow?.resetsAt
+              ? `Gemini: ${Math.round(utilization)}% (resets ${formatResetTime(ringWindow.resetsAt)})`
+              : `Gemini: ${Math.round(utilization)}%`
           : 'Gemini usage (limits unavailable)'
         : 'Gemini usage unavailable';
 

@@ -12,15 +12,33 @@ import { formatResetTime } from './claudeUsageAtoms';
 
 export { formatResetTime };
 
+export interface GeminiQuotaWindow {
+  utilization: number; // 0-100 percentage
+  resetsAt: string | null; // ISO timestamp
+}
+
+export interface GeminiQuotaGroup {
+  displayName: string;
+  description: string | null;
+  fiveHour: GeminiQuotaWindow;
+  sevenDay: GeminiQuotaWindow;
+  hasFiveHour: boolean;
+  hasSevenDay: boolean;
+}
+
+export interface GeminiUsageAccount {
+  email: string | null;
+  name: string | null;
+  planName: string | null;
+  tier: string | null;
+}
+
 export interface GeminiUsageData {
-  fiveHour: {
-    utilization: number; // 0-100 percentage
-    resetsAt: string | null; // ISO timestamp
-  };
-  sevenDay: {
-    utilization: number;
-    resetsAt: string | null;
-  };
+  fiveHour: GeminiQuotaWindow;
+  sevenDay: GeminiQuotaWindow;
+  primaryGroupName?: string;
+  quotaGroups?: GeminiQuotaGroup[];
+  account?: GeminiUsageAccount;
   credits?: {
     hasCredits: boolean;
     unlimited: boolean;
@@ -64,7 +82,8 @@ export const geminiUsageAvailableAtom = atom((get) => {
     usage.sevenDay.utilization > 0 ||
     Boolean(usage.fiveHour.resetsAt) ||
     Boolean(usage.sevenDay.resetsAt) ||
-    Boolean(usage.limitsAvailable);
+    Boolean(usage.limitsAvailable) ||
+    Boolean(usage.account?.email);
   const hasCreditsData = Boolean(usage.credits?.hasCredits) || usage.credits?.balance !== null;
   const hasTokenUsage = (usage.tokenUsage?.totalTokens ?? 0) > 0;
   return hasUsageData || hasCreditsData || hasTokenUsage;

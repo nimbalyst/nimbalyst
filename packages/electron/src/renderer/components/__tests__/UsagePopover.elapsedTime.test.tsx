@@ -142,6 +142,51 @@ describe('usage popover elapsed time', () => {
     expect(screen.getByText('7-day window')).toBeTruthy();
   });
 
+  it('renders all Gemini and Claude/GPT quota groups and account summary in GeminiUsagePopover', () => {
+    const store = createStore();
+    const reset5h = new Date(fixedNow.getTime() + fiveHours * 0.51).toISOString();
+    const reset7d = new Date(fixedNow.getTime() + sevenDays * 0.51).toISOString();
+    store.set(geminiUsageAtom, {
+      fiveHour: { utilization: 72, resetsAt: reset5h },
+      sevenDay: { utilization: 18, resetsAt: reset7d },
+      primaryGroupName: 'Gemini Models',
+      account: { email: 'user@example.com', name: 'Test User', planName: 'Pro', tier: 'TEAMS_TIER_PRO' },
+      quotaGroups: [
+        {
+          displayName: 'Gemini Models',
+          description: 'Models within this group: Gemini 4 Neon, Gemini 4 Carbon',
+          fiveHour: { utilization: 72, resetsAt: reset5h },
+          sevenDay: { utilization: 18, resetsAt: reset7d },
+          hasFiveHour: true,
+          hasSevenDay: true,
+        },
+        {
+          displayName: 'Claude and GPT models',
+          description: 'Models within this group: Claude Opus 5.5, GPT-OSS 120B',
+          fiveHour: { utilization: 100, resetsAt: reset5h },
+          sevenDay: { utilization: 50, resetsAt: reset7d },
+          hasFiveHour: true,
+          hasSevenDay: true,
+        },
+      ],
+      windowSource: 'summary',
+      hasFiveHour: true,
+      hasSevenDay: true,
+      lastUpdated: fixedNow.getTime(),
+      notStarted: false,
+    } as never);
+    render(<Provider store={store}><GeminiUsagePopover {...popoverProps} /></Provider>);
+    expect(screen.getByText('user@example.com')).toBeTruthy();
+    expect(screen.getByText('Pro')).toBeTruthy();
+    expect(screen.getByText('Gemini Models')).toBeTruthy();
+    expect(screen.getByText('Claude and GPT models')).toBeTruthy();
+    expect(screen.getByText('Gemini 4 Neon, Gemini 4 Carbon')).toBeTruthy();
+    expect(screen.getByText('Claude Opus 5.5, GPT-OSS 120B')).toBeTruthy();
+    expect(screen.getByText('72%')).toBeTruthy();
+    expect(screen.getByText('100%')).toBeTruthy();
+    expect(document.querySelectorAll('[data-testid="gemini-quota-group"]')).toHaveLength(2);
+  });
+
   it('clamps elapsed time at both reset boundaries and omits invalid reset data', () => {
     const store = createStore();
     store.set(claudeUsageAtom, {

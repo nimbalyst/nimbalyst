@@ -38,15 +38,35 @@ function isEndpointGoneError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('ECONNREFUSED');
 }
 
+export interface GeminiQuotaWindow {
+  utilization: number; // 0-100 percentage
+  resetsAt: string | null; // ISO timestamp
+}
+
+export interface GeminiQuotaGroup {
+  displayName: string;
+  description: string | null;
+  fiveHour: GeminiQuotaWindow;
+  sevenDay: GeminiQuotaWindow;
+  hasFiveHour: boolean;
+  hasSevenDay: boolean;
+}
+
+export interface GeminiUsageAccount {
+  email: string | null;
+  name: string | null;
+  planName: string | null;
+  tier: string | null;
+}
+
 export interface GeminiUsageData {
-  fiveHour: {
-    utilization: number; // 0-100 percentage
-    resetsAt: string | null; // ISO timestamp
-  };
-  sevenDay: {
-    utilization: number;
-    resetsAt: string | null;
-  };
+  fiveHour: GeminiQuotaWindow;
+  sevenDay: GeminiQuotaWindow;
+  /** Primary quota group driving fiveHour/sevenDay and the gutter ring (prefers Gemini Models). */
+  primaryGroupName?: string;
+  /** All active quota groups reported by Antigravity (e.g. Gemini Models, Claude and GPT models). */
+  quotaGroups?: GeminiQuotaGroup[];
+  account?: GeminiUsageAccount;
   credits?: {
     hasCredits: boolean;
     unlimited: boolean;
@@ -60,9 +80,9 @@ export interface GeminiUsageData {
   available?: boolean;
   /** 'summary' when backed by RetrieveUserQuotaSummary 5h/weekly pools; 'models' for per-model fallback. */
   windowSource?: 'summary' | 'models';
-  /** Present when windowSource === 'summary': whether the plan reports a 5-hour session bucket. */
+  /** Present when windowSource === 'summary': whether the primary group reports a 5-hour session bucket. */
   hasFiveHour?: boolean;
-  /** Present when windowSource === 'summary': whether the plan reports a 7-day weekly bucket. */
+  /** Present when windowSource === 'summary': whether the primary group reports a 7-day weekly bucket. */
   hasSevenDay?: boolean;
   lastUpdated: number; // Unix timestamp
   error?: string;
@@ -276,10 +296,13 @@ class GeminiUsageServiceImpl {
    * Map an AntigravityUsageSnapshot into the chip's GeminiUsageData shape.
    *
    * Prefers the explicit 5-hour and weekly quota pools from
-   * `RetrieveUserQuotaSummary` (Gemini Models group) when available. Falls back
-   * to the two most-constrained per-model quotas from `GetUserStatus` on older
-   * Antigravity servers that do not expose the summary RPC. Account credits map
-   * onto the optional `credits` block.
+   * `RetrieveUserQuotaSummary` across all quota groups (e.g. "Gemini Models"
+   * and "Claude and GPT models"). Always drives the primary `fiveHour` /
+   * `sevenDay` fields (and therefore the sidebar ring) from the Gemini Models
+   * group so an exhausted secondary pool (such as Claude/GPT at 100%) never
+   * masks remaining Gemini session quota. Falls back to per-model quotas from
+   * `GetUserStatus` on older Antigravity servers that do not expose the
+   * summary RPC.
    */
   private convertSnapshot(snapshot: AntigravityUsageSnapshot): GeminiUsageData {
     const toUtilization = (q?: { remainingFraction?: number }): number => {
@@ -288,22 +311,19 @@ class GeminiUsageServiceImpl {
       return Math.max(0, Math.min(100, util));
     };
 
-    const summaryBuckets = this.extractGeminiSummaryBuckets(snapshot?.quotaSummary);
+    const summaryGroups = this.extractSummaryGroups(snapshot?.quotaSummary, toUtilization);
 
     let data: GeminiUsageData;
-    if (summaryBuckets) {
+    if (summaryGroups.length > 0) {
+      const primaryGroup = summaryGroups[0];
       data = {
-        fiveHour: {
-          utilization: toUtilization(summaryBuckets.fiveHour),
-          resetsAt: summaryBuckets.fiveHour?.resetTime ?? null,
-        },
-        sevenDay: {
-          utilization: toUtilization(summaryBuckets.weekly),
-          resetsAt: summaryBuckets.weekly?.resetTime ?? null,
-        },
+        fiveHour: primaryGroup.fiveHour,
+        sevenDay: primaryGroup.sevenDay,
+        primaryGroupName: primaryGroup.displayName,
+        quotaGroups: summaryGroups,
         windowSource: 'summary',
-        hasFiveHour: Boolean(summaryBuckets.fiveHour),
-        hasSevenDay: Boolean(summaryBuckets.weekly),
+        hasFiveHour: primaryGroup.hasFiveHour,
+        hasSevenDay: primaryGroup.hasSevenDay,
         limitsAvailable: true,
         available: true,
         lastUpdated: Date.now(),
@@ -319,8 +339,41 @@ class GeminiUsageServiceImpl {
         (a, b) => (a.remainingFraction ?? 1) - (b.remainingFraction ?? 1),
       );
 
-      const primary = quotas[0];
-      const secondary = quotas[1];
+      const geminiQuotas = quotas.filter((q) =>
+        /gemini|orchestrator/i.test(String(q.label || q.model || '')),
+      );
+      const primaryPool = geminiQuotas.length > 0 ? geminiQuotas : quotas;
+      const primary = primaryPool[0];
+      const secondary = primaryPool[1];
+
+      const familyMap = new Map<string, AntigravityModelQuota>();
+      for (const q of quotas) {
+        const lbl = String(q.label || q.model || '');
+        const fam = /claude/i.test(lbl)
+          ? 'Claude Models'
+          : /gpt|oss/i.test(lbl)
+            ? 'GPT-OSS Models'
+            : /gemini|orchestrator/i.test(lbl)
+              ? 'Gemini Models'
+              : 'Other Models';
+        const prev = familyMap.get(fam);
+        if (!prev || (q.remainingFraction ?? 1) < (prev.remainingFraction ?? 1)) {
+          familyMap.set(fam, q);
+        }
+      }
+      const fallbackGroups: GeminiQuotaGroup[] =
+        familyMap.size > 1
+          ? [...familyMap.entries()]
+              .sort(([a], [b]) => (/gemini/i.test(b) ? 1 : 0) - (/gemini/i.test(a) ? 1 : 0))
+              .map(([fam, q]) => ({
+                displayName: fam,
+                description: q.label ?? null,
+                fiveHour: { utilization: toUtilization(q), resetsAt: q.resetTime ?? null },
+                sevenDay: { utilization: 0, resetsAt: null },
+                hasFiveHour: true,
+                hasSevenDay: false,
+              }))
+          : [];
 
       data = {
         fiveHour: {
@@ -331,6 +384,7 @@ class GeminiUsageServiceImpl {
           utilization: toUtilization(secondary),
           resetsAt: secondary?.resetTime ?? null,
         },
+        ...(fallbackGroups.length > 0 ? { quotaGroups: fallbackGroups } : {}),
         windowSource: 'models',
         limitsAvailable: quotas.length > 0,
         available: true,
@@ -340,6 +394,13 @@ class GeminiUsageServiceImpl {
 
     const account = snapshot?.account;
     if (account) {
+      const email = typeof account.email === 'string' && account.email.trim() ? account.email.trim() : null;
+      const name = typeof account.name === 'string' && account.name.trim() ? account.name.trim() : null;
+      const planName = typeof account.planName === 'string' && account.planName.trim() ? account.planName.trim() : null;
+      const tier = typeof account.tier === 'string' && account.tier.trim() ? account.tier.trim() : null;
+      if (email || name || planName || tier) {
+        data.account = { email, name, planName, tier };
+      }
       const balance =
         typeof account.availablePromptCredits === 'number'
           ? account.availablePromptCredits
@@ -357,39 +418,60 @@ class GeminiUsageServiceImpl {
     return data;
   }
 
-  private extractGeminiSummaryBuckets(
-    summary?: AntigravityQuotaSummary,
-  ): { fiveHour?: AntigravityQuotaBucket; weekly?: AntigravityQuotaBucket } | null {
+  private extractSummaryGroups(
+    summary: AntigravityQuotaSummary | undefined,
+    toUtilization: (q?: { remainingFraction?: number }) => number,
+  ): GeminiQuotaGroup[] {
     const groups = summary?.groups ?? [];
-    if (groups.length === 0) return null;
+    if (groups.length === 0) return [];
 
-    const geminiGroup =
-      groups.find(
-        (g) =>
-          /gemini/i.test(g.displayName) ||
-          g.buckets.some((b) => /^gemini[-_]/i.test(b.bucketId)),
-      ) ?? groups[0];
+    const extracted: Array<{ group: GeminiQuotaGroup; isGemini: boolean }> = [];
+    for (const grp of groups) {
+      const activeBuckets = grp.buckets.filter(
+        (b) => !b.disabled && typeof b.remainingFraction === 'number',
+      );
+      if (activeBuckets.length === 0) continue;
 
-    const activeBuckets = geminiGroup.buckets.filter(
-      (b) => !b.disabled && typeof b.remainingFraction === 'number',
-    );
-    if (activeBuckets.length === 0) return null;
+      const fiveHour = activeBuckets.find(
+        (b) =>
+          b.window?.toLowerCase() === '5h' ||
+          /(?:^|[-_])5h$/i.test(b.bucketId) ||
+          /5[- ]?hour|five[- ]?hour/i.test(b.displayName ?? ''),
+      );
+      const weekly = activeBuckets.find(
+        (b) =>
+          b.window?.toLowerCase() === 'weekly' ||
+          /(?:^|[-_])weekly$/i.test(b.bucketId) ||
+          /week/i.test(b.displayName ?? ''),
+      );
+      if (!fiveHour && !weekly) continue;
 
-    const fiveHour = activeBuckets.find(
-      (b) =>
-        b.window?.toLowerCase() === '5h' ||
-        /(?:^|[-_])5h$/i.test(b.bucketId) ||
-        /5[- ]?hour|five[- ]?hour/i.test(b.displayName ?? ''),
-    );
-    const weekly = activeBuckets.find(
-      (b) =>
-        b.window?.toLowerCase() === 'weekly' ||
-        /(?:^|[-_])weekly$/i.test(b.bucketId) ||
-        /week/i.test(b.displayName ?? ''),
-    );
+      const isGemini =
+        /gemini/i.test(grp.displayName) ||
+        grp.buckets.some((b) => /^gemini[-_]/i.test(b.bucketId));
 
-    if (!fiveHour && !weekly) return null;
-    return { fiveHour, weekly };
+      extracted.push({
+        isGemini,
+        group: {
+          displayName: grp.displayName,
+          description: grp.description ?? null,
+          fiveHour: {
+            utilization: toUtilization(fiveHour),
+            resetsAt: fiveHour?.resetTime ?? null,
+          },
+          sevenDay: {
+            utilization: toUtilization(weekly),
+            resetsAt: weekly?.resetTime ?? null,
+          },
+          hasFiveHour: Boolean(fiveHour),
+          hasSevenDay: Boolean(weekly),
+        },
+      });
+    }
+
+    // Always place the Gemini group first so it drives the primary gutter ring.
+    extracted.sort((a, b) => Number(b.isGemini) - Number(a.isGemini));
+    return extracted.map((entry) => entry.group);
   }
 
   private broadcastUpdate(): void {

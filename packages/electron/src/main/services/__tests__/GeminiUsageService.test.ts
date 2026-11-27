@@ -217,12 +217,23 @@ describe('GeminiUsageService hub discovery', () => {
     expect(data.available).toBe(true);
     expect(data.limitsAvailable).toBe(true);
     expect(data.windowSource).toBe('summary');
+    expect(data.primaryGroupName).toBe('Gemini Models');
     expect(data.hasFiveHour).toBe(true);
     expect(data.hasSevenDay).toBe(true);
+    // Primary ring follows Gemini Models even when Claude/GPT is more constrained (90%).
     expect(data.fiveHour.utilization).toBeCloseTo(12);
     expect(data.fiveHour.resetsAt).toBe('2026-11-26T18:17:23Z');
     expect(data.sevenDay.utilization).toBeCloseTo(4);
     expect(data.sevenDay.resetsAt).toBe('2026-12-03T13:17:23Z');
+    // All quota groups are surfaced in order with Gemini Models first.
+    expect(data.quotaGroups).toHaveLength(2);
+    expect(data.quotaGroups?.[0].displayName).toBe('Gemini Models');
+    expect(data.quotaGroups?.[0].fiveHour.utilization).toBeCloseTo(12);
+    expect(data.quotaGroups?.[0].sevenDay.utilization).toBeCloseTo(4);
+    expect(data.quotaGroups?.[1].displayName).toBe('Claude and GPT models');
+    expect(data.quotaGroups?.[1].fiveHour.utilization).toBeCloseTo(90);
+    expect(data.quotaGroups?.[1].sevenDay.utilization).toBeCloseTo(80);
+    expect(data.account?.planName).toBe('Pro');
     expect(data.credits?.balance).toBe(500);
   });
 

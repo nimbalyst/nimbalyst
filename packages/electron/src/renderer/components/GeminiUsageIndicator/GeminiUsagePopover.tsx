@@ -50,6 +50,12 @@ function calculateTimeElapsedPercent(resetsAt: string | null, windowDurationMs: 
   return Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
 }
 
+function utilizationColor(utilization: number): 'green' | 'yellow' | 'red' {
+  if (utilization >= 80) return 'red';
+  if (utilization >= 50) return 'yellow';
+  return 'green';
+}
+
 const UsageSection: React.FC<UsageSectionProps> = ({
   title,
   subtitle,
@@ -155,6 +161,8 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
 
   const limitsAvailable = usage.limitsAvailable ?? true;
   const hasSummaryWindows = usage.windowSource === 'summary';
+  const quotaGroups =
+    Array.isArray(usage.quotaGroups) && usage.quotaGroups.length > 0 ? usage.quotaGroups : null;
   const showFiveHour = !hasSummaryWindows || usage.hasFiveHour !== false;
   const showSevenDay = !hasSummaryWindows || usage.hasSevenDay !== false;
 
@@ -167,7 +175,7 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
         ref={menu.refs.setFloating}
         style={menu.floatingStyles}
         {...menu.getFloatingProps()}
-        className="w-60 bg-nim-secondary border border-nim rounded-lg shadow-lg z-50 overflow-y-auto"
+        className="w-72 max-h-[80vh] bg-nim-secondary border border-nim rounded-lg shadow-lg z-50 overflow-y-auto"
         data-testid="gemini-usage-popover"
       >
         {/* Header */}
@@ -198,6 +206,22 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
           </div>
         </div>
 
+        {/* Account summary bar */}
+        {(usage.account?.email || usage.account?.planName) && (
+          <div className="px-4 py-2 border-b border-nim bg-nim-tertiary/30 flex items-center gap-1.5 min-w-0">
+            {usage.account.email && (
+              <span className="text-[11px] font-medium text-nim truncate" title={usage.account.email}>
+                {usage.account.email}
+              </span>
+            )}
+            {usage.account.planName && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-nim-tertiary text-nim-muted shrink-0">
+                {usage.account.planName}
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Content */}
         <div className="px-4 py-3">
           {usage.notStarted ? (
@@ -213,27 +237,70 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
                   Usage detected, but Gemini limits are unavailable in recent session data.
                 </div>
               )}
-              {showFiveHour && (
-                <UsageSection
-                  title="Session"
-                  subtitle={hasSummaryWindows ? '5-hour window' : 'Most-constrained model'}
-                  utilization={usage.fiveHour.utilization}
-                  resetsAt={usage.fiveHour.resetsAt}
-                  color={sessionColor as 'green' | 'yellow' | 'red' | 'muted'}
-                  windowDurationMs={hasSummaryWindows ? sessionWindowMs : null}
-                  showPacingDetails={hasSummaryWindows}
-                />
-              )}
-              {showSevenDay && (
-                <UsageSection
-                  title={hasSummaryWindows ? 'Weekly' : 'Secondary'}
-                  subtitle={hasSummaryWindows ? '7-day window' : 'Next-most-constrained model'}
-                  utilization={usage.sevenDay.utilization}
-                  resetsAt={usage.sevenDay.resetsAt}
-                  color={weeklyColor as 'green' | 'yellow' | 'red' | 'muted'}
-                  windowDurationMs={hasSummaryWindows ? weeklyWindowMs : null}
-                  showPacingDetails={hasSummaryWindows}
-                />
+              {quotaGroups ? (
+                quotaGroups.map((group, idx) => (
+                  <div
+                    key={group.displayName || idx}
+                    className={idx > 0 ? 'mt-3.5 pt-3.5 border-t border-nim' : ''}
+                    data-testid="gemini-quota-group"
+                  >
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-nim-muted mb-0.5">
+                      {group.displayName}
+                    </div>
+                    {group.description && (
+                      <div className="text-[10px] text-nim-faint mb-2 leading-snug">
+                        {group.description.replace(/^Models within this group:\s*/i, '')}
+                      </div>
+                    )}
+                    {group.hasFiveHour && (
+                      <UsageSection
+                        title="Session"
+                        subtitle={hasSummaryWindows ? '5-hour window' : 'Most-constrained model'}
+                        utilization={group.fiveHour.utilization}
+                        resetsAt={group.fiveHour.resetsAt}
+                        color={utilizationColor(group.fiveHour.utilization)}
+                        windowDurationMs={hasSummaryWindows ? sessionWindowMs : null}
+                        showPacingDetails={hasSummaryWindows}
+                      />
+                    )}
+                    {group.hasSevenDay && (
+                      <UsageSection
+                        title="Weekly"
+                        subtitle="7-day window"
+                        utilization={group.sevenDay.utilization}
+                        resetsAt={group.sevenDay.resetsAt}
+                        color={utilizationColor(group.sevenDay.utilization)}
+                        windowDurationMs={hasSummaryWindows ? weeklyWindowMs : null}
+                        showPacingDetails={hasSummaryWindows}
+                      />
+                    )}
+                  </div>
+                ))
+              ) : (
+                <>
+                  {showFiveHour && (
+                    <UsageSection
+                      title="Session"
+                      subtitle={hasSummaryWindows ? '5-hour window' : 'Most-constrained model'}
+                      utilization={usage.fiveHour.utilization}
+                      resetsAt={usage.fiveHour.resetsAt}
+                      color={sessionColor as 'green' | 'yellow' | 'red' | 'muted'}
+                      windowDurationMs={hasSummaryWindows ? sessionWindowMs : null}
+                      showPacingDetails={hasSummaryWindows}
+                    />
+                  )}
+                  {showSevenDay && (
+                    <UsageSection
+                      title={hasSummaryWindows ? 'Weekly' : 'Secondary'}
+                      subtitle={hasSummaryWindows ? '7-day window' : 'Next-most-constrained model'}
+                      utilization={usage.sevenDay.utilization}
+                      resetsAt={usage.sevenDay.resetsAt}
+                      color={weeklyColor as 'green' | 'yellow' | 'red' | 'muted'}
+                      windowDurationMs={hasSummaryWindows ? weeklyWindowMs : null}
+                      showPacingDetails={hasSummaryWindows}
+                    />
+                  )}
+                </>
               )}
             </>
           )}
