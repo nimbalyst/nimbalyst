@@ -76,6 +76,18 @@ export interface AntigravityServerConfig {
   spawnPortCandidates?: readonly number[];
 }
 
+export interface AntigravityAuthStatusResponse {
+  authResult?: {
+    hasValidAuth?: boolean;
+    uiMessage?: string;
+  };
+}
+
+export interface AntigravityLoginSessionResponse {
+  active?: boolean;
+  authUrl?: string;
+}
+
 export class AntigravityVersionGateError extends Error {
   constructor(message: string) {
     super(message);
@@ -218,6 +230,11 @@ export class AntigravityServerManager {
    */
   clearEndpoint(): void {
     this.endpoint = null;
+    this.enumCache.clear();
+  }
+
+  /** Clear the cached model key -> enum mapping without dropping the active endpoint. */
+  clearEnumCache(): void {
     this.enumCache.clear();
   }
 
@@ -451,6 +468,40 @@ export class AntigravityServerManager {
     return data.userStatus ?? {};
   }
 
+  /** Query Google OAuth authentication state from the language server. */
+  async getAuthStatus(ep?: AntigravityEndpoint): Promise<AntigravityAuthStatusResponse> {
+    const endpoint = ep ?? (await this.ensureRunning());
+    return await this.rpc<AntigravityAuthStatusResponse>('GetAuthStatus', {}, endpoint, 15_000);
+  }
+
+  /**
+   * Initiate the Antigravity language server's native Google OAuth login flow.
+   * The server opens the system browser with PKCE + loopback callback and resolves
+   * once login completes or is cancelled.
+   */
+  async startGoogleLogin(ep?: AntigravityEndpoint): Promise<AntigravityAuthStatusResponse> {
+    const endpoint = ep ?? (await this.ensureRunning());
+    return await this.rpc<AntigravityAuthStatusResponse>('Login', {}, endpoint, 5 * 60_000);
+  }
+
+  /** Inspect an in-flight Google login session (including its browser authUrl). */
+  async getLoginSession(ep?: AntigravityEndpoint): Promise<AntigravityLoginSessionResponse> {
+    const endpoint = ep ?? (await this.ensureRunning());
+    return await this.rpc<AntigravityLoginSessionResponse>('GetLoginSession', {}, endpoint, 10_000);
+  }
+
+  /** Cancel an in-flight Google login session on the language server. */
+  async cancelGoogleLogin(ep?: AntigravityEndpoint): Promise<void> {
+    const endpoint = ep ?? (await this.ensureRunning());
+    await this.rpc('CancelLogin', {}, endpoint, 10_000);
+  }
+
+  /** Sign out of the active Google account in the Antigravity language server. */
+  async googleLogout(ep?: AntigravityEndpoint): Promise<void> {
+    const endpoint = ep ?? (await this.ensureRunning());
+    await this.rpc('AuthLogout', {}, endpoint, 15_000);
+  }
+
   // ---- mode A: discover a running hub ------------------------------------
 
   private async discoverRunningHub(): Promise<AntigravityEndpoint | null> {
@@ -538,7 +589,18 @@ export class AntigravityServerManager {
     // Prefer the most recently written daemon metadata file first.
     candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
+    // Skip our own owned standalone language_server so discovery never treats it
+    // as an external IDE hub (which could otherwise trigger stop() on ourselves).
+    const ownedPid = this.child && this.child.exitCode === null ? this.child.pid : undefined;
+    const ownedPort = this.endpoint?.owned ? this.endpoint.httpsPort : undefined;
+
     for (const candidate of candidates) {
+      if (ownedPid !== undefined && candidate.pid === ownedPid) {
+        continue;
+      }
+      if (ownedPort !== undefined && candidate.httpsPort === ownedPort) {
+        continue;
+      }
       if (candidate.pid !== undefined && !this.isPidAlive(candidate.pid)) {
         continue;
       }

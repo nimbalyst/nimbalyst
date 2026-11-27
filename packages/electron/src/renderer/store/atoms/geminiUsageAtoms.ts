@@ -12,6 +12,13 @@ import { formatResetTime } from './claudeUsageAtoms';
 
 export { formatResetTime };
 
+export interface GeminiUsageAccount {
+  email: string | null;
+  name: string | null;
+  planName: string | null;
+  tier: string | null;
+}
+
 export interface GeminiUsageData {
   fiveHour: {
     utilization: number; // 0-100 percentage
@@ -21,6 +28,7 @@ export interface GeminiUsageData {
     utilization: number;
     resetsAt: string | null;
   };
+  account?: GeminiUsageAccount;
   credits?: {
     hasCredits: boolean;
     unlimited: boolean;
@@ -36,6 +44,8 @@ export interface GeminiUsageData {
   error?: string;
   /** True when the backend module has not started yet (benign idle state, not an error). */
   notStarted?: boolean;
+  /** True when no Google account is signed in. */
+  signedOut?: boolean;
 }
 
 export const geminiUsageAtom = atom<GeminiUsageData | null>(null);
@@ -60,7 +70,9 @@ export const geminiUsageAvailableAtom = atom((get) => {
     usage.fiveHour.utilization > 0 ||
     usage.sevenDay.utilization > 0 ||
     Boolean(usage.fiveHour.resetsAt) ||
-    Boolean(usage.sevenDay.resetsAt);
+    Boolean(usage.sevenDay.resetsAt) ||
+    Boolean(usage.signedOut) ||
+    Boolean(usage.account?.email);
   const hasCreditsData = Boolean(usage.credits?.hasCredits) || usage.credits?.balance !== null;
   const hasTokenUsage = (usage.tokenUsage?.totalTokens ?? 0) > 0;
   return hasUsageData || hasCreditsData || hasTokenUsage;
