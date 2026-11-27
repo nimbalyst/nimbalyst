@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('../SettingsService', () => ({ getSettingsService: () => ({ get: () => 'automatic' }) }));
+
 // Mirrors the mock surface of MetaAgentService.workstreamSync.test.ts, with two
 // additions needed to exercise the child-spawn path:
 //   1. AISessionsRepository.get  - the parent-session lookup the fix relies on.
