@@ -107,6 +107,7 @@ it('publishes every archived descendant through the registered subtree event wit
   const stop = registerSessionHierarchyPublication({pushChange} as any);
   try {
     await publishSubtreeArchive(['archive-root', 'archive-child'], true);
+    await vi.waitFor(() => expect(pushChange).toHaveBeenCalledTimes(2));
     expect(pushChange.mock.calls.map(call => call[0])).toEqual(['archive-root', 'archive-child']);
     for (const call of pushChange.mock.calls as any[]) expect(call[2].isCurrent()).toBe(true);
   } finally { stop(); get.mockRestore(); getStore.mockRestore(); }

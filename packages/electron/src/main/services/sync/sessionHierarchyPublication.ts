@@ -145,8 +145,11 @@ export const publishCanonicalHierarchy = publisher.publish;
 
 export function registerSessionHierarchyPublication(next: SyncProvider): () => void {
   provider = next;
-  const move = onHierarchyMove(change => change.source === 'remote' ? Promise.resolve() : publisher.publish(change.sessionId));
-  const archive = onSubtreeArchive(async ids => { await Promise.all(ids.map(id => publisher.publish(id))); });
+  // publish records the ID synchronously; its retry lane owns delivery/errors.
+  // Never make a hierarchy writer wait for network I/O or intent acknowledgement,
+  // which itself needs the hierarchy write lane.
+  const move = onHierarchyMove(async change => { if (change.source !== 'remote') void publisher.publish(change.sessionId); });
+  const archive = onSubtreeArchive(async ids => { for (const id of ids) void publisher.publish(id); });
   const ready = next.onIndexReadyChange?.(isReady => { if (isReady) void publisher.retry(); });
   const gate = next.onPersonalSyncWriteGateChange?.(state => { if (state.state === 'verified') void publisher.retry(); });
   publisher.resume();
