@@ -72,7 +72,7 @@ export const NewFilePreview: React.FC<NewFilePreviewProps> = ({
   };
 
   return (
-    <div className="new-file-preview rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] flex flex-col">
+    <div className="new-file-preview rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] flex flex-col min-w-0 max-w-full">
       {/* File header */}
       {filePath && (
         <div className="px-3 py-2 bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)] font-medium border-b border-[var(--nim-border)] text-[0.7rem] shrink-0 flex items-center gap-2">
@@ -108,6 +108,8 @@ export const NewFilePreview: React.FC<NewFilePreviewProps> = ({
                 margin: 0,
                 fontSize: '0.8125rem',
                 lineHeight: '1.5',
+                // Long lines scroll inside the card, like the Edit diff card (#1723).
+                overflowX: 'auto',
               }}
               language={language || undefined}
               PreTag="div"

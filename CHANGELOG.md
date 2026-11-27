@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Long lines in a created-file preview now scroll horizontally inside the card (#1723).
 - Session title search in the sidebar now also matches sessions nested under a parent session, and opens the parents above each match until the search is cleared (#2007).
 - AI actions with non-Latin headings in `ai-actions.md` remain separate actions instead of being dropped as duplicates (#1565).
 - Gemini models no longer disappear from the model picker when settings carry an outdated list of Gemini model IDs (#2016).
