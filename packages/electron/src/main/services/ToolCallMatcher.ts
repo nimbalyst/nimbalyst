@@ -221,12 +221,25 @@ const MAX_MATCH_SCORE = 100;
 const MINTED_TOOL_USE_ID_PREFIXES = ['nimtc|', 'watcher-', 'codex-bash-', 'codex-acp-write-'];
 
 /**
- * The provider tool-call id an edited session_files row carries, or null when
- * it has none or only an id Nimbalyst minted. Only a definitive id keeps its
- * own row through dedup and keeps the raw-message lookup unbounded; scoreMatch
- * still compares a minted id, so a window that carries it scores 100.
+ * Providers whose stored rows never give a tool-call id that is unique in the
+ * session to a window, so no id in their session_files rows is definitive:
+ * - `openai-codex` on the app-server transport and `openai-codex-acp` store
+ *   JSON-RPC envelopes parseToolCallWindows reads no window from, so their own
+ *   ids (the shell hook's `call_*` ids, ACP tool-call ids) never resolve.
+ * - `openai-codex` on the SDK transport reuses item ids across turns (runtime
+ *   `toolLookupIds.ts`).
  */
-function definitiveToolUseId(file: SessionFileRow): string | null {
+const PROVIDERS_WITHOUT_DEFINITIVE_TOOL_USE_IDS: ReadonlySet<string> = new Set(['openai-codex', 'openai-codex-acp']);
+
+/**
+ * The provider tool-call id an edited session_files row carries, or null when
+ * it has none, only an id Nimbalyst minted, or the session's provider has no
+ * definitive ids. Only a definitive id keeps its own row through dedup and
+ * keeps the raw-message lookup unbounded; scoreMatch still compares the other
+ * ids, so a window that carries one scores 100.
+ */
+function definitiveToolUseId(file: SessionFileRow, provider: string | null | undefined): string | null {
+  if (provider && PROVIDERS_WITHOUT_DEFINITIVE_TOOL_USE_IDS.has(provider)) return null;
   const toolUseId = file.metadata?.toolUseId;
   if (typeof toolUseId !== 'string' || toolUseId.length === 0) return null;
   return MINTED_TOOL_USE_ID_PREFIXES.some(prefix => toolUseId.startsWith(prefix)) ? null : toolUseId;
@@ -1012,11 +1025,13 @@ class ToolCallMatcherImpl {
       }
 
       // 1. Get workspace path from session metadata (fallback to file path heuristic)
-      const sessionInfo = await database.query<{ workspace_id: string | null }>(
-        `SELECT workspace_id FROM ai_sessions WHERE id = $1 LIMIT 1`,
+      //    and the provider, which decides whether a toolUseId can be definitive.
+      const sessionInfo = await database.query<{ workspace_id: string | null; provider: string | null }>(
+        `SELECT workspace_id, provider FROM ai_sessions WHERE id = $1 LIMIT 1`,
         [sessionId]
       );
       const workspacePath = sessionInfo.rows[0]?.workspace_id || undefined;
+      const provider = sessionInfo.rows[0]?.provider;
 
       // 2. Load edited session_files
       // Use EXTRACT(EPOCH) to get correct epoch ms regardless of
@@ -1037,13 +1052,13 @@ class ToolCallMatcherImpl {
       }));
       // Deduplicate session_files: keep every row with a distinct definitive
       // toolUseId (each represents a separate tool call edit). For rows WITHOUT
-      // one (Codex, watcher side-effects, ids Nimbalyst minted), dedup by file
-      // path keeping the most recent timestamp. Minted ids never settle on the
-      // Codex app-server transport, so keeping every such row would pin the
-      // bounded scan below to the session's first edit.
+      // one (Codex sessions, watcher side-effects, ids Nimbalyst minted), dedup
+      // by file path keeping the most recent timestamp. Codex app-server ids
+      // never settle, so keeping every such row would pin the bounded scan
+      // below to the session's first edit.
       const sessionFilesByKey = new Map<string, SessionFileRow>();
       for (const file of editedFiles) {
-        const toolUseId = definitiveToolUseId(file);
+        const toolUseId = definitiveToolUseId(file, provider);
         if (toolUseId) {
           // Rows with a toolUseId are unique per tool call — keep all of them.
           // Use toolUseId as key so duplicates from watcher + tracker collapse.
@@ -1102,11 +1117,12 @@ class ToolCallMatcherImpl {
       // tool IDs (notably Codex). Exact metadata toolUseId matches deliberately
       // bypass scoreMatch's time cutoff, so sessions carrying any such ID must
       // retain the unbounded lookup to preserve those matches. Ids Nimbalyst
-      // minted itself do not count (see MINTED_TOOL_USE_ID_PREFIXES).
+      // minted itself and ids of Codex sessions do not count (see
+      // definitiveToolUseId).
       // Computed over filesNeedingWork, not all files: a session whose only
       // outstanding rows are Codex-style now gets the bounded window even if
       // settled Claude Code rows exist alongside them.
-      const hasDefinitiveToolUseIds = filesNeedingWork.some(file => definitiveToolUseId(file) !== null);
+      const hasDefinitiveToolUseIds = filesNeedingWork.some(file => definitiveToolUseId(file, provider) !== null);
       let rawWindowOptions: { afterDate: Date; beforeDate: Date } | undefined;
       if (!hasDefinitiveToolUseIds) {
         const fileTimestamps = filesNeedingWork.map(file => ensureNumber(file.timestamp_ms));

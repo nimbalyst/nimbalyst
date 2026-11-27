@@ -989,6 +989,7 @@ describe('ToolCallMatcher', () => {
       files: Array<Record<string, unknown>>;
       messages?: Array<Record<string, unknown>>;
       existingMatches?: Array<{ session_file_id: string; match_score: number; tool_use_id: string | null }>;
+      provider?: string;
     }) {
       const captured: {
         messagesSql?: string;
@@ -998,7 +999,7 @@ describe('ToolCallMatcher', () => {
       } = { sawMessagesQuery: false };
 
       queryMock.mockImplementation(async (sql: string, params: unknown[]) => {
-        if (sql.includes('FROM ai_sessions')) return { rows: [{ workspace_id: '/workspace' }] };
+        if (sql.includes('FROM ai_sessions')) return { rows: [{ workspace_id: '/workspace', provider: opts.provider ?? null }] };
         if (sql.includes('FROM session_files')) return { rows: opts.files };
         if (sql.includes('FROM ai_tool_call_file_edits')) return { rows: opts.existingMatches ?? [] };
         if (sql.includes('FROM ai_agent_messages')) {
@@ -1113,6 +1114,33 @@ describe('ToolCallMatcher', () => {
 
       expect(captured.messagesParams).toEqual([sessionId, fileTimestamp - 10_000, fileTimestamp + 10_000]);
       expect(captured.insertParams).toEqual(expect.arrayContaining([sessionId, 'file-codex', 12, editGroupId, 100]));
+    });
+
+    it.each([
+      ['openai-codex', 'bounded'],
+      ['openai-codex-acp', 'bounded'],
+      ['claude-code', 'unbounded'],
+    ])('B3: a %s session\'s own tool-call id leaves the lookup %s', async (provider, expected) => {
+      // Codex rows carry their own ids (the shell hook's call id, ACP tool-call
+      // ids), but no window on their transports carries such an id uniquely.
+      // Two commands changed package.json; for Codex only the newest row counts,
+      // so the earlier one cannot widen the window.
+      const sessionId = `provider-id-${provider}`;
+      const fileTimestamp = 1_700_000_000_000;
+
+      const captured = stubSession({
+        provider,
+        files: [
+          { id: 'file-shell-1', file_path: '/workspace/package.json', timestamp_ms: fileTimestamp - 60_000, metadata: { toolUseId: 'call_3' } },
+          { id: 'file-shell-2', file_path: '/workspace/package.json', timestamp_ms: fileTimestamp, metadata: { toolUseId: 'call_7' } },
+        ],
+      });
+
+      await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(0);
+
+      expect(captured.messagesParams).toEqual(expected === 'bounded'
+        ? [sessionId, fileTimestamp - 10_000, fileTimestamp + 10_000]
+        : [sessionId]);
     });
 
     it('falls back to an unbounded lookup when a stored file timestamp is invalid', async () => {
@@ -1564,12 +1592,17 @@ describe('ToolCallMatcher', () => {
         expect(sqlSeen.some(sql => sql.includes('FROM ai_agent_messages'))).toBe(false);
       });
 
-      it('B1: a Codex app-server session reads no more raw rows than before SQLite metadata was read', async () => {
-        // Rows as OpenAICodexProvider stores them on the app-server transport
-        // ({method, params} content) and session_files rows as SessionFileTracker
-        // writes them (toolUseId = the nimtc| edit-group id). No window carries
-        // that id, so these files never settle.
-        const sessionId = 'b1-codex-app-server';
+      /**
+       * Replays a Codex session on the app-server transport, running
+       * matchSession where the app does (after each tool call and at the end of
+       * each turn), and counts the raw rows each pass reads. Rows are shaped as
+       * OpenAICodexProvider stores them ({method, params} content), apply_patch
+       * edits as SessionFileTracker writes them (toolUseId = the nimtc|
+       * edit-group id) and, with `shellWrite`, the files one shell command
+       * changes as the Codex shell hook writes them (toolUseId = Codex's own
+       * call id). No row on this transport yields a window, so nothing settles.
+       */
+      async function replayCodexAppServer(sessionId: string, shellWrite?: { turn: number; beforeExplore: number; files: string[] }) {
         await sqlite.query(`INSERT INTO ai_sessions (id, workspace_id, provider) VALUES ($1, $2, $3)`, [sessionId, '/workspace', 'openai-codex']);
         const store = createPGLiteSessionFileStore(sqlite);
         const stats = { scans: 0, unboundedScans: 0, rowsScanned: 0 };
@@ -1594,11 +1627,17 @@ describe('ToolCallMatcher', () => {
               JSON.stringify({ eventType: method, codexProvider: true, transport: 'app-server', ...(editGroupId ? { editGroupId } : {}) })],
           );
         };
-        const command = async (turnId: string, cmd: string) => {
+        const command = async (turnId: string, cmd: string, writes: string[] = []) => {
           const id = `call_${++item}`;
           const editGroupId = `nimtc|${id}|${t}|${item}`;
           await row('item/completed', { type: 'reasoning', id: `rs_${item}`, summary: ['Looking at the code'], content: [] }, turnId);
           await row('item/started', { type: 'commandExecution', id, command: cmd, status: 'inProgress' }, turnId, editGroupId);
+          for (const filePath of writes) {
+            await store.addFileLink({
+              sessionId, workspaceId: '/workspace', filePath, linkType: 'edited', timestamp: t + 500,
+              metadata: { toolName: 'Bash', operation: 'bash', toolUseId: id, source: 'shell-hook-inferred' },
+            });
+          }
           await row('item/completed', { type: 'commandExecution', id, command: cmd, aggregatedOutput: 'output\n', exitCode: 0, status: 'completed' }, turnId, editGroupId);
           await toolCallMatcher.matchSession(sessionId);
         };
@@ -1612,7 +1651,10 @@ describe('ToolCallMatcher', () => {
         ];
         for (const [k, turn] of turns.entries()) {
           const turnId = `turn-${k}`;
-          for (let i = 0; i < turn.explore; i++) await command(turnId, `rg -n thing src/file${i}.ts`);
+          for (let i = 0; i < turn.explore; i++) {
+            if (shellWrite?.turn === k && shellWrite.beforeExplore === i) await command(turnId, 'pnpm add zod', shellWrite.files);
+            await command(turnId, `rg -n thing src/file${i}.ts`);
+          }
           for (const filePath of turn.edits) {
             const id = `call_${++item}`;
             const editGroupId = `nimtc|${id}|${t}|${item}`;
@@ -1630,9 +1672,23 @@ describe('ToolCallMatcher', () => {
         const stored = await sqlite.query(`SELECT id FROM ai_tool_call_file_edits WHERE session_id = $1`, [sessionId]);
         expect(stored.rows).toEqual([]);
         expect(logger.main.error).not.toHaveBeenCalled();
+        return stats;
+      }
+
+      it('B1: a Codex app-server session reads no more raw rows than before SQLite metadata was read', async () => {
         // Before SQLite metadata was read, the same replay made 48 bounded scans
         // of 2339 rows in total (the parse alone made them unbounded: 4856 rows).
-        expect(stats).toEqual({ scans: 48, unboundedScans: 0, rowsScanned: 2339 });
+        await expect(replayCodexAppServer('b1-codex-app-server')).resolves.toEqual({ scans: 48, unboundedScans: 0, rowsScanned: 2339 });
+      });
+
+      it('B3: a Codex app-server session where a shell command changes files reads no more raw rows than before', async () => {
+        // The shell-hook rows carry Codex's own call id, which no window on this
+        // transport carries. Before SQLite metadata was read, the replay made 59
+        // bounded scans of 3985 rows; counting that id as definitive made every
+        // one of them a whole-session read (5264 rows).
+        await expect(replayCodexAppServer('b3-codex-shell-write', {
+          turn: 0, beforeExplore: 2, files: ['/workspace/package.json', '/workspace/pnpm-lock.yaml'],
+        })).resolves.toEqual({ scans: 59, unboundedScans: 0, rowsScanned: 3985 });
       });
 
       it('B2: the per-call diff of a Write that created a file reports create on SQLite', async () => {
