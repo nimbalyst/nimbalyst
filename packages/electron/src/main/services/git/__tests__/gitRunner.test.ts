@@ -523,13 +523,19 @@ describe('PM-8: main stalls past the deadline with the reply queued', () => {
     });
     await h.up();
     const call = settleOf(runGit(['status', '--porcelain'], { timeout: 100 }));
-    // Main blocks in the same task that armed the deadline, so the deadline
-    // cannot fire before the stall. It stays blocked 1 s past the deadline
-    // (timeout + margin), and then until the reply is queued: a loaded machine
-    // can starve the worker thread for longer than that.
-    const started = performance.now();
-    const blocked = () => performance.now() - started;
-    while (blocked() < 100 + 200 + 1000 || (Atomics.load(replied, 0) === 0 && blocked() < 8000)) { /* main thread blocked */ }
+    // Main blocks inside a setImmediate callback, so the loop's next phase
+    // after the stall is timers: the late deadline timer runs before the
+    // queued reply is read, which is the hazard the re-arm exists for.
+    // Blocking in the task that armed the deadline would go to poll first and
+    // read the reply before the timer could fire. Main stays blocked 1 s past
+    // the deadline (timeout + margin), and then until the reply is queued: a
+    // loaded machine can starve the worker thread for longer than that.
+    await new Promise<void>((resolve) => setImmediate(() => {
+      const started = performance.now();
+      const blocked = () => performance.now() - started;
+      while (blocked() < 100 + 200 + 1000 || (Atomics.load(replied, 0) === 0 && blocked() < 8000)) { /* main thread blocked */ }
+      resolve();
+    }));
     expect(Atomics.load(replied, 0)).toBe(1);
     await call.done;
     expect(call.state.error).toBeUndefined();
