@@ -240,9 +240,14 @@ class DocumentModelRegistryImpl {
 
   /**
    * Normalize a file path for consistent Map lookups.
-   * Collapses double slashes and removes trailing slashes.
+   * Collapses double slashes and removes trailing slashes for filesystem paths,
+   * while preserving URI schemes (e.g. `virtual://...`) intact so downstream
+   * `fileless` checks continue to recognize virtual tabs.
    */
   private normalizePath(filePath: string): string {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(filePath)) {
+      return filePath.replace(/\/$/, '');
+    }
     return filePath.replace(/\/\//g, '/').replace(/\/$/, '');
   }
 }

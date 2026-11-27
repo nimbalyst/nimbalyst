@@ -119,6 +119,12 @@ it("never registers a fileless virtual:// tab for disk reconciliation (#1863)", 
       vi.fn(),
       vi.fn(),
       vi.fn()
+    ),
+    new DiskChangeSubscription(
+      "virtual:/com.nimbalyst.browser/legacy-normalized",
+      vi.fn(),
+      vi.fn(),
+      vi.fn()
     )
   );
   await vi.advanceTimersByTimeAsync(120_000);
