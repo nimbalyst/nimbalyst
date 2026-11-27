@@ -2,7 +2,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MCPRemoteConfigDescriptor } from '../../MCPRemoteOAuth';
 import { McpOAuthCredentialStore, type SecretCodec } from '../credentialStore';
 import { McpOAuthManager } from '../McpOAuthManager';
@@ -224,6 +224,8 @@ describe('McpOAuthManager negative security regressions', () => {
 
   it('N9: a second sign-in cancels the first, which never sends its verifier', async () => {
     let releaseFirst: () => void = () => undefined;
+    let firstAtBrowser: () => void = () => undefined;
+    const firstReachedBrowser = new Promise<void>((resolve) => { firstAtBrowser = resolve; });
     const browser = fakeBrowser();
     let calls = 0;
     const { manager } = createManager({
@@ -231,6 +233,7 @@ describe('McpOAuthManager negative security regressions', () => {
         calls += 1;
         if (calls === 1) {
           // The user never finishes the first flow.
+          firstAtBrowser();
           await new Promise<void>((resolve) => { releaseFirst = resolve; });
           return;
         }
@@ -239,7 +242,10 @@ describe('McpOAuthManager negative security regressions', () => {
     });
     const descriptor = descriptorFor(rs.mcpUrl);
     const first = manager.authorize(descriptor, { timeoutMs: 5000 });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Start the second sign-in only once the first is waiting in the browser.
+    // A fixed sleep let a slow first flow be cancelled during discovery, so
+    // the second flow took the parked browser and the test hung.
+    await firstReachedBrowser;
     const second = manager.authorize(descriptor, { timeoutMs: 5000 });
     releaseFirst();
 
@@ -378,11 +384,17 @@ describe('McpOAuthManager negative security regressions', () => {
     const key = manager.bindingKeyFor(descriptor);
     const first = await manager.getAccessToken(key);
     if (!first.ok) throw new Error('expected token');
-    as1.options.refreshDelayMs = 300;
+    let releaseRefresh: () => void = () => undefined;
+    as1.options.refreshHold = new Promise<void>((resolve) => { releaseRefresh = resolve; });
 
     const pending = manager.getAccessToken(key, { rejectedToken: first.accessToken });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Revoke once the server has accepted the refresh, and answer the refresh
+    // only after the revoke is done, so it always lands after the revoke.
+    await vi.waitFor(() => {
+      expect(as1.tokenRequests().some((r) => r.params.get('grant_type') === 'refresh_token')).toBe(true);
+    }, { timeout: 10_000, interval: 5 });
     const revoked = await manager.revoke(descriptor);
+    releaseRefresh();
     const late = await pending;
 
     expect(revoked).toMatchObject({ success: true, provider: 'revoked' });

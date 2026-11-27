@@ -34,7 +34,8 @@ export interface FakeAuthorizationServer {
     sendIss: boolean | string;
     tokenEndpointRedirect?: string;
     refreshError?: string;
-    refreshDelayMs?: number;
+    /** Hold an accepted refresh's response until this settles. */
+    refreshHold?: Promise<void>;
     registrationError?: string;
     clientSecret?: string;
   };
@@ -200,10 +201,10 @@ export async function startFakeAuthorizationServer(): Promise<FakeAuthorizationS
           return;
         }
         refreshTokens.delete(token);
-        // Validated before the delay: models a refresh the server has already
+        // Validated before the hold: models a refresh the server has already
         // accepted when a revoke arrives.
-        if (fake.options.refreshDelayMs) {
-          await new Promise((resolve) => setTimeout(resolve, fake.options.refreshDelayMs));
+        if (fake.options.refreshHold) {
+          await fake.options.refreshHold;
         }
         json(200, issueTokens());
         return;
