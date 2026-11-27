@@ -53,7 +53,7 @@ export class DiskChangeSubscription {
 
   /** virtual:// tabs are fileless; main rejects them and the retry loop would never end (#1863). */
   private get fileless(): boolean {
-    return this.path.startsWith("virtual://");
+    return this.path.startsWith("virtual://") || this.path.startsWith("virtual:/");
   }
 
   private async register(): Promise<void> {

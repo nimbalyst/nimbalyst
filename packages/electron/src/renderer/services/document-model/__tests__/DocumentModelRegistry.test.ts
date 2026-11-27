@@ -56,6 +56,15 @@ describe('DocumentModelRegistry', () => {
     h2.detach();
   });
 
+  it('preserves virtual:// URI scheme without collapsing // to /', () => {
+    const uri = 'virtual://com.nimbalyst.browser/tab-1?url=https%3A%2F%2Fexample.com';
+    const { model, handle } = DocumentModelRegistry.getOrCreate(uri);
+    expect(model.filePath).toBe(uri);
+    expect(DocumentModelRegistry.has(uri)).toBe(true);
+    expect(DocumentModelRegistry.get(uri)).toBe(model);
+    handle.detach();
+  });
+
   it('disposes model when ref count reaches zero via release', () => {
     const { model, handle } = DocumentModelRegistry.getOrCreate('/test/a.md');
     expect(DocumentModelRegistry.has('/test/a.md')).toBe(true);
