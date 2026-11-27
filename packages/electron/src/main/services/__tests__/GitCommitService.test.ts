@@ -64,6 +64,30 @@ async function initScratchRepo(cwd: string): Promise<void> {
 }
 
 describe('GitCommitService', () => {
+  it('commits both selected sides of a staged case-only rename with the latest contents', async () => {
+    await initScratchRepo(tmpRoot);
+    await git(['config', 'core.ignoreCase', 'true'], tmpRoot);
+    await fs.writeFile(path.join(tmpRoot, 'tasks.md'), 'initial\n');
+    await git(['add', 'tasks.md'], tmpRoot);
+    await git(['commit', '-qm', 'baseline'], tmpRoot);
+    await git(['mv', '-f', 'tasks.md', 'TASKS.md'], tmpRoot);
+    await fs.writeFile(path.join(tmpRoot, 'TASKS.md'), 'edited after rename\n');
+    await fs.writeFile(path.join(tmpRoot, 'unrelated'), 'keep staged\n');
+    await git(['add', 'unrelated'], tmpRoot);
+
+    const originalHead = await gitOutput(['rev-parse', 'HEAD'], tmpRoot);
+    const incomplete = await executeGitCommit(tmpRoot, 'only the destination', ['TASKS.md']);
+    expect(incomplete.success).toBe(false);
+    expect(await gitOutput(['rev-parse', 'HEAD'], tmpRoot)).toBe(originalHead);
+
+    const result = await executeGitCommit(tmpRoot, 'rename tasks', ['TASKS.md', 'tasks.md']);
+
+    expect(result.success, result.error).toBe(true);
+    expect(await gitOutput(['ls-tree', '--name-only', 'HEAD'], tmpRoot)).toBe('TASKS.md\n');
+    expect(await gitOutput(['show', 'HEAD:TASKS.md'], tmpRoot)).toBe('edited after rename\n');
+    expect(await gitOutput(['status', '--porcelain'], tmpRoot)).toBe('A  unrelated\n');
+  });
+
   it('rejects an empty proposal without committing the current index', async () => {
     await initScratchRepo(tmpRoot);
     await fs.writeFile(path.join(tmpRoot, 'already-staged.txt'), 'keep\n', 'utf8');
