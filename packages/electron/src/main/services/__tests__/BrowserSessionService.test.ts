@@ -34,11 +34,13 @@ vi.mock('electron', async () => {
     readonly id = nextWindowId++;
     readonly contentView = new FakeContentView();
     readonly webContents = { getZoomFactor: (): number => 1 };
+    readonly opts: Record<string, unknown>;
     private destroyed = false;
     private size: [number, number];
 
-    constructor(opts: { width?: number; height?: number } = {}) {
+    constructor(opts: { width?: number; height?: number; [key: string]: unknown } = {}) {
       super();
+      this.opts = opts;
       this.size = [opts.width ?? 1000, opts.height ?? 800];
       fakes.createdWindows.push(this);
     }
@@ -54,10 +56,10 @@ vi.mock('electron', async () => {
     getBounds(): Rect {
       return { x: 0, y: 0, width: this.size[0], height: this.size[1] };
     }
-    showInactive(): void {}
-    setOpacity(): void {}
-    setIgnoreMouseEvents(): void {}
-    setAlwaysOnTop(): void {}
+    showInactive = vi.fn();
+    setOpacity = vi.fn();
+    setIgnoreMouseEvents = vi.fn();
+    setAlwaysOnTop = vi.fn();
     destroy(): void {
       if (this.destroyed) return;
       this.destroyed = true;
@@ -211,6 +213,11 @@ describe('liesAboveOrLeftOfWindow', () => {
 describe('BrowserSessionService view placement', () => {
   type FakeWindow = InstanceType<typeof BrowserWindow> & {
     contentView: { children: unknown[] };
+    opts: Record<string, unknown>;
+    showInactive: ReturnType<typeof vi.fn>;
+    setOpacity: ReturnType<typeof vi.fn>;
+    setIgnoreMouseEvents: ReturnType<typeof vi.fn>;
+    setAlwaysOnTop: ReturnType<typeof vi.fn>;
     destroy(): void;
   };
   type FakeView = { bounds: Rect | null };
@@ -371,6 +378,18 @@ describe('BrowserSessionService view placement', () => {
     expect(service().hasSession('hidden-editor')).toBe(false);
     expect(holdersOf(view)).toEqual([]);
     expect(liveHiddenHosts([owner])).toHaveLength(0);
+  });
+
+  it('never shows or floats the shared headless host window', () => {
+    service().createSession({ sessionId: 'agent', url: 'about:blank', headless: true });
+
+    const [host] = liveHiddenHosts([]);
+    expect(host).toBeDefined();
+    expect(host.opts).toMatchObject({ show: false, opacity: 0, focusable: false, frame: false });
+    expect(host.showInactive).not.toHaveBeenCalled();
+    expect(host.setAlwaysOnTop).not.toHaveBeenCalled();
+    expect(host.setOpacity).toHaveBeenCalledWith(0);
+    expect(host.setIgnoreMouseEvents).toHaveBeenCalledWith(true);
   });
 });
 
@@ -628,5 +647,113 @@ describe('BrowserSessionService agent input routing', () => {
 
     expect(wc.debugger.detach).toHaveBeenCalledTimes(1);
     expect(wc.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('BrowserSessionService.captureScreenshot', () => {
+  const cdpPng = Buffer.from('cdp-png-bytes');
+  const capturePagePng = Buffer.from('capture-page-bytes');
+
+  function fakeCaptureWebContents(opts: {
+    attachThrows?: boolean;
+    cdpShotThrows?: boolean;
+    cdpData?: string;
+  } = {}) {
+    let attached = false;
+    const dbg = {
+      isAttached: vi.fn(() => attached),
+      attach: vi.fn(() => {
+        if (opts.attachThrows) throw new Error('Another debugger is already attached');
+        attached = true;
+      }),
+      detach: vi.fn(() => {
+        attached = false;
+      }),
+      sendCommand: vi.fn(async (method: string) => {
+        if (method === 'Page.captureScreenshot') {
+          if (opts.cdpShotThrows) throw new Error('CDP capture failed');
+          return { data: opts.cdpData ?? cdpPng.toString('base64') };
+        }
+        return {};
+      }),
+    };
+    return {
+      debugger: dbg,
+      capturePage: vi.fn(async () => ({ toPNG: () => capturePagePng })),
+      close: vi.fn(),
+    };
+  }
+
+  function registerSession(
+    sessionId: string,
+    wc: ReturnType<typeof fakeCaptureWebContents>,
+    flags: { headless?: boolean; parkedIn?: unknown },
+  ): BrowserSessionService {
+    const service = BrowserSessionService.getInstance();
+    const sessions = (service as unknown as { sessions: Map<string, unknown> }).sessions;
+    sessions.set(sessionId, {
+      sessionId,
+      partitionName: 'browser-default',
+      view: { webContents: wc },
+      hostWindow: null,
+      bounds: null,
+      requestedBounds: null,
+      state: {},
+      headless: flags.headless ?? false,
+      parkedIn: flags.parkedIn ?? null,
+      lastUsedAt: Date.now(),
+    });
+    return service;
+  }
+
+  afterEach(() => {
+    BrowserSessionService.__resetForTests();
+  });
+
+  it('uses CDP Page.captureScreenshot for headless sessions without calling capturePage', async () => {
+    const wc = fakeCaptureWebContents();
+    const service = registerSession('headless-1', wc, { headless: true });
+
+    const buf = await service.captureScreenshot('headless-1');
+
+    expect(buf).toEqual(cdpPng);
+    expect(wc.debugger.sendCommand).toHaveBeenCalledWith('Page.captureScreenshot', { format: 'png' });
+    expect(wc.capturePage).not.toHaveBeenCalled();
+  });
+
+  it('uses CDP Page.captureScreenshot for parked off-screen editor sessions', async () => {
+    const wc = fakeCaptureWebContents();
+    const parkedHost = new BrowserWindow();
+    const service = registerSession('parked-1', wc, { headless: false, parkedIn: parkedHost });
+
+    const buf = await service.captureScreenshot('parked-1');
+
+    expect(buf).toEqual(cdpPng);
+    expect(wc.debugger.sendCommand).toHaveBeenCalledWith('Page.captureScreenshot', { format: 'png' });
+    expect(wc.capturePage).not.toHaveBeenCalled();
+  });
+
+  it('uses capturePage directly for visible attached editor sessions', async () => {
+    const wc = fakeCaptureWebContents();
+    const service = registerSession('visible-1', wc, { headless: false, parkedIn: null });
+
+    const buf = await service.captureScreenshot('visible-1');
+
+    expect(buf).toEqual(capturePagePng);
+    expect(wc.capturePage).toHaveBeenCalledTimes(1);
+    expect(wc.debugger.attach).not.toHaveBeenCalled();
+    expect(wc.debugger.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('falls back to capturePage when CDP cannot attach or Page.captureScreenshot fails', async () => {
+    const wcAttachErr = fakeCaptureWebContents({ attachThrows: true });
+    const service = registerSession('fallback-attach', wcAttachErr, { headless: true });
+    expect(await service.captureScreenshot('fallback-attach')).toEqual(capturePagePng);
+    expect(wcAttachErr.capturePage).toHaveBeenCalledTimes(1);
+
+    const wcShotErr = fakeCaptureWebContents({ cdpShotThrows: true });
+    registerSession('fallback-shot', wcShotErr, { headless: true });
+    expect(await service.captureScreenshot('fallback-shot')).toEqual(capturePagePng);
+    expect(wcShotErr.capturePage).toHaveBeenCalledTimes(1);
   });
 });
