@@ -252,6 +252,13 @@ function definitiveToolUseId(file: SessionFileRow, provider: string | null | und
 const WORKSPACE_CLEAR_WINNER_MARGIN = 12;
 const WORKSPACE_MIN_CONFIDENCE_SCORE = 55;
 
+/**
+ * Matches per INSERT in insertMatchesBatch. Each match binds 8 values, and
+ * SQLite refuses a statement with more than 32766, so one statement can hold at
+ * most 4095 matches; 500 (4000 values) stays far inside that.
+ */
+const MATCH_INSERT_CHUNK_ROWS = 500;
+
 /** Shell wrapper: /bin/zsh -lc 'cmd' or bare bash -lc 'cmd' (Windows inner layer) */
 const SHELL_WRAPPER_REGEX = /^(?:\/(?:bin|usr\/bin)\/)?(?:bash|zsh|sh)\s+-l?c\s+([\s\S]+)$/;
 
@@ -424,11 +431,13 @@ function stringifyOutput(output: any): string {
   return String(output);
 }
 
+/**
+ * The Codex edit-group id stamped on a raw ai_agent_messages row. The row's
+ * metadata is an object on PGLite and JSON text on SQLite; unparseable
+ * metadata has none.
+ */
 function extractSyntheticEditGroupId(rawMetadata: unknown): string | null {
-  if (!rawMetadata || typeof rawMetadata !== 'object') {
-    return null;
-  }
-  const editGroupId = (rawMetadata as { editGroupId?: unknown }).editGroupId;
+  const editGroupId = parseJsonObjectColumn(rawMetadata).editGroupId;
   if (typeof editGroupId === 'string' && editGroupId.startsWith('nimtc|')) {
     return editGroupId;
   }
@@ -2228,29 +2237,34 @@ class ToolCallMatcherImpl {
       fileTimestamp: number;
     }>
   ): Promise<void> {
-    if (matches.length === 0) return;
+    // One statement per MATCH_INSERT_CHUNK_ROWS matches: a definitive toolUseId
+    // gets a match per edit, so one pass can hold more matches than a single
+    // statement may bind on SQLite. A failed chunk fails the pass and leaves
+    // the earlier chunks stored; the next pass skips their settled files and
+    // matches the rest, and the upsert keeps a re-sent match single.
+    for (let offset = 0; offset < matches.length; offset += MATCH_INSERT_CHUNK_ROWS) {
+      const values: any[] = [];
+      const placeholders: string[] = [];
+      let paramIdx = 1;
 
-    const values: any[] = [];
-    const placeholders: string[] = [];
-    let paramIdx = 1;
+      for (const m of matches.slice(offset, offset + MATCH_INSERT_CHUNK_ROWS)) {
+        const fileTs = m.fileTimestamp ? new Date(m.fileTimestamp) : null;
+        placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}, $${paramIdx + 6}, $${paramIdx + 7})`);
+        values.push(m.sessionId, m.sessionFileId, m.messageId, m.toolCallItemId, m.toolUseId, m.score, m.reason, fileTs);
+        paramIdx += 8;
+      }
 
-    for (const m of matches) {
-      const fileTs = m.fileTimestamp ? new Date(m.fileTimestamp) : null;
-      placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}, $${paramIdx + 6}, $${paramIdx + 7})`);
-      values.push(m.sessionId, m.sessionFileId, m.messageId, m.toolCallItemId, m.toolUseId, m.score, m.reason, fileTs);
-      paramIdx += 8;
+      await database.query(
+        `INSERT INTO ai_tool_call_file_edits
+         (session_id, session_file_id, message_id, tool_call_item_id, tool_use_id, match_score, match_reason, file_timestamp)
+         VALUES ${placeholders.join(', ')}
+         ON CONFLICT (session_file_id, message_id) DO UPDATE SET
+           match_score = EXCLUDED.match_score,
+           match_reason = EXCLUDED.match_reason,
+           file_timestamp = EXCLUDED.file_timestamp`,
+        values
+      );
     }
-
-    await database.query(
-      `INSERT INTO ai_tool_call_file_edits
-       (session_id, session_file_id, message_id, tool_call_item_id, tool_use_id, match_score, match_reason, file_timestamp)
-       VALUES ${placeholders.join(', ')}
-       ON CONFLICT (session_file_id, message_id) DO UPDATE SET
-         match_score = EXCLUDED.match_score,
-         match_reason = EXCLUDED.match_reason,
-         file_timestamp = EXCLUDED.file_timestamp`,
-      values
-    );
   }
 
   /**

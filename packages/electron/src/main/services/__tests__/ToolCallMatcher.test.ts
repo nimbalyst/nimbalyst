@@ -185,6 +185,25 @@ describe('ToolCallMatcher', () => {
       expect(windows[0].toolUseId).toBe('item_7');
     });
 
+    // ai_agent_messages.metadata is an object on PGLite and JSON text on SQLite.
+    it.each([
+      ['object (PGLite)', { eventType: 'item.completed', codexProvider: true, editGroupId: 'nimtc|item_3|1700000000000|9' }, 'nimtc|item_3|1700000000000|9'],
+      ['JSON string (SQLite)', JSON.stringify({ eventType: 'item.completed', codexProvider: true, editGroupId: 'nimtc|item_3|1700000000000|9' }), 'nimtc|item_3|1700000000000|9'],
+      ['invalid JSON string', '{"editGroupId":"nimtc|item_3', 'item_3'],
+      ['JSON string that is not an object', JSON.stringify('nimtc|item_3|1700000000000|9'), 'item_3'],
+    ])('N4: takes the Codex edit-group id from raw message metadata given as %s', (_shape, rawMetadata, expectedToolUseId) => {
+      const content = JSON.stringify({
+        type: 'item.completed',
+        item: { type: 'file_change', id: 'item_3', changes: [{ path: '/workspace/src/a.ts', kind: 'update' }] },
+      });
+
+      const windows = parseToolCallWindows(12, content, baseDate, SESSION_ID, '/workspace', rawMetadata);
+
+      expect(windows).toHaveLength(1);
+      expect(windows[0].toolCallItemId).toBe('item_3');
+      expect(windows[0].toolUseId).toBe(expectedToolUseId);
+    });
+
     it('should include output text from tool results', () => {
       const content = JSON.stringify({
         type: 'item.completed',
@@ -1795,6 +1814,151 @@ describe('ToolCallMatcher', () => {
           AISessionsRepository.clearStore();
         }
       });
+
+      it('N4: a Codex SDK-transport edit matches its tool call by the edit-group id on SQLite and settles', async () => {
+        const sessionId = 'n4-codex-sdk';
+        const filePath = '/workspace/src/foo.ts';
+        const editGroupId = `nimtc|item_0|${T0}|1`;
+        await sqlite.query(`INSERT INTO ai_sessions (id, workspace_id, provider) VALUES ($1, $2, $3)`, [sessionId, '/workspace', 'openai-codex']);
+        // Rows as OpenAICodexProvider logs SDK-transport raw events: the event
+        // itself, with the call's edit-group id stamped on the row metadata.
+        for (const [type, at] of [['item.started', T0 - 1_000], ['item.completed', T0 + 500]] as const) {
+          await sqlite.query(
+            `INSERT INTO ai_agent_messages (session_id, created_at, source, direction, content, metadata) VALUES ($1, $2, $3, $4, $5, $6)`,
+            [sessionId, new Date(at).toISOString(), 'openai-codex', 'output',
+              JSON.stringify({ type, item: { id: 'item_0', type: 'file_change', changes: [{ path: filePath, kind: 'update' }], ...(type === 'item.completed' ? { status: 'completed' } : {}) } }),
+              JSON.stringify({ eventType: type, codexProvider: true, rawEventSerializationFallback: false, editGroupId })],
+          );
+        }
+        // As SessionFileTracker records the call's pre_edit_snapshot.
+        const edited = await createPGLiteSessionFileStore(sqlite).addFileLink({
+          sessionId, workspaceId: '/workspace', filePath, linkType: 'edited', timestamp: T0,
+          metadata: { toolName: 'file_change', operation: 'edit', toolUseId: editGroupId },
+        });
+        // Premise: SQLite returns the raw row metadata as JSON text.
+        const raw = await sqlite.query<{ metadata: unknown }>(`SELECT metadata FROM ai_agent_messages WHERE session_id = $1 LIMIT 1`, [sessionId]);
+        expect(typeof raw.rows[0].metadata).toBe('string');
+        const stats = countRawScans();
+
+        await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(1);
+        const stored = await sqlite.query(
+          `SELECT session_file_id, tool_use_id, match_score FROM ai_tool_call_file_edits WHERE session_id = $1`,
+          [sessionId],
+        );
+        // On PGLite the same rows already scored 100 through the edit-group id.
+        expect(stored.rows).toEqual([{ session_file_id: edited.id, tool_use_id: editGroupId, match_score: 100 }]);
+
+        // Settled: the next pass reads no raw rows.
+        await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(0);
+        expect(stats.scans).toBe(1);
+        expect(logger.main.error).not.toHaveBeenCalled();
+      });
+
+      /**
+       * A Claude Code session whose shell commands each rewrote the same 40
+       * files (a formatter run after every step, say), with nothing matched
+       * yet, as on the first pass after the upgrade: one edit row per file per
+       * command, each carrying that command's tool_use id.
+       */
+      async function seedShellRewrites(sessionId: string, commands: number) {
+        await sqlite.query(`INSERT INTO ai_sessions (id, workspace_id, provider) VALUES ($1, $2, $3)`, [sessionId, '/workspace', 'claude-code']);
+        /** Multi-row INSERT, 500 rows per statement, so seeding stays a small share of the test. */
+        const insertRows = async (table: string, columns: string[], rows: unknown[][]) => {
+          for (let offset = 0; offset < rows.length; offset += 500) {
+            const chunk = rows.slice(offset, offset + 500);
+            const placeholders = chunk.map((_, r) => `(${columns.map((__, c) => `$${r * columns.length + c + 1}`).join(', ')})`);
+            await sqlite.query(`INSERT INTO ${table} (${columns.join(', ')}) VALUES ${placeholders.join(', ')}`, chunk.flat());
+          }
+        };
+        const messages: unknown[][] = [];
+        const fileRows: unknown[][] = [];
+        for (let c = 1; c <= commands; c++) {
+          const at = T0 + c * 3_000;
+          const toolUseId = `toolu_fmt_${c}`;
+          messages.push([sessionId, new Date(at).toISOString(), 'claude-code', 'output', JSON.stringify({
+            type: 'assistant',
+            message: { content: [{ type: 'tool_use', id: toolUseId, name: 'Bash', input: { command: 'pnpm format' } }] },
+          })]);
+          const metadata = { toolName: 'Bash', operation: 'bash', toolUseId };
+          for (let f = 0; f < 40; f++) {
+            if (c === 1 && f === 0) {
+              // This one goes through the production store; the others copy its
+              // INSERT (same columns, same parameter types).
+              await createPGLiteSessionFileStore(sqlite).addFileLink({
+                sessionId, workspaceId: '/workspace', filePath: '/workspace/src/f0.ts', linkType: 'edited', timestamp: at + 500, metadata,
+              });
+              continue;
+            }
+            fileRows.push([`n1-row-${c}-${f}`, sessionId, '/workspace', `/workspace/src/f${f}.ts`, 'edited', new Date(at + 500), metadata]);
+          }
+        }
+        await insertRows('ai_agent_messages', ['session_id', 'created_at', 'source', 'direction', 'content'], messages);
+        await insertRows('session_files', ['id', 'session_id', 'workspace_id', 'file_path', 'link_type', 'timestamp', 'metadata'], fileRows);
+        return commands * 40;
+      }
+
+      // Each test writes 4200 rows and takes about 2 s on a quiet machine, more
+      // under load; the bound only stops a hang.
+      const N1_TIMEOUT_MS = 60_000;
+
+      async function storedMatches(sessionId: string) {
+        const { rows } = await sqlite.query<{ session_file_id: string; match_score: number }>(
+          `SELECT session_file_id, match_score FROM ai_tool_call_file_edits WHERE session_id = $1`,
+          [sessionId],
+        );
+        return { count: rows.length, files: new Set(rows.map(r => r.session_file_id)).size, scores: new Set(rows.map(r => Number(r.match_score))) };
+      }
+
+      it('N1: a pass with more than 4095 matches stores every one of them', async () => {
+        const sessionId = 'n1-many-matches';
+        // 4200 matches at 8 values each would be 33600 values in one INSERT,
+        // over SQLite's limit of 32766.
+        const editRows = await seedShellRewrites(sessionId, 105);
+        expect(editRows).toBe(4200);
+        // Premise: the copied rows read back exactly like the store's row.
+        const firstCommand = await sqlite.query<{ file_path: string; timestamp: unknown; metadata: unknown }>(
+          `SELECT file_path, timestamp, metadata FROM session_files WHERE session_id = $1 AND file_path IN ($2, $3) AND metadata LIKE $4`,
+          [sessionId, '/workspace/src/f0.ts', '/workspace/src/f1.ts', '%"toolu_fmt_1"%'],
+        );
+        expect(firstCommand.rows).toHaveLength(2);
+        const [storeRow, copiedRow] = [...firstCommand.rows].sort((a, b) => a.file_path.localeCompare(b.file_path));
+        expect(typeof copiedRow.metadata).toBe('string');
+        expect([copiedRow.timestamp, copiedRow.metadata]).toEqual([storeRow.timestamp, storeRow.metadata]);
+        const stats = countRawScans();
+
+        const matched = await toolCallMatcher.matchSession(sessionId);
+        expect(vi.mocked(logger.main.error).mock.calls).toEqual([]);
+        expect(matched).toBe(4200);
+        await expect(storedMatches(sessionId)).resolves.toEqual({ count: 4200, files: 4200, scores: new Set([100]) });
+
+        // Every row settled, so the next pass reads no raw rows.
+        await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(0);
+        expect(stats.scans).toBe(1);
+      }, N1_TIMEOUT_MS);
+
+      it('N1: when one insert of a pass fails, the next pass stores the rest without duplicates', async () => {
+        const sessionId = 'n1-insert-fails';
+        await seedShellRewrites(sessionId, 105);
+        let inserts = 0;
+        queryMock.mockImplementation(async (sql: string, params?: unknown[]) => {
+          if (/^\s*INSERT INTO ai_tool_call_file_edits/i.test(sql) && ++inserts === 2) {
+            throw new Error('SQLITE_BUSY: database is locked');
+          }
+          return sqlite.query(sql, params);
+        });
+
+        // The failed pass keeps what it stored before the failure.
+        await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(0);
+        expect(logger.main.error).toHaveBeenCalledTimes(1);
+        const afterFailure = await storedMatches(sessionId);
+        expect(afterFailure.count).toBeGreaterThan(0);
+        expect(afterFailure.count).toBeLessThan(4200);
+
+        // The next pass matches only the files still open, and every edit ends
+        // with exactly one match.
+        await expect(toolCallMatcher.matchSession(sessionId)).resolves.toBe(4200 - afterFailure.count);
+        await expect(storedMatches(sessionId)).resolves.toEqual({ count: 4200, files: 4200, scores: new Set([100]) });
+      }, N1_TIMEOUT_MS);
     });
   });
 });
