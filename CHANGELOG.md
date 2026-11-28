@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- The Linux AppImage and .deb start again on distributions with glibc older than 2.42, such as Ubuntu 24.04, Debian 12 and Linux Mint 22. Since 0.82.4 they stayed running at launch without ever opening a window (#1949).
 
 ### Removed
 <!-- Removed features go here -->
