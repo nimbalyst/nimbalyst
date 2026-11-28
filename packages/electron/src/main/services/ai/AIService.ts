@@ -397,6 +397,10 @@ export class AIService {
     this.getQueueDrive().requestDrive(sessionId, workspacePath, reason);
   }
 
+  public requestDeferredReportDrive(sessionId: string, workspacePath: string) {
+    return this.getQueueDrive().requestDeferredReportDrive(sessionId, workspacePath);
+  }
+
   /**
    * Mirror a session's remaining pending queue into the sync index. Must run
    * after every queue transition, or mobile keeps re-showing a prompt the

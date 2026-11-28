@@ -102,7 +102,7 @@ const OWNED_CALLER = {
 
 function service() {
   const svc = MetaAgentService.getInstance();
-  const aiService = { queuePromptForSession: vi.fn(), triggerQueuedPromptProcessingForSession: vi.fn() };
+  const aiService = { queuePromptForSession: vi.fn(), triggerQueuedPromptProcessingForSession: vi.fn(), requestDeferredReportDrive: vi.fn().mockReturnValue({ scheduled: true, coalesced: false, delayMs: 180_000 }) };
   (svc as any).aiService = aiService;
   return { svc, aiService };
 }
@@ -210,7 +210,7 @@ describe('MetaAgentService session ownership', () => {
     });
   });
 
-  it('a report to an idle session is queued without waking it; an instruction still wakes it', async () => {
+  it('a report to an idle session is batched for delivery; an instruction still wakes it immediately', async () => {
     const { svc, aiService } = service();
     vi.spyOn(svc as any, 'shouldBypassChildAgentExecutionForTests').mockReturnValue(false);
     vi.spyOn(svc as any, 'getSessionStatusRow').mockResolvedValue({ status: 'idle' });
@@ -218,7 +218,8 @@ describe('MetaAgentService session ownership', () => {
     vi.mocked(AISessionsRepository.get).mockResolvedValue({ id: 'parent', workspacePath: '/workspace/path' } as any);
 
     const report = JSON.parse(await (svc as any).sendPromptToSession('child', 'parent', '/workspace/path', 'paths released', false, 'report'));
-    expect(report).toMatchObject({ processingTriggered: false, heldForNextTurn: true });
+    expect(report).toMatchObject({ processingTriggered: false, heldForNextTurn: true, deferredDriveScheduled: true, deferredDriveDelayMs: 180_000 });
+    expect(aiService.requestDeferredReportDrive).toHaveBeenCalledWith('parent', '/workspace/path');
     expect(aiService.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
 
     await (svc as any).sendPromptToSession('child', 'parent', '/workspace/path', 'do this next', false, 'instruction');

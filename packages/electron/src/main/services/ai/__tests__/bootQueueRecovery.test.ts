@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import { driveStrandedQueuesOnBoot } from '../bootQueueRecovery';
+import { QueueDriveService } from '../QueueDriveService';
+import { runQueueDriveAttempt } from '../queueDriveAttempt';
 
 type DepOverrides = Partial<Omit<Parameters<typeof driveStrandedQueuesOnBoot>[0], 'requestDrive'>>;
 
@@ -16,6 +18,31 @@ function createDeps(overrides: DepOverrides = {}) {
 }
 
 describe('driveStrandedQueuesOnBoot', () => {
+  it('recovers held report/status rows after restart without a transcript or an in-memory timer', async () => {
+    const pending = ['report', 'status'].map((messageKind) => ({
+      id: messageKind,
+      documentContext: { promptProvenance: { actor: 'agent', origin: 'session-orchestration', messageKind } },
+    }));
+    const dispatch = vi.fn(async () => { pending.splice(0); return true; });
+    const driver = new QueueDriveService({
+      attempt: (input) => runQueueDriveAttempt({
+        listPendingIds: async () => pending.map((row) => row.id),
+        isChainActive: () => false, isSessionBusy: () => false,
+        resolveWindow: async () => ({ kind: 'window', window: {}, opened: false }),
+        failAllPending: async () => 0, dispatch, logWarn: vi.fn(),
+      }, input),
+      onWindowAvailable: () => () => {}, onSessionIdle: () => () => {},
+      logInfo: vi.fn(), logWarn: vi.fn(), logError: vi.fn(),
+    });
+    const attempts: Promise<unknown>[] = [];
+    const deps = createDeps({ listSessionIdsWithPending: vi.fn(async () => ['idle-recipient']) });
+    deps.requestDrive.mockImplementation((id, workspacePath) => { attempts.push(driver.drive(id, workspacePath, 'boot-recovery')); });
+    expect(await driveStrandedQueuesOnBoot(deps)).toBe(1);
+    await Promise.all(attempts);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(pending).toEqual([]);
+    driver.dispose();
+  });
   it('drives each stranded session exactly once', async () => {
     const deps = createDeps({
       listSessionIdsWithPending: vi.fn(async () => ['s1', 's2', 's3']),
