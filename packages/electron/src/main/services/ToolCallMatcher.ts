@@ -22,6 +22,7 @@ import { parse as parseShellCommand } from 'shell-quote';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { jsonKeyAccessor } from '../database/jsonKeyExpr';
 import { logger } from '../utils/logger';
+import { parseJsonObjectColumn } from '../utils/jsonColumn';
 import { TranscriptMigrationRepository } from '@nimbalyst/runtime/storage/repositories/TranscriptMigrationRepository';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import type { TranscriptEvent, ToolCallPayload } from '@nimbalyst/runtime/ai/server/transcript/types';
@@ -203,8 +204,60 @@ const MIN_MATCH_SCORE = 30; // Must have at least a filename match
  * which is what makes it safe to leave such files out of the candidate set.
  */
 const MAX_MATCH_SCORE = 100;
+
+/**
+ * Prefixes of the session_files toolUseIds Nimbalyst mints itself instead of
+ * copying a provider's tool-call id:
+ * - `nimtc|`: Codex edit-group ids (runtime `toolLookupIds.ts`).
+ * - `watcher-`: WorkspaceFileEditAttributionService, when the winning window had no id.
+ * - `codex-bash-`: HooklessAgentFileWatcher, when the command had no item id.
+ * - `codex-acp-write-`: Codex ACP writes (main `index.ts`).
+ * parseToolCallWindows only finds such an id in the metadata of the Codex rows
+ * of the tool call that made the edit (never as a tool_use id), and those rows
+ * sit next to the edit, so it does not justify reading the whole session. On
+ * the Codex app-server transport no window carries it at all: the file never
+ * settles, and an unbounded lookup would reread the whole session every pass.
+ */
+const MINTED_TOOL_USE_ID_PREFIXES = ['nimtc|', 'watcher-', 'codex-bash-', 'codex-acp-write-'];
+
+/**
+ * Providers whose stored rows were traced to give windows that carry the
+ * tool-call ids their session_files rows record: Claude Code's raw SDK chunks
+ * and the Claude Code CLI's observed turns hold the `tool_use` blocks whose ids
+ * those rows carry. Only these providers' ids can be definitive.
+ *
+ * Every other provider, including any added later, has no definitive ids:
+ * Codex app-server, Codex ACP, Cursor, Gemini, Grok and Copilot store rows
+ * parseToolCallWindows reads no window from, so their ids never resolve, and
+ * Codex's SDK transport reuses item ids across turns (runtime
+ * `toolLookupIds.ts`). Counting such an id as definitive would make every later
+ * pass read the whole session without ever settling the file.
+ */
+const PROVIDERS_WITH_DEFINITIVE_TOOL_USE_IDS: ReadonlySet<string> = new Set(['claude-code', 'claude-code-cli']);
+
+/**
+ * The provider tool-call id an edited session_files row carries, or null when
+ * it has none, only an id Nimbalyst minted, or the session's provider has no
+ * definitive ids. Only a definitive id keeps its own row through dedup and
+ * keeps the raw-message lookup unbounded; scoreMatch still compares the other
+ * ids, so a window that carries one scores 100.
+ */
+function definitiveToolUseId(file: SessionFileRow, provider: string | null | undefined): string | null {
+  if (!provider || !PROVIDERS_WITH_DEFINITIVE_TOOL_USE_IDS.has(provider)) return null;
+  const toolUseId = file.metadata?.toolUseId;
+  if (typeof toolUseId !== 'string' || toolUseId.length === 0) return null;
+  return MINTED_TOOL_USE_ID_PREFIXES.some(prefix => toolUseId.startsWith(prefix)) ? null : toolUseId;
+}
+
 const WORKSPACE_CLEAR_WINNER_MARGIN = 12;
 const WORKSPACE_MIN_CONFIDENCE_SCORE = 55;
+
+/**
+ * Matches per INSERT in insertMatchesBatch. Each match binds 8 values, and
+ * SQLite refuses a statement with more than 32766, so one statement can hold at
+ * most 4095 matches; 500 (4000 values) stays far inside that.
+ */
+const MATCH_INSERT_CHUNK_ROWS = 500;
 
 /** Shell wrapper: /bin/zsh -lc 'cmd' or bare bash -lc 'cmd' (Windows inner layer) */
 const SHELL_WRAPPER_REGEX = /^(?:\/(?:bin|usr\/bin)\/)?(?:bash|zsh|sh)\s+-l?c\s+([\s\S]+)$/;
@@ -378,11 +431,13 @@ function stringifyOutput(output: any): string {
   return String(output);
 }
 
+/**
+ * The Codex edit-group id stamped on a raw ai_agent_messages row. The row's
+ * metadata is an object on PGLite and JSON text on SQLite; unparseable
+ * metadata has none.
+ */
 function extractSyntheticEditGroupId(rawMetadata: unknown): string | null {
-  if (!rawMetadata || typeof rawMetadata !== 'object') {
-    return null;
-  }
-  const editGroupId = (rawMetadata as { editGroupId?: unknown }).editGroupId;
+  const editGroupId = parseJsonObjectColumn(rawMetadata).editGroupId;
   if (typeof editGroupId === 'string' && editGroupId.startsWith('nimtc|')) {
     return editGroupId;
   }
@@ -983,11 +1038,13 @@ class ToolCallMatcherImpl {
       }
 
       // 1. Get workspace path from session metadata (fallback to file path heuristic)
-      const sessionInfo = await database.query<{ workspace_id: string | null }>(
-        `SELECT workspace_id FROM ai_sessions WHERE id = $1 LIMIT 1`,
+      //    and the provider, which decides whether a toolUseId can be definitive.
+      const sessionInfo = await database.query<{ workspace_id: string | null; provider: string | null }>(
+        `SELECT workspace_id, provider FROM ai_sessions WHERE id = $1 LIMIT 1`,
         [sessionId]
       );
       const workspacePath = sessionInfo.rows[0]?.workspace_id || undefined;
+      const provider = sessionInfo.rows[0]?.provider;
 
       // 2. Load edited session_files
       // Use EXTRACT(EPOCH) to get correct epoch ms regardless of
@@ -999,13 +1056,22 @@ class ToolCallMatcherImpl {
          WHERE session_id = $1 AND link_type = 'edited'`,
         [sessionId]
       );
-      // Deduplicate session_files: keep every row with a distinct toolUseId
-      // (each represents a separate tool call edit). For rows WITHOUT a
-      // toolUseId (Codex, watcher side-effects), dedup by file path keeping
-      // the most recent timestamp.
+      // metadata is an object on PGLite but JSON text on SQLite. Parse it once
+      // here so the toolUseId and bashSideEffect reads below see the same
+      // shape on both backends; unparseable metadata counts as none.
+      const editedFiles: SessionFileRow[] = filesResult.rows.map(row => ({
+        ...row,
+        metadata: parseJsonObjectColumn(row.metadata),
+      }));
+      // Deduplicate session_files: keep every row with a distinct definitive
+      // toolUseId (each represents a separate tool call edit). For rows WITHOUT
+      // one (providers other than Claude Code, watcher side-effects, ids
+      // Nimbalyst minted), dedup by file path keeping the most recent
+      // timestamp. Such ids may never settle, so keeping every such row would
+      // pin the bounded scan below to the session's first edit.
       const sessionFilesByKey = new Map<string, SessionFileRow>();
-      for (const file of filesResult.rows) {
-        const toolUseId = file.metadata?.toolUseId;
+      for (const file of editedFiles) {
+        const toolUseId = definitiveToolUseId(file, provider);
         if (toolUseId) {
           // Rows with a toolUseId are unique per tool call — keep all of them.
           // Use toolUseId as key so duplicates from watcher + tracker collapse.
@@ -1063,13 +1129,13 @@ class ToolCallMatcherImpl {
       // Bound raw history for providers whose file rows have no definitive
       // tool IDs (notably Codex). Exact metadata toolUseId matches deliberately
       // bypass scoreMatch's time cutoff, so sessions carrying any such ID must
-      // retain the unbounded lookup to preserve those matches.
+      // retain the unbounded lookup to preserve those matches. Ids Nimbalyst
+      // minted itself and ids of providers other than Claude Code do not count
+      // (see definitiveToolUseId).
       // Computed over filesNeedingWork, not all files: a session whose only
       // outstanding rows are Codex-style now gets the bounded window even if
       // settled Claude Code rows exist alongside them.
-      const hasDefinitiveToolUseIds = filesNeedingWork.some(file =>
-        typeof file.metadata?.toolUseId === 'string' && file.metadata.toolUseId.length > 0
-      );
+      const hasDefinitiveToolUseIds = filesNeedingWork.some(file => definitiveToolUseId(file, provider) !== null);
       let rawWindowOptions: { afterDate: Date; beforeDate: Date } | undefined;
       if (!hasDefinitiveToolUseIds) {
         const fileTimestamps = filesNeedingWork.map(file => ensureNumber(file.timestamp_ms));
@@ -1356,7 +1422,7 @@ class ToolCallMatcherImpl {
       [sessionId]
     );
     for (const row of editedResult.rows) {
-      const metadata = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata || {});
+      const metadata = parseJsonObjectColumn(row.metadata);
       ctx.sessionFilesById.set(row.id, { file_path: row.file_path, metadata });
       const toolUseId = metadata?.toolUseId;
       if (typeof toolUseId === 'string' && toolUseId.length > 0) {
@@ -1652,7 +1718,7 @@ class ToolCallMatcherImpl {
         for (const row of filesResult.rows) {
           filesById.set(row.id, {
             filePath: row.file_path,
-            metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : (row.metadata || {}),
+            metadata: parseJsonObjectColumn(row.metadata),
           });
         }
       }
@@ -2171,29 +2237,34 @@ class ToolCallMatcherImpl {
       fileTimestamp: number;
     }>
   ): Promise<void> {
-    if (matches.length === 0) return;
+    // One statement per MATCH_INSERT_CHUNK_ROWS matches: a definitive toolUseId
+    // gets a match per edit, so one pass can hold more matches than a single
+    // statement may bind on SQLite. A failed chunk fails the pass and leaves
+    // the earlier chunks stored; the next pass skips their settled files and
+    // matches the rest, and the upsert keeps a re-sent match single.
+    for (let offset = 0; offset < matches.length; offset += MATCH_INSERT_CHUNK_ROWS) {
+      const values: any[] = [];
+      const placeholders: string[] = [];
+      let paramIdx = 1;
 
-    const values: any[] = [];
-    const placeholders: string[] = [];
-    let paramIdx = 1;
+      for (const m of matches.slice(offset, offset + MATCH_INSERT_CHUNK_ROWS)) {
+        const fileTs = m.fileTimestamp ? new Date(m.fileTimestamp) : null;
+        placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}, $${paramIdx + 6}, $${paramIdx + 7})`);
+        values.push(m.sessionId, m.sessionFileId, m.messageId, m.toolCallItemId, m.toolUseId, m.score, m.reason, fileTs);
+        paramIdx += 8;
+      }
 
-    for (const m of matches) {
-      const fileTs = m.fileTimestamp ? new Date(m.fileTimestamp) : null;
-      placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}, $${paramIdx + 6}, $${paramIdx + 7})`);
-      values.push(m.sessionId, m.sessionFileId, m.messageId, m.toolCallItemId, m.toolUseId, m.score, m.reason, fileTs);
-      paramIdx += 8;
+      await database.query(
+        `INSERT INTO ai_tool_call_file_edits
+         (session_id, session_file_id, message_id, tool_call_item_id, tool_use_id, match_score, match_reason, file_timestamp)
+         VALUES ${placeholders.join(', ')}
+         ON CONFLICT (session_file_id, message_id) DO UPDATE SET
+           match_score = EXCLUDED.match_score,
+           match_reason = EXCLUDED.match_reason,
+           file_timestamp = EXCLUDED.file_timestamp`,
+        values
+      );
     }
-
-    await database.query(
-      `INSERT INTO ai_tool_call_file_edits
-       (session_id, session_file_id, message_id, tool_call_item_id, tool_use_id, match_score, match_reason, file_timestamp)
-       VALUES ${placeholders.join(', ')}
-       ON CONFLICT (session_file_id, message_id) DO UPDATE SET
-         match_score = EXCLUDED.match_score,
-         match_reason = EXCLUDED.match_reason,
-         file_timestamp = EXCLUDED.file_timestamp`,
-      values
-    );
   }
 
   /**
@@ -2366,7 +2437,8 @@ class ToolCallMatcherImpl {
              AND metadata->>'toolUseId' = ANY($2)`,
           [sessionId, lookupIds]
         );
-        linkRows = linkResult.rows;
+        // Parsed here so the operation read below works on SQLite's JSON text.
+        linkRows = linkResult.rows.map(row => ({ ...row, metadata: parseJsonObjectColumn(row.metadata) }));
       }
 
       if (linkRows.length === 0) return [];
