@@ -13,6 +13,7 @@ import { stopAllBackendTerminals } from '../extensions/backendTerminals';
 import {
   categorizeDownloadDuration,
   classifyUpdateError,
+  isFlatpak,
   isWindowsRenameLockError,
   planDownloadCompletedEmit,
   planUpdateErrorEmit,
@@ -592,6 +593,11 @@ export class AutoUpdaterService {
   }
 
   public startAutoUpdateCheck(intervalMinutes = 60) {
+    if (isFlatpak()) {
+      log.info('Skipping auto-update checks: updates are managed by Flatpak');
+      return;
+    }
+
     // Initial check after 30 seconds
     setTimeout(() => {
       this.checkForUpdates();
@@ -615,6 +621,7 @@ export class AutoUpdaterService {
   }
 
   public async checkForUpdates() {
+    if (isFlatpak()) return;
     if (this.isCheckingForUpdate) {
       log.info('Already checking for updates, skipping...');
       return;
@@ -631,6 +638,14 @@ export class AutoUpdaterService {
   public async checkForUpdatesWithUI() {
     if (this.isCheckingForUpdate) {
       // Already checking, don't show anything - the checking toast is already visible
+      return;
+    }
+
+    if (isFlatpak()) {
+      log.info('Skipping manual update check: updates are managed by Flatpak');
+      this.sendToFrontmostWindow('update-toast:error', {
+        message: 'Updates are managed by Flatpak. Run "flatpak update" or use your software center.'
+      });
       return;
     }
 

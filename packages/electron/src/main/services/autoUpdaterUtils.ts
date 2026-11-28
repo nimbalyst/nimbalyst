@@ -153,3 +153,11 @@ export function isWindowsRenameLockError(err: Error): boolean {
   if (/\bEBUSY\b/i.test(msg)) return true;
   return false;
 }
+
+/**
+ * True inside a Flatpak sandbox. Flatpak sets FLATPAK_ID for every app it runs.
+ * Updates there come from the Flatpak remote, never from the in-app updater.
+ */
+export function isFlatpak(env: Record<string, string | undefined> = process.env): boolean {
+  return Boolean(env.FLATPAK_ID);
+}

@@ -1,0 +1,110 @@
+app-id: com.nimbalyst.Nimbalyst
+runtime: org.freedesktop.Platform
+runtime-version: "26.08"
+sdk: org.freedesktop.Sdk
+base: org.electronjs.Electron2.BaseApp
+base-version: "26.08"
+command: nimbalyst
+separate-locales: false
+
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.node26
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+  # Workspaces are user folders anywhere under $HOME.
+  - --filesystem=home
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --env=ELECTRON_OZONE_PLATFORM_HINT=auto
+  # Empty by default. Users add host tool directories with `flatpak override`, see README.
+  - --env=NIMBALYST_EXTRA_PATH=
+
+build-options:
+  append-path: /usr/lib/sdk/node26/bin
+  env:
+    # Offline: generated-sources.json pre-fetches downloads into this cache.
+    XDG_CACHE_HOME: /run/build/nimbalyst/flatpak-node/cache
+    npm_config_nodedir: /usr/lib/sdk/node26
+    # onnxruntime-node would download a CUDA build from GitHub. Nothing uses it.
+    ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+    # Electron's install script would download the binary. The zip is pre-fetched instead.
+    ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    CI: "1"
+    # The app bundle build exceeds the default Node heap.
+    NODE_OPTIONS: --max-old-space-size=8192
+
+modules:
+  - name: pnpm
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/lib/pnpm /app/bin
+      - cp -r . /app/lib/pnpm
+      # pnpm 11+ ships a Node placeholder and downloads its native binary on first use,
+      # which fails offline. install.js links the binary from the bundled platform package.
+      - cd /app/lib/pnpm && node install.js
+      - ln -s /app/lib/pnpm/pnpm /app/bin/pnpm
+    cleanup:
+      - "*"
+    sources:
+      - type: archive
+        url: https://registry.npmjs.org/pnpm/-/pnpm-12.9.1.tgz
+        sha512: 06b055fff5cd20dc12781de173ced3310ce0951bf2ec620211a16045d5444d5c93a663210764ef29a653a610459ba0368f0e74f84d80c54723cf95aae7bc0d6d
+      - type: archive
+        url: https://registry.npmjs.org/@pnpm/exe.linux-arm64/-/exe.linux-arm64-12.9.1.tgz
+        sha512: 731fae17ac6ac04b66ec1f0d57ed6f7b4c4183d81cbb3419e51fb45a0396bca1bf87defc5258d2e81816b358a9206b8681475e5619b73ca98196d5c871cccb5c
+        dest: node_modules/@pnpm/exe.linux-arm64
+        only-arches: [aarch64]
+      - type: archive
+        url: https://registry.npmjs.org/@pnpm/exe.linux-x64/-/exe.linux-x64-12.9.1.tgz
+        sha512: f8ce4def884ce1f73cec001c931c7f5085be7549d67f67a4a3e1dc849b3f3595317a12e17a4372308fc635a35796f77e91647ef7b5d7043e755d192436252dac
+        dest: node_modules/@pnpm/exe.linux-x64
+        only-arches: [x86_64]
+
+  - name: nimbalyst
+    buildsystem: simple
+    build-options:
+      env:
+        npm_config_offline: "true"
+        # @vscode/ripgrep looks for its pre-fetched tarball in $TMPDIR/vscode-ripgrep-cache-<version>.
+        TMPDIR: /run/build/nimbalyst/flatpak-node/tmp
+    build-commands:
+      - pnpm install --offline --frozen-lockfile --trust-lockfile
+      # @vscode/ripgrep has no binary after the offline install. Its install script downloads one
+      # from GitHub, so run it by hand: with TMPDIR set it uses the pre-fetched tarball instead.
+      # The script does nothing when bin/ exists, so remove bin/ first.
+      - rm -rf node_modules/@vscode/ripgrep/bin
+      - node node_modules/@vscode/ripgrep/lib/postinstall.js
+      - pnpm run build:workspace-deps
+      - pnpm run build
+      - pnpm --dir packages/electron run build
+      - pnpm --dir packages/electron run build:extensions
+      - pnpm --dir packages/electron run validate:extra-resources
+      # electron-builder downloads Electron from GitHub. electronDist points it at the pre-fetched zip, unpacked.
+      - mkdir /run/build/nimbalyst/electron-dist
+      - unzip -q flatpak-node/cache/electron/electron-v*-linux-*.zip -d /run/build/nimbalyst/electron-dist
+      - cd packages/electron && pnpm exec electron-builder --linux --dir --publish never -c.electronDist=/run/build/nimbalyst/electron-dist
+      # electron-builder names the output directory after the build arch (linux-unpacked, linux-arm64-unpacked).
+      - cp -a packages/electron/release/linux-*unpacked /app/nimbalyst
+      - install -Dm755 flatpak/nimbalyst.sh /app/bin/nimbalyst
+      - install -Dm644 flatpak/com.nimbalyst.Nimbalyst.desktop -t /app/share/applications
+      - install -Dm644 flatpak/com.nimbalyst.Nimbalyst.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 assets/nimbalyst-icon.svg /app/share/icons/hicolor/scalable/apps/com.nimbalyst.Nimbalyst.svg
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .git
+          - node_modules
+          - build-dir
+          - repo
+          - .flatpak-builder
+          - flatpak/generated-sources.json
+      # Written by flatpak/generate-sources.sh.
+      - generated-sources.json

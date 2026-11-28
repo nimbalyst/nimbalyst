@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.nimbalyst.Nimbalyst</id>
+  <name>Nimbalyst</name>
+  <summary>AI-native workspace for markdown, code, diagrams and trackers</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="com.nimbalyst">
+    <name>Nimbalyst Team</name>
+  </developer>
+  <url type="homepage">https://nimbalyst.com</url>
+  <url type="bugtracker">https://github.com/nimbalyst/nimbalyst/issues</url>
+  <launchable type="desktop-id">com.nimbalyst.Nimbalyst.desktop</launchable>
+  <description>
+    <p>Nimbalyst is a workspace where you and AI agents edit the same files. It has editors for markdown, code, spreadsheets and diagrams, plus session and task tracking.</p>
+  </description>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Development</category>
+    <category>TextEditor</category>
+  </categories>
+  <provides>
+    <binary>nimbalyst</binary>
+  </provides>
+  <releases>
+    <release version="0.84.4" date="2026-11-25"/>
+  </releases>
+</component>

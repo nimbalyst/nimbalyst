@@ -267,3 +267,11 @@ packages/collab-client/src/**/*.d.ts.map
 !packages/runtime/src/**/*-env.d.ts
 !packages/runtime/src/types/*.d.ts
 !packages/runtime/src/editor/types/*.d.ts
+
+# Flatpak build output
+/build-dir/
+/repo/
+/.flatpak-builder/
+/flatpak/generated-sources.json
+/flatpak/__pycache__
+/*.flatpak
