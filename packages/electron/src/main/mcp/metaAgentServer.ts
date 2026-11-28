@@ -375,13 +375,13 @@ export const META_AGENT_TOOL_DEFS: Array<{
   {
     name: "send_prompt",
     description:
-      "Queue a follow-up prompt for a session. An instruction to an idle session starts processing immediately; a report or status never wakes it and is read on its next turn. Do not message the session that started you unless it asked for reports.",
+      "Queue a follow-up prompt for a session. An instruction to an idle session starts processing immediately; a report or status never wakes it and is read on its next turn. Message the session that started you only when it asked for reports or explicitly authorized an actionable return.",
     inputSchema: {
       type: "object",
       properties: {
         sessionId: {
           type: "string",
-          description: "The target child session ID.",
+          description: "The target session ID.",
         },
         prompt: {
           type: "string",
