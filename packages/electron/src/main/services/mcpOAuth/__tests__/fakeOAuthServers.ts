@@ -34,7 +34,10 @@ export interface FakeAuthorizationServer {
     sendIss: boolean | string;
     tokenEndpointRedirect?: string;
     refreshError?: string;
-    refreshDelayMs?: number;
+    /** Hold an accepted refresh's response until this resolves. */
+    refreshHold?: Promise<void>;
+    /** Hold each revocation request that arrives while this is set, until it resolves. */
+    revokeHold?: Promise<void>;
     registrationError?: string;
     clientSecret?: string;
   };
@@ -200,10 +203,10 @@ export async function startFakeAuthorizationServer(): Promise<FakeAuthorizationS
           return;
         }
         refreshTokens.delete(token);
-        // Validated before the delay: models a refresh the server has already
+        // Validated before the hold: models a refresh the server has already
         // accepted when a revoke arrives.
-        if (fake.options.refreshDelayMs) {
-          await new Promise((resolve) => setTimeout(resolve, fake.options.refreshDelayMs));
+        if (fake.options.refreshHold) {
+          await fake.options.refreshHold;
         }
         json(200, issueTokens());
         return;
@@ -212,6 +215,12 @@ export async function startFakeAuthorizationServer(): Promise<FakeAuthorizationS
       return;
     }
     if (url.pathname === '/revoke' && req.method === 'POST') {
+      // Read in the turn that records the request, so clearing the option
+      // once the request is seen does not release it.
+      const hold = fake.options.revokeHold;
+      if (hold) {
+        await hold;
+      }
       const token = params.get('token');
       if (token) {
         revoked.push(token);

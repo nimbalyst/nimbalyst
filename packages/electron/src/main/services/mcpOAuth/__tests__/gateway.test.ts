@@ -413,6 +413,14 @@ describe('mcp-gateway-stdio.mjs', () => {
     const key = gateway.registerRoute(descriptor, 'http');
     const shim = path.resolve(__dirname, '../../../../../resources/mcp-gateway-stdio.mjs');
     const args = [shim, `${gatewayBase}${GATEWAY_PATH_PREFIX}${key}`];
+    // The response deadlines start once the helper's first request reaches the
+    // server, so its start-up time on a loaded machine does not count.
+    let helperUp: () => void = () => undefined;
+    const helperReady = new Promise<void>((resolve) => { helperUp = resolve; });
+    rs.onMcp = () => {
+      helperUp();
+      return false;
+    };
 
     const child = spawn(process.execPath, args, {
       env: { PATH: '', NIMBALYST_MCP_GATEWAY_TOKEN: tokenFor(key) },
@@ -421,11 +429,16 @@ describe('mcp-gateway-stdio.mjs', () => {
     const lines: string[] = [];
     let buffered = '';
     const responseFor = (id: number) => new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`no response for ${id}`)), 5000);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let found = false;
+      void helperReady.then(() => {
+        if (!found) timer = setTimeout(() => reject(new Error(`no response for ${id}`)), 5000);
+      });
       const check = () => {
         for (const line of lines) {
           const message = JSON.parse(line);
           if (message.id === id) {
+            found = true;
             clearTimeout(timer);
             resolve(message);
             return true;
@@ -434,6 +447,8 @@ describe('mcp-gateway-stdio.mjs', () => {
         return false;
       };
       if (!check()) child.stdout.on('data', () => check());
+      // A helper that dies before it is up fails at once, not at the test timeout.
+      child.once('exit', (code) => reject(new Error(`no response for ${id}: the helper exited with ${code}`)));
     });
     child.stdout.on('data', (chunk: Buffer) => {
       buffered += chunk.toString();
@@ -474,6 +489,7 @@ describe('mcp-gateway-stdio.mjs', () => {
     const descriptor = descriptorFor(rs.mcpUrl);
     expect(await manager.authorize(descriptor, { timeoutMs: 5000 })).toEqual({ ok: true });
     const open: http.ServerResponse[] = [];
+    let startDeadline: () => void = () => undefined;
     rs.onMcp = (req, res) => {
       if (req.method !== 'POST' || !JSON.parse(req.body || '{}').method?.startsWith('initialize')) {
         return false;
@@ -483,6 +499,9 @@ describe('mcp-gateway-stdio.mjs', () => {
       res.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id, result: { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1.0.0' } } })}\n\n`);
       // The stream is left open, as a server may do.
       open.push(res);
+      // The helper is up and has its answer: the deadline starts only now, so
+      // its start-up time on a loaded machine does not count.
+      startDeadline();
       return true;
     };
     const key = gateway.registerRoute(descriptor, 'http');
@@ -494,7 +513,9 @@ describe('mcp-gateway-stdio.mjs', () => {
     try {
       let output = '';
       const listed = new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => resolve(false), 3000);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        startDeadline = () => { timer = setTimeout(() => resolve(false), 3000); };
+        child.once('exit', () => resolve(false));
         child.stdout.on('data', (chunk: Buffer) => {
           output += chunk.toString();
           if (output.split('\n').some((line) => line.includes('"id":2'))) {
