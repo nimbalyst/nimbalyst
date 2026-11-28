@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Signing in to legacy MCP servers respects the configured helper version.
 
 ### Removed
 <!-- Removed features go here -->

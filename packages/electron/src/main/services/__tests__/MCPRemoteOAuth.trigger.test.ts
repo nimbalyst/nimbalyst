@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
@@ -8,6 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   spawn: vi.fn(),
+  searchPath: '',
+}));
+
+vi.mock('../shellEnvironment', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../shellEnvironment')>(),
+  getEnhancedPath: () => mocks.searchPath,
 }));
 
 vi.mock('child_process', async (importOriginal) => {
@@ -53,6 +60,13 @@ describe('triggerMcpRemoteOAuth for a user-written mcp-remote command', () => {
   beforeEach(async () => {
     authDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mcp-oauth-trigger-'));
     process.env.MCP_REMOTE_CONFIG_DIR = authDir;
+    mocks.searchPath = authDir;
+    if (process.platform === 'win32') {
+      await fs.writeFile(path.join(authDir, 'node.exe'), '');
+      const npmBin = path.join(authDir, 'node_modules', 'npm', 'bin');
+      await fs.mkdir(npmBin, { recursive: true });
+      await fs.writeFile(path.join(npmBin, 'npx-cli.js'), '');
+    }
     child = new FakeOAuthChild();
     mocks.spawn.mockReturnValue(child);
   });
@@ -62,6 +76,40 @@ describe('triggerMcpRemoteOAuth for a user-written mcp-remote command', () => {
     mocks.spawn.mockReset();
     delete process.env.MCP_REMOTE_CONFIG_DIR;
     await fs.rm(authDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['mcp-remote', 'mcp-remote@0.16.7'],
+    ['mcp-remote@', 'mcp-remote@0.16.7'],
+    ['mcp-remote@0.1.38', 'mcp-remote@0.1.38'],
+    ['mcp-remote@next', 'mcp-remote@next'],
+    ['mcp-remote@>=0.1.0 <0.2.0', 'mcp-remote@>=0.1.0 <0.2.0'],
+  ])('selects the authorization helper for %s', async (saved, expected) => {
+    const config = { ...USER_COMMAND, args: [saved, ...USER_COMMAND.args.slice(1)] };
+    const result = triggerMcpRemoteOAuth(config);
+    const [command, argv, options] = mocks.spawn.mock.calls[0];
+    const windows = process.platform === 'win32';
+    expect(command).toBe(windows ? path.join(authDir, 'node.exe') : 'npx');
+    expect(argv).toEqual([
+      ...(windows ? [path.join(authDir, 'node_modules', 'npm', 'bin', 'npx-cli.js')] : []),
+      '-y', `--package=nimbalyst-oauth-helper@npm:${expected}`, 'mcp-remote', 'https://mcp.example.test',
+    ]);
+    expect(options.shell).toBe(false);
+    expect(config.args[0]).toBe(saved);
+    child.emit('close', 0);
+    await result;
+  });
+
+  it('returns a structured failure when the helper cannot start', async () => {
+    const result = triggerMcpRemoteOAuth(USER_COMMAND);
+    child.emit('error', Object.assign(new Error('not found'), { code: 'ENOENT' }));
+    await expect(result).resolves.toMatchObject({ outcome: 'failed', errorType: 'command_unavailable' });
+  });
+
+  it('declines a non-registry package source for the authorization helper', async () => {
+    const config = { ...USER_COMMAND, args: ['mcp-remote@file:./helper', ...USER_COMMAND.args.slice(1)] };
+    await expect(triggerMcpRemoteOAuth(config)).resolves.toMatchObject({ errorType: 'invalid_config' });
+    expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
   it('reports an abandoned browser flow as timed out instead of rejected', async () => {

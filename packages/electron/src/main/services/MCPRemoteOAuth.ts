@@ -35,6 +35,8 @@ export interface MCPRemoteConfigDescriptor {
    * docs/MCP_OAUTH.md).
    */
   source?: 'user-command';
+  /** Package spec from a saved command that must use the legacy helper. */
+  userCommandPackage?: string;
 }
 
 export interface MCPRemoteConfigOptions {
@@ -219,6 +221,7 @@ export function extractMcpRemoteConfig(
     staticOAuthClientMetadata: config.oauth?.staticClientMetadata ?? parsed.staticOAuthClientMetadata,
     requiresOAuth,
     source: 'user-command',
+    userCommandPackage: args[remoteIndex],
   };
 }
 
@@ -350,6 +353,33 @@ export async function discoverMcpRemoteOAuthRequirement(
   return cached;
 }
 
+function legacyOAuthLaunchFailure(error: unknown, diagnostic = ''): MCPRemoteOAuthResult {
+  const processErrorCode = (error as NodeJS.ErrnoException | null)?.code;
+  return createMcpRemoteOAuthFailure(
+    classifyMcpRemoteOAuthFailure(diagnostic, { processErrorCode }),
+    processErrorCode === 'ENOENT' ? getCommandNotFoundHelp('npx').message : undefined,
+  );
+}
+
+/** On Windows, bypass the command processor in npx.cmd so OAuth arguments remain intact. */
+function resolveNpxLaunch(searchPath: string): { command: string; args: string[] } | null {
+  if (process.platform !== 'win32') return { command: 'npx', args: [] };
+
+  const directories = searchPath.split(path.delimiter).filter(dir => path.isAbsolute(dir));
+  const node = directories.map(dir => path.join(dir, 'node.exe')).find(candidate => fs.existsSync(candidate));
+  for (const dir of directories) {
+    const executable = path.join(dir, 'npx.exe');
+    if (fs.existsSync(executable)) return { command: executable, args: [] };
+
+    const cli = path.join(dir, 'node_modules', 'npm', 'bin', 'npx-cli.js');
+    if (node && fs.existsSync(cli)) {
+      const adjacentNode = path.join(dir, 'node.exe');
+      return { command: fs.existsSync(adjacentNode) ? adjacentNode : node, args: [cli] };
+    }
+  }
+  return null;
+}
+
 export async function triggerMcpRemoteOAuth(
   configOrUrl: MCPServerConfig | string
 ): Promise<MCPRemoteOAuthResult> {
@@ -367,14 +397,35 @@ export async function triggerMcpRemoteOAuth(
     return triggerNativeOAuth(descriptor);
   }
 
-  return new Promise((resolve) => {
+  const packageSpec = descriptor.userCommandPackage;
+  // Authorize may select a registry version, tag or range. Other package sources
+  // remain available through the saved command itself.
+  if (!packageSpec || !/^mcp-remote(?:@[a-zA-Z0-9._*+~^<>=|'!() \t-]*)?$/.test(packageSpec)) {
+    return createMcpRemoteOAuthFailure({ outcome: 'failed', errorType: 'invalid_config' });
+  }
+
+  const searchPath = getEnhancedPath();
+  const launch = resolveNpxLaunch(searchPath);
+  if (!launch) {
+    return createMcpRemoteOAuthFailure(
+      classifyMcpRemoteOAuthFailure('', { processErrorCode: 'ENOENT' }), getCommandNotFoundHelp('npx').message,
+    );
+  }
+
+  const selected = packageSpec === 'mcp-remote' || packageSpec === 'mcp-remote@'
+    ? 'mcp-remote@0.16.7' : packageSpec;
+  // Use an npm alias so a workspace dependency named mcp-remote cannot satisfy
+  // the request. Keep npm in its original project to honor its registry and auth.
+  const packageOption = `--package=nimbalyst-oauth-helper@npm:${selected}`;
+  return new Promise<MCPRemoteOAuthResult>((resolve) => {
     safeLog('info', '[MCP OAuth] Starting authorization');
 
-    const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-    const child = spawn(npxCommand, ['-y', ...buildMcpRemoteArgs(descriptor)], {
+    const child = spawn(launch.command, [
+      ...launch.args, '-y', packageOption, ...buildMcpRemoteArgs(descriptor),
+    ], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PATH: getEnhancedPath() },
-      shell: process.platform === 'win32'
+      env: { ...process.env, PATH: searchPath },
+      shell: false,
     });
 
     let stderr = '';
@@ -412,11 +463,7 @@ export async function triggerMcpRemoteOAuth(
     });
 
     child.on('error', (error) => {
-      const processErrorCode = (error as NodeJS.ErrnoException).code;
-      finish(createMcpRemoteOAuthFailure(
-        classifyMcpRemoteOAuthFailure(stderr, { processErrorCode }),
-        processErrorCode === 'ENOENT' ? getCommandNotFoundHelp(npxCommand).message : undefined
-      ));
+      finish(legacyOAuthLaunchFailure(error, stderr));
     });
 
     child.on('close', (code) => {
@@ -456,7 +503,7 @@ export async function triggerMcpRemoteOAuth(
         // Keep waiting for the helper's terminal result.
       }
     }, 2000);
-  });
+  }).catch(legacyOAuthLaunchFailure);
 }
 
 async function triggerNativeOAuth(descriptor: MCPRemoteConfigDescriptor): Promise<MCPRemoteOAuthResult> {
