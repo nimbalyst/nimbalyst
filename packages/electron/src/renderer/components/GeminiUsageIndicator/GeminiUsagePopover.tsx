@@ -108,6 +108,7 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
   const weeklyColor = useAtomValue(geminiUsageWeeklyColorAtom);
   const toggleGutterItemHidden = useSetAtom(toggleGutterItemHiddenAtom);
   const [isRefreshing, setIsRefreshing] = React.useState(false);
+  const [authBusy, setAuthBusy] = React.useState(false);
 
   const menu = useFloatingMenu({
     placement: 'right-end',
@@ -131,6 +132,18 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
     }
   };
 
+  const handleQuickAccountAction = async () => {
+    setAuthBusy(true);
+    try {
+      const channel = usage?.account?.email ? 'gemini-auth:switch-account' : 'gemini-auth:login';
+      await window.electronAPI.invoke(channel);
+    } catch {
+      /* best effort */
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
   if (!usage) {
     return null;
   }
@@ -148,7 +161,7 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
         ref={menu.refs.setFloating}
         style={menu.floatingStyles}
         {...menu.getFloatingProps()}
-        className="w-60 bg-nim-secondary border border-nim rounded-lg shadow-lg z-50 overflow-y-auto"
+        className="w-72 max-h-[80vh] bg-nim-secondary border border-nim rounded-lg shadow-lg z-50 overflow-y-auto"
         data-testid="gemini-usage-popover"
       >
         {/* Header */}
@@ -179,11 +192,57 @@ export const GeminiUsagePopover: React.FC<GeminiUsagePopoverProps> = ({
           </div>
         </div>
 
+        {/* Account bar with quick switch / sign-in */}
+        <div
+          className="px-4 py-2 border-b border-nim bg-nim-tertiary/30 flex items-center justify-between gap-2"
+          data-testid="gemini-usage-account-bar"
+        >
+          <div className="min-w-0 flex-1">
+            {usage.account?.email ? (
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-[11px] font-medium text-nim truncate" title={usage.account.email}>
+                  {usage.account.email}
+                </span>
+                {usage.account.planName && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-nim-tertiary text-nim-muted shrink-0">
+                    {usage.account.planName}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <span className="text-[11px] text-nim-muted">
+                {usage.signedOut ? 'Not signed in' : 'Google account'}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={handleQuickAccountAction}
+            disabled={authBusy}
+            className="text-[11px] font-medium text-[var(--nim-primary)] hover:underline shrink-0 disabled:opacity-50"
+            data-testid="gemini-popover-account-action"
+          >
+            {authBusy ? 'Opening…' : usage.account?.email ? 'Switch' : 'Sign in'}
+          </button>
+        </div>
+
         {/* Content */}
         <div className="px-4 py-3">
           {usage.notStarted ? (
             <div className="text-[13px] text-nim-muted">
               {usage.error || 'Gemini usage will appear after your first request.'}
+            </div>
+          ) : usage.signedOut ? (
+            <div className="flex flex-col gap-2.5" data-testid="gemini-usage-signed-out">
+              <div className="text-[12px] text-nim-muted">
+                Sign in with your Google account to view Gemini usage limits.
+              </div>
+              <button
+                onClick={handleQuickAccountAction}
+                disabled={authBusy}
+                className="nim-btn-primary w-full text-xs py-1.5"
+              >
+                {authBusy ? 'Opening browser…' : 'Sign in with Google'}
+              </button>
             </div>
           ) : usage.error ? (
             <div className="text-[13px] text-nim-error">{usage.error}</div>

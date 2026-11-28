@@ -164,4 +164,58 @@ describe('GeminiUsageService hub discovery', () => {
     expect(server.currentEndpoint()).toBe(attached);
     expect(data.available).toBe(false);
   });
+
+  it('detects external account changes, clears enumCache, and notifies subscribers', async () => {
+    const server = AntigravityServerManager.shared();
+    const hub = { httpsPort: 50040, csrf: 'hub-tok', owned: false };
+    vi.spyOn(server, 'findRunningEndpoint').mockResolvedValue(hub);
+    const clearEnumSpy = vi.spyOn(server, 'clearEnumCache');
+    const getSnapshot = vi
+      .spyOn(AntigravityUsageMeter.prototype, 'getSnapshot')
+      .mockResolvedValueOnce({
+        account: { email: 'first@example.com', planName: 'Pro' },
+        models: { M1: { model: 'M1', remainingFraction: 0.8 } },
+        warn: false,
+      })
+      .mockResolvedValueOnce({
+        account: { email: 'second@example.com', planName: 'Ultra' },
+        models: { M1: { model: 'M1', remainingFraction: 0.9 } },
+        warn: false,
+      });
+
+    const listener = vi.fn();
+    const unsubscribe = geminiUsageService.onExternalAccountChange(listener);
+    try {
+      geminiUsageService.setKnownAccountEmail(null);
+      const first = await geminiUsageService.refresh();
+      expect(first.account?.email).toBe('first@example.com');
+      expect(clearEnumSpy).not.toHaveBeenCalled();
+      expect(listener).not.toHaveBeenCalled();
+
+      const second = await geminiUsageService.refresh();
+      expect(second.account?.email).toBe('second@example.com');
+      expect(second.account?.planName).toBe('Ultra');
+      expect(clearEnumSpy).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledExactlyOnceWith('second@example.com');
+      expect(getSnapshot).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+      geminiUsageService.setKnownAccountEmail(null);
+    }
+  });
+
+  it('marks usage as signedOut when the language server reports unauthenticated', async () => {
+    const server = AntigravityServerManager.shared();
+    const hub = { httpsPort: 50041, csrf: 'hub-tok', owned: false };
+    vi.spyOn(server, 'findRunningEndpoint').mockResolvedValue(hub);
+    vi.spyOn(AntigravityUsageMeter.prototype, 'getSnapshot').mockRejectedValueOnce(
+      new Error('Antigravity GetUserStatus HTTP 401: unauthenticated'),
+    );
+
+    const data = await geminiUsageService.refresh();
+
+    expect(data.available).toBe(false);
+    expect(data.signedOut).toBe(true);
+    expect(data.error).toBe('Not signed in with Google');
+  });
 });

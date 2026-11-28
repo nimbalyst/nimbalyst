@@ -229,6 +229,7 @@ import { claudeUsageService } from './services/ClaudeUsageService';
 import { registerCodexUsageHandlers } from './ipc/CodexUsageHandlers';
 import { codexUsageService } from './services/CodexUsageService';
 import { registerGeminiUsageHandlers } from './ipc/GeminiUsageHandlers';
+import { registerGeminiAuthHandlers } from './ipc/GeminiAuthHandlers';
 import { geminiUsageService } from './services/GeminiUsageService';
 import { codexAuthService } from './services/CodexAuthService';
 import { registerExtensionHandlers, getClaudePluginPaths, initializeExtensionFileTypes } from './ipc/ExtensionHandlers';
@@ -1766,6 +1767,7 @@ app.whenReady().then(ownerOnly('app initialisation', async () => {
     registerCodexUsageHandlers();
     codexUsageService.initialize();
     registerGeminiUsageHandlers();
+    registerGeminiAuthHandlers();
     geminiUsageService.initialize();
     registerPermissionHandlers();
     registerGitStatusHandlers();

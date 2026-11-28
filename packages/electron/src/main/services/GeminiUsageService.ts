@@ -38,6 +38,18 @@ function isEndpointGoneError(error: unknown): boolean {
   return error instanceof Error && error.message.includes('ECONNREFUSED');
 }
 
+function isSignedOutError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error ?? '');
+  return /not logged in|unauthenticated|sign in|no auth token/i.test(msg);
+}
+
+export interface GeminiUsageAccount {
+  email: string | null;
+  name: string | null;
+  planName: string | null;
+  tier: string | null;
+}
+
 export interface GeminiUsageData {
   fiveHour: {
     utilization: number; // 0-100 percentage
@@ -47,6 +59,7 @@ export interface GeminiUsageData {
     utilization: number;
     resetsAt: string | null;
   };
+  account?: GeminiUsageAccount;
   credits?: {
     hasCredits: boolean;
     unlimited: boolean;
@@ -62,6 +75,8 @@ export interface GeminiUsageData {
   error?: string;
   /** True when the backend module has not started yet (benign idle state, not an error). */
   notStarted?: boolean;
+  /** True when the Antigravity server is reachable but no Google account is signed in. */
+  signedOut?: boolean;
 }
 
 /**
@@ -94,7 +109,7 @@ interface AntigravityUsageSnapshot {
 
 type GeminiUsageSnapshotResult =
   | { available: true; snapshot: AntigravityUsageSnapshot }
-  | { available: false; error: string; notStarted?: boolean };
+  | { available: false; error: string; notStarted?: boolean; signedOut?: boolean };
 
 const POLL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes before going to sleep
@@ -105,9 +120,27 @@ class GeminiUsageServiceImpl {
   private lastActivityTime: number = 0;
   private isPolling: boolean = false;
   private isSleeping: boolean = true;
+  private lastAccountEmail: string | null = null;
+  private externalAccountListeners = new Set<(email: string) => void>();
 
   initialize(): void {
     logger.main.info('[GeminiUsageService] Initialized (sleeping until activity detected)');
+  }
+
+  /**
+   * Subscribe to account switches detected during usage polling (for example,
+   * when the user switches Google accounts inside Antigravity IDE or `agy`).
+   */
+  onExternalAccountChange(listener: (email: string) => void): () => void {
+    this.externalAccountListeners.add(listener);
+    return () => {
+      this.externalAccountListeners.delete(listener);
+    };
+  }
+
+  /** Record the currently known signed-in email (or null after sign-out). */
+  setKnownAccountEmail(email: string | null): void {
+    this.lastAccountEmail = email && email.trim() ? email.trim() : null;
   }
 
   async recordActivity(): Promise<void> {
@@ -132,6 +165,7 @@ class GeminiUsageServiceImpl {
         const muted = this.makeUnavailable(
           result?.error ?? 'Gemini usage data unavailable',
           result?.notStarted ?? false,
+          Boolean(result?.signedOut),
         );
         this.cachedUsage = muted;
         this.broadcastUpdate();
@@ -206,10 +240,42 @@ class GeminiUsageServiceImpl {
     if (!endpoint) {
       return { available: false, notStarted: true, error: GEMINI_NOT_STARTED_MESSAGE };
     }
-    try {
-      const snapshot = await new AntigravityUsageMeter(server).getSnapshot(endpoint);
+    const readSnapshot = async (ep: NonNullable<typeof endpoint>): Promise<GeminiUsageSnapshotResult> => {
+      const snapshot = await new AntigravityUsageMeter(server).getSnapshot(ep);
+      const nextEmail =
+        typeof snapshot?.account?.email === 'string' && snapshot.account.email.trim()
+          ? snapshot.account.email.trim()
+          : null;
+      if (nextEmail) {
+        if (this.lastAccountEmail && this.lastAccountEmail !== nextEmail) {
+          server.clearEnumCache();
+          for (const listener of this.externalAccountListeners) {
+            try {
+              listener(nextEmail);
+            } catch {
+              /* isolate listener errors */
+            }
+          }
+        }
+        this.lastAccountEmail = nextEmail;
+      }
+      const hasModels = Object.keys(snapshot?.models ?? {}).length > 0;
+      if (!nextEmail && !hasModels) {
+        const authRes = await server.getAuthStatus(ep).catch(() => null);
+        if (authRes && !authRes.authResult?.hasValidAuth) {
+          this.lastAccountEmail = null;
+          return { available: false, signedOut: true, error: 'Not signed in with Google' };
+        }
+      }
       return { available: true, snapshot };
+    };
+    try {
+      return await readSnapshot(endpoint);
     } catch (error) {
+      if (isSignedOutError(error)) {
+        this.lastAccountEmail = null;
+        return { available: false, signedOut: true, error: 'Not signed in with Google' };
+      }
       if (endpoint.owned || !isEndpointGoneError(error)) {
         return {
           available: false,
@@ -220,9 +286,12 @@ class GeminiUsageServiceImpl {
       const retryHub = await server.findRunningEndpoint().catch(() => null);
       if (retryHub) {
         try {
-          const snapshot = await new AntigravityUsageMeter(server).getSnapshot(retryHub);
-          return { available: true, snapshot };
-        } catch {
+          return await readSnapshot(retryHub);
+        } catch (retryError) {
+          if (isSignedOutError(retryError)) {
+            this.lastAccountEmail = null;
+            return { available: false, signedOut: true, error: 'Not signed in with Google' };
+          }
           /* fall through to report the original error */
         }
       }
@@ -233,7 +302,7 @@ class GeminiUsageServiceImpl {
     }
   }
 
-  private makeUnavailable(error: string, notStarted = false): GeminiUsageData {
+  private makeUnavailable(error: string, notStarted = false, signedOut = false): GeminiUsageData {
     return {
       fiveHour: { utilization: 0, resetsAt: null },
       sevenDay: { utilization: 0, resetsAt: null },
@@ -242,6 +311,7 @@ class GeminiUsageServiceImpl {
       lastUpdated: Date.now(),
       error,
       notStarted,
+      signedOut,
     };
   }
 
@@ -291,6 +361,13 @@ class GeminiUsageServiceImpl {
 
     const account = snapshot?.account;
     if (account) {
+      const email = typeof account.email === 'string' && account.email.trim() ? account.email.trim() : null;
+      const name = typeof account.name === 'string' && account.name.trim() ? account.name.trim() : null;
+      const planName = typeof account.planName === 'string' && account.planName.trim() ? account.planName.trim() : null;
+      const tier = typeof account.tier === 'string' && account.tier.trim() ? account.tier.trim() : null;
+      if (email || name || planName || tier) {
+        data.account = { email, name, planName, tier };
+      }
       const balance =
         typeof account.availablePromptCredits === 'number'
           ? account.availablePromptCredits

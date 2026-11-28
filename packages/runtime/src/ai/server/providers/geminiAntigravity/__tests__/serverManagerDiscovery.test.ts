@@ -61,6 +61,56 @@ describe('AntigravityServerManager running hub discovery', () => {
     }
   });
 
+  it('skips Nimbalyst owned standalone child PID and port when discovering daemon hubs', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-daemon-self-'));
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, 'hub_owned_pid.json'),
+        JSON.stringify({ pid: 41000, httpsPort: 51717, csrfToken: 'owned-csrf' }),
+        'utf8',
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, 'hub_owned_port.json'),
+        JSON.stringify({ pid: 41001, httpsPort: 51718, csrfToken: 'owned-port-csrf' }),
+        'utf8',
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, 'hub_external.json'),
+        JSON.stringify({ pid: 42000, httpsPort: 63065, csrfToken: 'ide-csrf' }),
+        'utf8',
+      );
+
+      const manager = freshManager();
+      (manager as unknown as { child: { pid: number; exitCode: number | null } }).child = {
+        pid: 41000,
+        exitCode: null,
+      };
+      (manager as unknown as { endpoint: AntigravityEndpoint }).endpoint = {
+        httpsPort: 51718,
+        csrf: 'owned-port-csrf',
+        owned: true,
+      };
+
+      const tm = testable(manager);
+      vi.spyOn(tm, 'isPidAlive').mockReturnValue(true);
+      const healthy = vi.spyOn(tm, 'isHealthy').mockResolvedValue(true);
+
+      await expect(tm.discoverDaemonHub(tmpDir)).resolves.toEqual({
+        httpsPort: 63065,
+        csrf: 'ide-csrf',
+        owned: false,
+      });
+      expect(healthy).toHaveBeenCalledTimes(1);
+      expect(healthy).toHaveBeenCalledWith({
+        httpsPort: 63065,
+        csrf: 'ide-csrf',
+        owned: false,
+      });
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   // The hub_*.json format has not been checked against every Antigravity
   // build, so a missing directory or a file in an unexpected shape must fall
   // through to the ps/lsof discovery rather than end discovery.
