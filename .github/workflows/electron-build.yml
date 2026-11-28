@@ -75,7 +75,17 @@ jobs:
           - os: macos-latest
             platform: mac
             arch: x64
-          - os: ubuntu-latest
+          # Pinned, not ubuntu-latest: node-pty is compiled from source on this
+          # runner (see "Force node-pty source rebuild for Linux"), so the
+          # shipped pty.node links against the runner image's glibc. When
+          # ubuntu-latest moved to ubuntu-26.04 (from v0.82.4), pty.node began
+          # to need GLIBC_2.42 (glibc 2.42 gave cfsetispeed/cfsetospeed new
+          # symbol versions) and the app stopped starting on Ubuntu 24.04,
+          # Debian 12, Mint 22 and anything older (#1949). Built on
+          # ubuntu-24.04, as v0.82.3 and earlier were, it needs 2.34.
+          # "Check Linux binaries against the glibc floor" fails the build if
+          # a runner change ever breaks that again.
+          - os: ubuntu-24.04
             platform: linux
             arch: x64
           - os: windows-latest
@@ -507,6 +517,44 @@ jobs:
             pnpm run build:linux --publish never
           fi
         shell: bash
+
+      # Every native binary the Linux build ships must load on the oldest glibc
+      # it supports, or the app dies before its first window: node-pty is
+      # loaded while the main process starts, so a pty.node that cannot load
+      # leaves a windowless process behind (#1949). Fail the build instead of
+      # shipping that. 2.34 is what an ubuntu-24.04 pty.node needs, and the
+      # most any other shipped binary needs (better-sqlite3, codex-acp), so it
+      # keeps Ubuntu 22.04, Debian 12 and RHEL 9 starting. Raise it only on
+      # purpose.
+      - name: Check Linux binaries against the glibc floor
+        if: matrix.platform == 'linux'
+        shell: bash
+        working-directory: packages/electron
+        env:
+          MAX_GLIBC: '2.34'
+        run: |
+          dir=release/linux-unpacked
+          if [ ! -d "$dir" ]; then
+            echo "::error::$dir not found, so the Linux binaries cannot be checked"
+            ls -la release
+            exit 1
+          fi
+          checked=0
+          bad=0
+          while IFS= read -r -d '' f; do
+            [ "$(head -c 4 "$f" | tr -d '\0')" = $'\x7fELF' ] || continue
+            checked=$((checked + 1))
+            need=$(objdump -T "$f" 2>/dev/null | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/^GLIBC_//' | sort -uV | tail -n 1 || true)
+            if [ -n "$need" ] && [ "$(printf '%s\n%s\n' "$need" "$MAX_GLIBC" | sort -V | tail -n 1)" != "$MAX_GLIBC" ]; then
+              echo "::error::${f#"$dir"/} needs GLIBC_$need, newer than the $MAX_GLIBC floor"
+              bad=$((bad + 1))
+            fi
+          done < <(find "$dir" -type f -print0)
+          if [ "$bad" -gt 0 ]; then
+            echo "$bad of $checked ELF files need a newer glibc than $MAX_GLIBC"
+            exit 1
+          fi
+          echo "All $checked ELF files load on glibc $MAX_GLIBC"
 
       - name: Verify Windows payload and installer signatures
         if: matrix.platform == 'win' && matrix.arch != 'arm64' && env.IS_RELEASE == 'true'
