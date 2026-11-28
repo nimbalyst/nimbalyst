@@ -451,6 +451,16 @@ export class AntigravityServerManager {
     return data.userStatus ?? {};
   }
 
+  /** Raw RetrieveUserQuotaSummary (preferred 5-hour / weekly quota pools). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async getUserQuotaSummary(ep?: AntigravityEndpoint): Promise<any> {
+    const endpoint = ep ?? (await this.ensureRunning());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = await this.rpc<{ response?: any; summary?: any; groups?: any[] }>(
+      'RetrieveUserQuotaSummary', {}, endpoint, 15_000);
+    return data?.response ?? data?.summary ?? data ?? {};
+  }
+
   // ---- mode A: discover a running hub ------------------------------------
 
   private async discoverRunningHub(): Promise<AntigravityEndpoint | null> {

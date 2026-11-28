@@ -12,15 +12,33 @@ import { formatResetTime } from './claudeUsageAtoms';
 
 export { formatResetTime };
 
+export interface GeminiQuotaWindow {
+  utilization: number; // 0-100 percentage
+  resetsAt: string | null; // ISO timestamp
+}
+
+export interface GeminiQuotaGroup {
+  displayName: string;
+  description: string | null;
+  fiveHour: GeminiQuotaWindow;
+  sevenDay: GeminiQuotaWindow;
+  hasFiveHour: boolean;
+  hasSevenDay: boolean;
+}
+
+export interface GeminiUsageAccount {
+  email: string | null;
+  name: string | null;
+  planName: string | null;
+  tier: string | null;
+}
+
 export interface GeminiUsageData {
-  fiveHour: {
-    utilization: number; // 0-100 percentage
-    resetsAt: string | null; // ISO timestamp
-  };
-  sevenDay: {
-    utilization: number;
-    resetsAt: string | null;
-  };
+  fiveHour: GeminiQuotaWindow;
+  sevenDay: GeminiQuotaWindow;
+  primaryGroupName?: string;
+  quotaGroups?: GeminiQuotaGroup[];
+  account?: GeminiUsageAccount;
   credits?: {
     hasCredits: boolean;
     unlimited: boolean;
@@ -32,6 +50,9 @@ export interface GeminiUsageData {
   };
   limitsAvailable?: boolean;
   available?: boolean;
+  windowSource?: 'summary' | 'models';
+  hasFiveHour?: boolean;
+  hasSevenDay?: boolean;
   lastUpdated: number; // Unix timestamp
   error?: string;
   /** True when the backend module has not started yet (benign idle state, not an error). */
@@ -55,12 +76,14 @@ export const geminiUsageAvailableAtom = atom((get) => {
   if (!usage) return false;
   // Keep the indicator visible for load failures so users can see the reason in tooltip/popover.
   if (usage.error) return true;
-  // Show if we have actual usage data (utilization or reset times), or credits info.
+  // Show if we have actual usage data (utilization, reset times, or summary limits), or credits info.
   const hasUsageData =
     usage.fiveHour.utilization > 0 ||
     usage.sevenDay.utilization > 0 ||
     Boolean(usage.fiveHour.resetsAt) ||
-    Boolean(usage.sevenDay.resetsAt);
+    Boolean(usage.sevenDay.resetsAt) ||
+    Boolean(usage.limitsAvailable) ||
+    Boolean(usage.account?.email);
   const hasCreditsData = Boolean(usage.credits?.hasCredits) || usage.credits?.balance !== null;
   const hasTokenUsage = (usage.tokenUsage?.totalTokens ?? 0) > 0;
   return hasUsageData || hasCreditsData || hasTokenUsage;
