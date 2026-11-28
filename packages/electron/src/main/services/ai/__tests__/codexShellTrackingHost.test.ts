@@ -7,6 +7,7 @@ const fixture = vi.hoisted(() => ({
   observed: undefined as undefined | ((event: string, file: string, at: number) => void),
   health: undefined as undefined | ((health: { state: string; generation: number; reason?: string }) => void),
   initialState: 'watching',
+  initialReason: undefined as string | undefined,
 }));
 // Hoisted so the mock factory below can read it without a TDZ hazard.
 const packageRoot = vi.hoisted(() => ({
@@ -23,7 +24,7 @@ vi.mock('../../../file/WorkspaceEventBus', () => ({
   subscribe: async (_workspace: string, _id: string, callbacks: any) => {
     fixture.observed = callbacks.onObserved;
     fixture.health = callbacks.onHealthChanged;
-    callbacks.onHealthChanged({ state: fixture.initialState, generation: 1 });
+    callbacks.onHealthChanged({ state: fixture.initialState, generation: 1, ...(fixture.initialReason && { reason: fixture.initialReason }) });
   },
   unsubscribe: vi.fn(), getSubscriberIds: (workspace: string) => ['shell-hooks:' + workspace], drainWorkspaceEvents: async () => {},
 }));
@@ -47,6 +48,7 @@ afterEach(async () => {
   await shellTrackingCoverage.flush(['host-test']);
   vi.restoreAllMocks();
   fixture.initialState = 'watching';
+  fixture.initialReason = undefined;
 });
 
 it('fences foreign identity through the executable hook and loopback host without a coverage fault', async () => {
@@ -117,4 +119,45 @@ it('accepts a watcher still running its first scan and treats only ready as reco
   fixture.health!({ state: 'watching', generation: 3 });
   expect(recovered).toHaveBeenCalledExactlyOnceWith('/scanning-workspace');
   await shellTrackingCoverage.flush(['scan-test']);
+});
+
+it('N2: registers during a backlog overflow episode and abstains until the watcher is watching again', async () => {
+  // The bus publishes this for the whole episode; the handle is kept and still delivers events.
+  fixture.initialState = 'recovering';
+  fixture.initialReason = 'event_queue_overflow';
+  const register = vi.spyOn(shellFileAttribution, 'register');
+  registration = await prepareShellTracking('overflow-test', '/overflow-workspace');
+  expect(registration!.env.NIMBALYST_SHELL_HOOK_URL).toMatch(/^http:/);
+  const generation = await register.mock.results[0].value;
+
+  await shellFileAttribution.pre(generation, 'during-episode', 'Bash');
+  let [coverage] = await shellTrackingCoverage.readMany(['overflow-test']);
+  expect(coverage.reasons).toEqual({ watcherLoss: 1 });
+
+  fixture.health!({ state: 'watching', generation: 1 });
+  await shellFileAttribution.pre(generation, 'after-episode', 'Bash');
+  [coverage] = await shellTrackingCoverage.readMany(['overflow-test']);
+  expect(coverage.reasons).toEqual({ watcherLoss: 1 });
+  expect(coverage.observation).toBe('watching');
+  await shellTrackingCoverage.flush(['overflow-test']);
+});
+
+it('N2: a registration made during an episode that ends in a native failure recovers when the replacement is watching', async () => {
+  fixture.initialState = 'recovering';
+  fixture.initialReason = 'event_queue_overflow';
+  registration = await prepareShellTracking('overflow-failure-test', '/overflow-failure-workspace');
+  const recovered = vi.spyOn(shellFileAttribution, 'watcherRecovered');
+  fixture.health!({ state: 'recovering', generation: 2, reason: 'EMFILE' });
+  fixture.health!({ state: 'starting', generation: 3 });
+  expect(recovered).not.toHaveBeenCalled();
+  fixture.health!({ state: 'watching', generation: 3 });
+  expect(recovered).toHaveBeenCalledExactlyOnceWith('/overflow-failure-workspace');
+  await shellTrackingCoverage.flush(['overflow-failure-test']);
+});
+
+it('N2: still refuses registration while a failed watcher waits to restart', async () => {
+  fixture.initialState = 'recovering';
+  fixture.initialReason = 'EMFILE';
+  await expect(prepareShellTracking('failed-test', '/failed-workspace')).rejects.toThrow('Workspace watcher unavailable');
+  registration = undefined;
 });

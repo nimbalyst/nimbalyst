@@ -1,6 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
-import { NativeFileEventQueue } from "./NativeFileEventQueue";
+import {
+  NativeFileEventQueue,
+  type NativeFileEventOverflow,
+} from "./NativeFileEventQueue";
 import chokidar, { type FSWatcher } from "chokidar";
 
 export const supportsRecursiveWatch =
@@ -13,14 +16,16 @@ export function drainNativeFileEvents(handle: NativeWatchHandle): Promise<void> 
 }
 
 /**
- * Native failures and a bounded processing backlog remain recoverable.
+ * A native failure calls `fail`, which replaces the handle. A bounded
+ * processing backlog that overflows reports through `fail`'s overflow methods
+ * and keeps the handle.
  * `ready` fires once the handle covers the tree: after chokidar's initial scan
  * on Linux, and immediately for recursive fs.watch, which has no scan.
  */
 export function createWorkspaceNativeWatcher(
   root: string,
   current: () => boolean,
-  fail: (reason: string) => void,
+  fail: ((reason: string) => void) & NativeFileEventOverflow,
   ignored: (filePath: string) => boolean,
   deliver: (
     type: "change" | "rename" | "add" | "unlink",

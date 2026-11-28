@@ -1,17 +1,26 @@
 export type NativeFileEvent = 'change' | 'rename' | 'add' | 'unlink';
 
+/** A dropped backlog costs its events, not the native handle that produced them. */
+export interface NativeFileEventOverflow {
+  /** The pending backlog was discarded; its `dropped` events are lost. */
+  overflowed(dropped: number): void;
+  /** Every event that arrived after the last overflow has been delivered. */
+  resynced(): void;
+}
+
 /** Bound pending work, not total event volume: checkouts are ordinary traffic. */
 export class NativeFileEventQueue {
   private readonly pending = new Map<string, { type: NativeFileEvent; file: string; at: number }>();
   private scheduled = false;
   private stopped = false;
+  private overflowing = false;
   private delivered = 0;
   private batchStarted = performance.now();
   private waiters: Array<() => void> = [];
   constructor(
     private readonly current: () => boolean,
     private readonly deliver: (type: NativeFileEvent, file: string, at: number) => void,
-    private readonly fail: (reason: string) => void,
+    private readonly overflow: NativeFileEventOverflow,
   ) {}
 
   push(type: NativeFileEvent, file: string): void {
@@ -30,9 +39,12 @@ export class NativeFileEventQueue {
         event.at = previous.at;
         this.pending.delete(key);
       } else if (this.pending.size >= 16_384) {
-        this.stop();
-        this.fail('event_queue_overflow');
-        return;
+        // Drop the backlog but keep the handle; this event starts the next one.
+        const dropped = this.pending.size;
+        this.pending.clear();
+        this.overflowing = true;
+        this.resolveWaiters();
+        this.overflow.overflowed(dropped);
       }
       this.pending.set(key, event);
     }
@@ -53,8 +65,12 @@ export class NativeFileEventQueue {
         this.deliver(event.type, event.file, event.at);
         if (!this.current()) { this.stop(); break; }
       }
-      if (this.pending.size) this.schedule();
-      else this.resolveWaiters();
+      if (this.pending.size) { this.schedule(); return; }
+      this.resolveWaiters();
+      if (this.overflowing && !this.stopped) {
+        this.overflowing = false;
+        this.overflow.resynced();
+      }
     });
   }
   drain(): Promise<void> {

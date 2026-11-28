@@ -52,6 +52,8 @@ export const shellFileAttribution = new ShellFileAttribution({
     const id = 'shell-hooks:' + workspace;
     // A watcher still running its first scan (`starting` once subscribe
     // returns) already delivers events; it becomes `watching` when ready.
+    // So does one in a backlog overflow episode, which keeps its handle;
+    // windows opened before it is `watching` again abstain.
     let available = false;
     await subscribe(workspace, id, {
       onAdd: () => {},
@@ -59,7 +61,8 @@ export const shellFileAttribution = new ShellFileAttribution({
       onUnlink: () => {},
       onObserved: (_event, file, at) => changed(file, at),
       onHealthChanged: (health) => {
-        available = health.state === 'watching' || health.state === 'starting';
+        available = health.state === 'watching' || health.state === 'starting' ||
+          (health.state === 'recovering' && health.reason === 'event_queue_overflow');
         if (health.state === 'recovering') shellFileAttribution.watcherLost(workspace);
         if (health.state === 'watching') shellFileAttribution.watcherRecovered(workspace);
       },
