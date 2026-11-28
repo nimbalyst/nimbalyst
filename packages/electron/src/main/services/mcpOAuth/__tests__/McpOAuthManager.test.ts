@@ -244,13 +244,46 @@ describe('McpOAuthManager negative security regressions', () => {
     const first = manager.authorize(descriptor, { timeoutMs: 5000 });
     // Start the second sign-in only once the first is waiting in the browser.
     // A fixed sleep let a slow first flow be cancelled during discovery, so
-    // the second flow took the parked browser and the test hung.
-    await firstReachedBrowser;
+    // the second flow took the parked browser and the test hung. A first flow
+    // that ends before the browser fails here, on its own result.
+    expect(await Promise.race([firstReachedBrowser.then(() => 'at browser'), first])).toBe('at browser');
     const second = manager.authorize(descriptor, { timeoutMs: 5000 });
     releaseFirst();
 
     expect(await first).toMatchObject({ ok: false, errorType: 'cancelled' });
     expect(await second).toEqual({ ok: true });
+    expect(as1.tokenRequests()).toHaveLength(1);
+  });
+
+  it('N9b: a second sign-in during the first one\'s discovery cancels it before it registers or opens a browser', async () => {
+    let firstInDiscovery: () => void = () => undefined;
+    const reachedDiscovery = new Promise<void>((resolve) => { firstInDiscovery = resolve; });
+    let releaseDiscovery: () => void = () => undefined;
+    const discoveryGate = new Promise<void>((resolve) => { releaseDiscovery = resolve; });
+    let held = false;
+    // The first request any sign-in makes is discovery's credential-free probe.
+    const fetchFn = async (input: string | URL, init?: RequestInit) => {
+      if (!held) {
+        held = true;
+        firstInDiscovery();
+        await discoveryGate;
+      }
+      return fetch(input, init);
+    };
+    const browser = fakeBrowser();
+    const store = new McpOAuthCredentialStore(path.join(tempRoot, 'store'), codec);
+    const manager = new McpOAuthManager({ store, fetchFn, openExternal: browser.openExternal, legacyAuthDir: () => tempRoot, platform: 'darwin' });
+    const descriptor = descriptorFor(rs.mcpUrl);
+
+    const first = manager.authorize(descriptor, { timeoutMs: 5000 });
+    expect(await Promise.race([reachedDiscovery.then(() => 'in discovery'), first])).toBe('in discovery');
+    const second = manager.authorize(descriptor, { timeoutMs: 5000 });
+    releaseDiscovery();
+
+    expect(await first).toMatchObject({ ok: false, errorType: 'cancelled' });
+    expect(await second).toEqual({ ok: true });
+    expect(browser.opened).toHaveLength(1);
+    expect(as1.requests.filter((r) => r.path === '/register')).toHaveLength(1);
     expect(as1.tokenRequests()).toHaveLength(1);
   });
 
@@ -390,10 +423,13 @@ describe('McpOAuthManager negative security regressions', () => {
     const pending = manager.getAccessToken(key, { rejectedToken: first.accessToken });
     // Revoke once the server has accepted the refresh, and answer the refresh
     // only after the revoke is done, so it always lands after the revoke.
-    await vi.waitFor(() => {
-      expect(as1.tokenRequests().some((r) => r.params.get('grant_type') === 'refresh_token')).toBe(true);
-    }, { timeout: 10_000, interval: 5 });
-    const revoked = await manager.revoke(descriptor);
+    expect(await Promise.race([refreshAccepted(as1).then(() => 'held'), pending])).toBe('held');
+    const revoking = manager.revoke(descriptor);
+    // If the wait below fails, a revoke still running after cleanup must not
+    // add unhandled errors to that failure; `await revoking` still throws.
+    revoking.catch(() => undefined);
+    await revocationReached(as1);
+    const revoked = await revoking;
     releaseRefresh();
     const late = await pending;
 
@@ -403,6 +439,37 @@ describe('McpOAuthManager negative security regressions', () => {
     // Both the original and the late refresh's tokens were revoked.
     const lateRefresh = as1.tokenRequests().filter((r) => r.params.get('grant_type') === 'refresh_token');
     expect(lateRefresh).toHaveLength(1);
+    expect(as1.revoked.length).toBeGreaterThanOrEqual(4);
+    expect(as1.validAccessTokens.size).toBe(0);
+  });
+
+  it('N17b: revoke ends local access before it asks the provider, so a refresh landing during that request is discarded', async () => {
+    const descriptor = descriptorFor(rs.mcpUrl);
+    const { manager } = await signIn(descriptor);
+    const key = manager.bindingKeyFor(descriptor);
+    const first = await manager.getAccessToken(key);
+    if (!first.ok) throw new Error('expected token');
+    let releaseRefresh: () => void = () => undefined;
+    as1.options.refreshHold = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+    let releaseRevoke: () => void = () => undefined;
+
+    const pending = manager.getAccessToken(key, { rejectedToken: first.accessToken });
+    expect(await Promise.race([refreshAccepted(as1).then(() => 'held'), pending])).toBe('held');
+    as1.options.revokeHold = new Promise<void>((resolve) => { releaseRevoke = resolve; });
+    const revoking = manager.revoke(descriptor);
+    revoking.catch(() => undefined);
+    await revocationReached(as1);
+    // The provider holds revoke()'s first request, and only that one. The
+    // refresh lands now, while revoke() still waits for the provider.
+    as1.options.revokeHold = undefined;
+    releaseRefresh();
+    const late = await pending;
+    releaseRevoke();
+    const revoked = await revoking;
+
+    expect(late).toEqual({ ok: false, errorType: 'unauthorized' });
+    expect(revoked).toMatchObject({ success: true, provider: 'revoked' });
+    expect(await manager.getAccessToken(key)).toEqual({ ok: false, errorType: 'unauthorized' });
     expect(as1.revoked.length).toBeGreaterThanOrEqual(4);
     expect(as1.validAccessTokens.size).toBe(0);
   });
@@ -434,6 +501,24 @@ describe('McpOAuthManager negative security regressions', () => {
     expect(await afterExpiry.manager.authorize(descriptor, { timeoutMs: 5000 })).toEqual({ ok: true });
   });
 });
+
+/** Resolves once `server` has accepted a refresh grant, which `refreshHold` then holds. */
+function refreshAccepted(server: FakeAuthorizationServer): Promise<void> {
+  return vi.waitFor(() => {
+    expect(server.tokenRequests().some((r) => r.params.get('grant_type') === 'refresh_token')).toBe(true);
+  }, { timeout: 10_000, interval: 5 });
+}
+
+/**
+ * Resolves once `server` has a revocation request. revoke() sends it while a
+ * refresh is still held, so a revoke that waits for that refresh, and would
+ * never finish, fails here by name rather than at the test timeout.
+ */
+function revocationReached(server: FakeAuthorizationServer): Promise<void> {
+  return vi.waitFor(() => {
+    expect(server.requests.some((r) => r.path === '/revoke'), 'revoke() asks the provider without waiting for the refresh in flight').toBe(true);
+  }, { timeout: 5_000, interval: 5 });
+}
 
 async function freePort(): Promise<number> {
   const blocker = await occupyPort();

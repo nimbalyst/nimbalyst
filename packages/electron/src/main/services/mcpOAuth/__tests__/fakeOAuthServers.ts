@@ -34,8 +34,10 @@ export interface FakeAuthorizationServer {
     sendIss: boolean | string;
     tokenEndpointRedirect?: string;
     refreshError?: string;
-    /** Hold an accepted refresh's response until this settles. */
+    /** Hold an accepted refresh's response until this resolves. */
     refreshHold?: Promise<void>;
+    /** Hold each revocation request that arrives while this is set, until it resolves. */
+    revokeHold?: Promise<void>;
     registrationError?: string;
     clientSecret?: string;
   };
@@ -213,6 +215,12 @@ export async function startFakeAuthorizationServer(): Promise<FakeAuthorizationS
       return;
     }
     if (url.pathname === '/revoke' && req.method === 'POST') {
+      // Read in the turn that records the request, so clearing the option
+      // once the request is seen does not release it.
+      const hold = fake.options.revokeHold;
+      if (hold) {
+        await hold;
+      }
       const token = params.get('token');
       if (token) {
         revoked.push(token);
