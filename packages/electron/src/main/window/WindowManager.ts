@@ -33,6 +33,7 @@ import { addNimAssetRoot } from '../protocols/nimAssetProtocol';
 import { addNimPreviewWorkspaceRoot } from '../protocols/nimPreviewProtocol';
 import { scheduleAttachmentStagingCleanup } from '../services/attachments/attachmentStagingCleanup';
 import { windows, windowStates, resolveDocumentServicePath, getWindowIdForWindow } from './windowState';
+import { applyUiScale } from '../services/UiScale';
 import {
     matchWorkspaceWindow,
     type WorkspaceWindowCandidate,
@@ -303,6 +304,7 @@ export function createWindow(
 
         // Store window and initial state
         windows.set(windowId, window);
+        window.webContents.once('did-finish-load', () => applyUiScale(window));
         windowStates.set(windowId, {
             mode: isWorkspaceMode ? 'workspace' : 'document',
             filePath: null,

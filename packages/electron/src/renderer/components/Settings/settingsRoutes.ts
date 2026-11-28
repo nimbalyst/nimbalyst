@@ -4,6 +4,7 @@ export type ApplicationSettingsCategory =
   | 'provider-credentials'
   | 'notifications'
   | 'themes'
+  | 'fonts'
   | 'voice-mode'
   | 'dictation'
   | 'advanced'
@@ -149,6 +150,7 @@ const teamsVisible = ({ teamsConfigured }: SettingsAvailabilityContext) => teams
 const builtinSettingsRouteDefinitions: readonly Omit<BuiltinSettingsRoute, 'source'>[] = [
   { id: 'notifications', scope: 'application', group: 'Application', label: 'Notifications', icon: 'notifications' },
   { id: 'themes', scope: 'application', group: 'Application', label: 'Themes', icon: 'palette' },
+  { id: 'fonts', scope: 'application', group: 'Application', label: 'Fonts', icon: 'text_fields' },
   { id: 'dictation', scope: 'application', group: 'Application', label: 'Dictation', icon: 'keyboard_voice' },
   { id: 'voice-mode', scope: 'application', group: 'Application', label: 'Voice Mode', icon: 'mic', isAlpha: true },
   { id: 'agent-features', scope: 'application', group: 'Application', label: 'Agent Features', icon: 'science', isAlpha: true },

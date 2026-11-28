@@ -20,6 +20,7 @@ export { MonacoEditor } from './MonacoEditor';
 export type { MonacoEditorProps, MonacoEditorConfig, MonacoEditorCollabConfig } from './MonacoEditor';
 
 export { MonacoCodeEditor } from './MonacoCodeEditor';
+export { CODE_FONT_CHANGED_EVENT } from './codeFont';
 export type { MonacoCodeEditorProps, MonacoDiffModeConfig } from './MonacoCodeEditor';
 
 export { getMonacoTheme, getMonacoLanguage, toMonacoExtensionThemeName } from './monacoUtils';

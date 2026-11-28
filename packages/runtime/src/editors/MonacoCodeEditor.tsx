@@ -24,6 +24,7 @@ import type { editor as MonacoEditorType, Selection } from 'monaco-editor';
 // through the barrel.
 import type { Theme as ConfigTheme } from '../editor/EditorConfig';
 import { getMonacoTheme, getMonacoLanguage } from './monacoUtils';
+import { useCodeFont } from './codeFont';
 import './MonacoCodeEditor.css';
 
 // CSS class for unfocused selection highlight
@@ -83,6 +84,7 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
   onEditorReady,
   onDiffChangeCountUpdate,
 }) => {
+  const { fontFamily, fontSize } = useCodeFont();
   const editorRef = useRef<MonacoEditorType.IStandaloneCodeEditor | null>(null);
   const diffEditorRef = useRef<MonacoEditorType.IStandaloneDiffEditor | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
@@ -502,8 +504,8 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
           onMount={handleDiffEditorMount}
           options={{
             automaticLayout: true,
-            fontSize: 14,
-            fontFamily: "'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace",
+            fontSize,
+            fontFamily,
             lineNumbers: 'on',
             minimap: {
               enabled: true,
@@ -529,8 +531,8 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
           onMount={handleEditorMount}
           options={{
             automaticLayout: true,
-            fontSize: 14,
-            fontFamily: "'SF Mono', 'Monaco', 'Menlo', 'Consolas', monospace",
+            fontSize,
+            fontFamily,
             lineNumbers: 'on',
             minimap: {
               enabled: true,
