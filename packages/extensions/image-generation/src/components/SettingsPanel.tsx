@@ -11,11 +11,16 @@ import { AVAILABLE_MODELS, DEFAULT_MODEL, type GeminiImageModel } from '../types
 
 // Storage keys (must match ImageProjectEditor)
 const GOOGLE_AI_KEY_STORAGE_KEY = 'google_ai_api_key';
+const MINIMAX_KEY_STORAGE_KEY = 'minimax_api_key';
+const SELECTED_PROVIDER_STORAGE_KEY = 'selected_provider';
 const SELECTED_MODEL_STORAGE_KEY = 'selected_model';
 
 export function ImageGenerationSettings({ storage, theme }: SettingsPanelProps) {
   const isDark = theme === 'dark' || theme === 'crystal-dark';
   const [apiKey, setApiKey] = useState('');
+  const [minimaxKey, setMinimaxKey] = useState('');
+  const [hasMiniMaxKey, setHasMiniMaxKey] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState<'gemini' | 'minimax'>('gemini');
   const [hasStoredKey, setHasStoredKey] = useState(false);
   const [selectedModel, setSelectedModel] = useState<GeminiImageModel>(DEFAULT_MODEL);
   const [isLoading, setIsLoading] = useState(true);
@@ -32,6 +37,11 @@ export function ImageGenerationSettings({ storage, theme }: SettingsPanelProps) 
           setApiKey('');
           setHasStoredKey(true);
         }
+
+        const storedMiniMaxKey = await storage.getSecret(MINIMAX_KEY_STORAGE_KEY);
+        if (storedMiniMaxKey) setHasMiniMaxKey(true);
+        const storedProvider = await storage.get(SELECTED_PROVIDER_STORAGE_KEY);
+        if (storedProvider === 'minimax') setSelectedProvider('minimax');
 
         // Load selected model
         const storedModel = await storage.get(SELECTED_MODEL_STORAGE_KEY);
@@ -67,6 +77,20 @@ export function ImageGenerationSettings({ storage, theme }: SettingsPanelProps) 
     } finally {
       setIsSaving(false);
     }
+  };
+
+
+  const handleMiniMaxSave = async () => {
+    if (!minimaxKey.trim()) { setMessage({ type: 'error', text: 'Please enter a MiniMax API key' }); return; }
+    setIsSaving(true); setMessage(null);
+    try { await storage.setSecret(MINIMAX_KEY_STORAGE_KEY, minimaxKey.trim()); setHasMiniMaxKey(true); setMinimaxKey(''); setMessage({ type: 'success', text: 'MiniMax API key saved successfully' }); }
+    catch { setMessage({ type: 'error', text: 'Failed to save MiniMax API key' }); }
+    finally { setIsSaving(false); }
+  };
+  const handleProviderChange = async (provider: 'gemini' | 'minimax') => {
+    setSelectedProvider(provider);
+    await storage.set(SELECTED_PROVIDER_STORAGE_KEY, provider);
+    setMessage({ type: 'success', text: `${provider === 'minimax' ? 'MiniMax' : 'Google'} selected` });
   };
 
   const handleClear = async () => {
@@ -167,6 +191,21 @@ export function ImageGenerationSettings({ storage, theme }: SettingsPanelProps) 
           {message.text}
         </div>
       )}
+
+
+      <div className="mt-6 pt-4 border-t border-nim">
+        <h3 className="m-0 mb-2 text-base font-semibold">MiniMax API Key</h3>
+        <p className="m-0 mb-3 text-[13px] text-nim-muted leading-normal">Use MiniMax image-01 with global or China routing.</p>
+        {hasMiniMaxKey && <div className="px-3 py-2 mb-3 bg-[rgba(34,197,94,0.1)] border border-nim-success rounded-md text-[13px] text-nim-success">✓ MiniMax API key is configured</div>}
+        <div className="flex gap-2 mb-3">
+          <input type="password" value={minimaxKey} onChange={(e) => setMinimaxKey(e.target.value)} placeholder={hasMiniMaxKey ? 'Enter new key to replace...' : 'Enter your MiniMax API key'} className="flex-1 px-3 py-2 rounded-md border border-nim bg-nim text-nim text-sm" />
+          <button onClick={handleMiniMaxSave} disabled={isSaving || !minimaxKey.trim()} className="px-4 py-2 rounded-md border-none font-medium text-sm bg-nim-primary text-nim-on-primary">Save</button>
+        </div>
+        <div className="flex gap-4 text-sm">
+          <label><input type="radio" name="provider" checked={selectedProvider === 'gemini'} onChange={() => handleProviderChange('gemini')} /> Google</label>
+          <label><input type="radio" name="provider" checked={selectedProvider === 'minimax'} onChange={() => handleProviderChange('minimax')} /> MiniMax</label>
+        </div>
+      </div>
 
       {/* Model Selection */}
       <div className="mt-6 pt-4 border-t border-nim">

@@ -13,6 +13,7 @@ import './styles.css';
 import { ImageProjectEditor } from './components/ImageProjectEditor';
 import { ImageGenerationSettings } from './components/SettingsPanel';
 import { generateImageTool } from './mcp/generateImageTool';
+import { minimaxImageProvider } from './providers/minimax';
 
 // Export types for consumers
 export type {
@@ -63,3 +64,6 @@ export const settingsPanel = {
  * These enable the coding agent to generate images through conversation.
  */
 export const aiTools = [generateImageTool];
+
+/** Providers available to the image editor and host integrations. */
+export const imageProviders = { gemini: 'nano-banana', minimax: minimaxImageProvider };
