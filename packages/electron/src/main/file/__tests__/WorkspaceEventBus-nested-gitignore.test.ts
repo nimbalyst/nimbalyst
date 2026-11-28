@@ -8,6 +8,10 @@
  * These tests mock fs.watch (so events can be fired synthetically) but use
  * the real filesystem and real `ignore` package, so on-disk .git and .gitignore
  * files drive the behavior end-to-end.
+ *
+ * A backlog overflow keeps the native handle but loses the events it dropped,
+ * which can include a .gitignore change; the rules on disk apply once the
+ * overflow episode ends.
  */
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
@@ -73,6 +77,7 @@ import {
   drainWorkspaceEvents,
 } from '../WorkspaceEventBus';
 import type { WorkspaceEventListener } from '../WorkspaceEventBus';
+import type { FileWatchHealth } from '../../../shared/fileWatchHealth';
 
 function createListener(): WorkspaceEventListener & {
   changes: Array<{ path: string; type: string; bypassed?: boolean }>;
@@ -223,5 +228,152 @@ describe('WorkspaceEventBus nested-repo .gitignore (issue #207)', () => {
       true,
     );
     unsubscribe(layout.workspace, 'sub-1');
+  });
+});
+
+describe('WorkspaceEventBus .gitignore rules after a backlog overflow', () => {
+  let cleanup: () => void;
+
+  beforeEach(() => {
+    mockWatcherCallbacks.length = 0;
+    mockFsWatch.mockClear();
+    resetBus();
+  });
+
+  afterEach(() => {
+    resetBus();
+    cleanup();
+  });
+
+  afterAll(() => {
+    Object.defineProperty(process, 'platform', { value: originalPlatform, writable: true });
+  });
+
+  /** A recording listener whose `recovered` resolves at the first `watching` after a `recovering`. */
+  function episodeListener() {
+    const listener = createListener();
+    const states: FileWatchHealth[] = [];
+    let resolve!: () => void;
+    const recovered = new Promise<void>(done => { resolve = done; });
+    listener.onHealthChanged = (health) => {
+      states.push(health);
+      if (health.state === 'watching' && states.some(state => state.state === 'recovering')) resolve();
+    };
+    return { listener, states, recovered };
+  }
+
+  /**
+   * A checkout-sized storm that overflows the event backlog, then the end of
+   * its episode. What `dropped` writes and fires queues behind the first 200
+   * events, so the overflow drops it; with `afterFirstDrop` the episode's
+   * first overflow has already happened and a second one drops it.
+   */
+  async function overflowDropping(workspace: string, episode: ReturnType<typeof episodeListener>, dropped: () => void, afterFirstDrop = false) {
+    for (let i = 0; i < 200; i++) fireWatchEvent('change', `src/a-${i}.ts`);
+    if (afterFirstDrop) for (let i = 0; i < 16_600; i++) fireWatchEvent('change', `src/z-${i}.ts`);
+    dropped();
+    for (let i = 0; i < 16_600; i++) fireWatchEvent('change', `src/b-${i}.ts`);
+    await episode.recovered;
+    await drainWorkspaceEvents(workspace);
+    // The handle was kept, and the rule changes never reached the bus.
+    expect(mockFsWatch).toHaveBeenCalledTimes(1);
+    expect(episode.states).toContainEqual(expect.objectContaining({ state: 'recovering', reason: 'event_queue_overflow' }));
+    expect(episode.listener.changes.filter(change => /\/\.git(ignore)?$/.test(change.path))).toEqual([]);
+    episode.listener.changes.length = 0;
+  }
+
+  it('N1: honours a root .gitignore change that an overflow dropped once the episode ends', async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbalyst-test-'));
+    cleanup = () => fs.rmSync(baseDir, { recursive: true, force: true });
+    const workspace = path.join(baseDir, 'parent', 'ws');
+    fs.mkdirSync(path.join(workspace, 'generated'), { recursive: true });
+    fs.mkdirSync(path.join(workspace, '.git'));
+    fs.writeFileSync(path.join(workspace, '.gitignore'), 'generated/\n');
+    fs.writeFileSync(path.join(workspace, 'generated', 'api.ts'), 'export {}\n');
+    const episode = episodeListener();
+    await subscribe(workspace, 'sub-1', episode.listener);
+    fireWatchEvent('change', 'generated/api.ts');
+    await drainWorkspaceEvents(workspace);
+    expect(episode.listener.changes).toEqual([]);
+
+    // The branch the checkout lands on ignores dist/ instead of generated/.
+    await overflowDropping(workspace, episode, () => {
+      fs.writeFileSync(path.join(workspace, '.gitignore'), 'dist/\n');
+      fireWatchEvent('change', '.gitignore');
+    });
+
+    fireWatchEvent('change', 'generated/api.ts');
+    fireWatchEvent('change', 'dist/app.js');
+    await drainWorkspaceEvents(workspace);
+    expect(episode.listener.changes.map(change => change.path)).toEqual([path.join(workspace, 'generated/api.ts')]);
+  });
+
+  it('N1: honours a .gitignore change that a later overflow of the same episode dropped', async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbalyst-test-'));
+    cleanup = () => fs.rmSync(baseDir, { recursive: true, force: true });
+    const workspace = path.join(baseDir, 'parent', 'ws');
+    fs.mkdirSync(path.join(workspace, 'generated'), { recursive: true });
+    fs.mkdirSync(path.join(workspace, '.git'));
+    fs.writeFileSync(path.join(workspace, '.gitignore'), 'generated/\n');
+    fs.writeFileSync(path.join(workspace, 'generated', 'api.ts'), 'export {}\n');
+    const episode = episodeListener();
+    await subscribe(workspace, 'sub-1', episode.listener);
+
+    await overflowDropping(workspace, episode, () => {
+      fs.writeFileSync(path.join(workspace, '.gitignore'), 'dist/\n');
+      fireWatchEvent('change', '.gitignore');
+    }, true);
+    expect(episode.states.filter(state => state.state === 'recovering')).toHaveLength(1);
+
+    fireWatchEvent('change', 'generated/api.ts');
+    await drainWorkspaceEvents(workspace);
+    expect(episode.listener.changes.map(change => change.path)).toEqual([path.join(workspace, 'generated/api.ts')]);
+  });
+
+  it('N1: honours a nested repo .gitignore change that an overflow dropped once the episode ends', async () => {
+    const layout = buildIssue207Layout();
+    cleanup = layout.cleanup;
+    const episode = episodeListener();
+    await subscribe(layout.workspace, 'sub-1', episode.listener);
+    fireWatchEvent('change', 'nested/rootfs/etc/foo.txt');
+    await drainWorkspaceEvents(layout.workspace);
+    expect(episode.listener.changes).toEqual([]);
+
+    await overflowDropping(layout.workspace, episode, () => {
+      fs.writeFileSync(path.join(layout.workspace, 'nested', '.gitignore'), '/dist\n');
+      fireWatchEvent('change', 'nested/.gitignore');
+    });
+
+    fireWatchEvent('change', 'nested/rootfs/etc/foo.txt');
+    fireWatchEvent('change', 'nested/dist/out.js');
+    await drainWorkspaceEvents(layout.workspace);
+    expect(episode.listener.changes.map(change => change.path)).toEqual([path.join(layout.workspace, 'nested/rootfs/etc/foo.txt')]);
+  });
+
+  it('N1: applies the rules of a nested repo whose creation an overflow dropped', async () => {
+    const layout = buildIssue207Layout();
+    cleanup = layout.cleanup;
+    const other = path.join(layout.workspace, 'other');
+    fs.mkdirSync(path.join(other, 'artifacts'), { recursive: true });
+    fs.writeFileSync(path.join(other, 'artifacts', 'out.txt'), '');
+    fs.writeFileSync(path.join(other, 'main.ts'), '');
+    const episode = episodeListener();
+    await subscribe(layout.workspace, 'sub-1', episode.listener);
+    fireWatchEvent('change', 'other/artifacts/out.txt');
+    await drainWorkspaceEvents(layout.workspace);
+    expect(episode.listener.changes.map(change => change.path)).toEqual([path.join(other, 'artifacts/out.txt')]);
+
+    // A clone into other/ makes it a repo that ignores artifacts/.
+    await overflowDropping(layout.workspace, episode, () => {
+      fs.mkdirSync(path.join(other, '.git'));
+      fs.writeFileSync(path.join(other, '.gitignore'), 'artifacts/\n');
+      fireWatchEvent('rename', 'other/.git');
+      fireWatchEvent('rename', 'other/.gitignore');
+    });
+
+    fireWatchEvent('change', 'other/artifacts/out.txt');
+    fireWatchEvent('change', 'other/main.ts');
+    await drainWorkspaceEvents(layout.workspace);
+    expect(episode.listener.changes.map(change => change.path)).toEqual([path.join(other, 'main.ts')]);
   });
 });
