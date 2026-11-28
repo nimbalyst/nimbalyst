@@ -500,10 +500,11 @@ export async function subscribe(
       logger.main.warn(describeWatchLimitFailure(key, health.nextRetryAt));
     }
     if (health.state === 'watching' && overflow) {
-      // The dropped backlog can hold .gitignore or .git changes; re-read the rules, as a new handle does.
-      entry.workspaceGitignoreFilter = loadWorkspaceGitignoreFilterSync(key);
+      // The dropped backlog can hold .gitignore or .git changes; re-read the
+      // rules as a new handle does, and as a root .gitignore edit does.
       entry.nestedGitignoreCache.clear();
       entry.gitRootDirCache.clear();
+      reloadGitignoreFiltersForPath(path.join(key, '.gitignore'), entry);
     }
     for (const subscriber of entry.listeners.values()) {
       try { subscriber.onHealthChanged?.(health); }
