@@ -4,6 +4,8 @@ import { join, relative, resolve } from 'path';
 import { promisify } from 'util';
 
 import { createGitRemoteCache } from './gitRemoteCache';
+import { runGit } from '../services/git/runGit';
+import { gitRunnerOpenFdCount } from '../services/git/gitRunnerProtocol';
 
 const execFileAsync = promisify(execFile);
 
@@ -171,20 +173,10 @@ export async function getUntrackedFilesInDirectories(
   let stdout: string;
   try {
     const chunks = chunkPathspecs(Array.from(inputsByPathspec.keys()));
-    const outputs = await Promise.all(chunks.map(chunk => new Promise<string>((resolveOutput, rejectOutput) => {
-      execFile(
-        'git',
-        ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard', '-z', '--', ...chunk],
-        { windowsHide: true, cwd: repoRoot, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER },
-        (error, chunkStdout) => {
-          if (error) {
-            rejectOutput(error);
-            return;
-          }
-          resolveOutput(chunkStdout);
-        }
-      );
-    })));
+    const outputs = await Promise.all(chunks.map(async chunk => (await runGit(
+      ['--no-optional-locks', 'ls-files', '--others', '--exclude-standard', '-z', '--', ...chunk],
+      { cwd: repoRoot, maxBuffer: LS_FILES_MAX_BUFFER },
+    )).stdout));
     stdout = outputs.join('\0');
   } catch (error) {
     // Don't swallow this silently: a failure here makes untracked files vanish
@@ -308,16 +300,20 @@ export function getOpenFdCount(): number | null {
 }
 
 /**
- * If the error is EBADF, logs the current open fd count to help diagnose
- * whether the error stems from fd exhaustion or a corrupted fd table.
+ * If the error is EBADF, logs the open fd count of the process that spawned
+ * (main, or the git runner) to help diagnose whether the error stems from fd
+ * exhaustion or a corrupted fd table.
  */
 export function logEbadfDiagnostic(context: string, error: unknown): void {
   const message = (error as any)?.message ?? String(error);
   if (!message.includes('EBADF')) return;
 
-  const fdCount = getOpenFdCount();
+  const runnerFdCount = gitRunnerOpenFdCount(error);
+  const detected = runnerFdCount === undefined
+    ? `EBADF detected - open fd count: ${getOpenFdCount() ?? 'unknown'}`
+    : `EBADF detected in the git runner process - open fd count there: ${runnerFdCount ?? 'unknown'}`;
   console.error(
-    `[${context}] EBADF detected - open fd count: ${fdCount ?? 'unknown'}`,
+    `[${context}] ${detected}`,
     '(system soft limit is typically 256 on macOS; run `ulimit -n` to check)'
   );
 }

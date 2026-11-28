@@ -12,6 +12,7 @@ const { spawnSync } = require('child_process');
 const { relocateClaudeRuntime } = require('./claude-runtime.js');
 const { validatePackagedTutorialProject } = require('./validate-extra-resources.js');
 const { findUnresolvedDependencies } = require('./packaged-dependency-check.js');
+const { UTILITY_PROCESS_ENTRIES, findMissingUtilityEntries } = require('./packaged-utility-entries.js');
 
 exports.default = async function(context) {
   const { appOutDir, packager } = context;
@@ -148,7 +149,8 @@ exports.default = async function(context) {
   // config through npx without installing dependencies.
   const asar = require('@electron/asar');
   const appAsar = path.join(resourcesDir, 'app.asar');
-  const unresolved = findUnresolvedDependencies(asar.listPackage(appAsar), (file) => {
+  const asarFiles = asar.listPackage(appAsar);
+  const unresolved = findUnresolvedDependencies(asarFiles, (file) => {
     try {
       return JSON.parse(asar.extractFile(appAsar, file.replace(/^[\\/]/, '')).toString('utf8'));
     } catch {
@@ -159,6 +161,17 @@ exports.default = async function(context) {
     throw new Error(`AfterPack: packaged modules cannot resolve their dependencies:\n  ${unresolved.join('\n  ')}`);
   }
   console.log('AfterPack: every packaged module resolves its declared dependencies');
+
+  // utilityProcess.fork targets are loaded by path at runtime, so a missing one
+  // fails nowhere else: main just keeps doing that work itself.
+  const missingUtilityEntries = findMissingUtilityEntries(
+    asarFiles,
+    (file) => asar.extractFile(appAsar, file.split('/').join(path.sep)).toString('utf8'),
+  );
+  if (missingUtilityEntries.length > 0) {
+    throw new Error(`AfterPack: utility-process entries missing from app.asar:\n  ${missingUtilityEntries.join('\n  ')}`);
+  }
+  console.log(`AfterPack: utility-process entries packaged (${UTILITY_PROCESS_ENTRIES.join(', ')})`);
 
   // Validate that the built-in extensions actually landed in the packaged
   // tree. electron-builder's extraResources copy of packages/extensions is

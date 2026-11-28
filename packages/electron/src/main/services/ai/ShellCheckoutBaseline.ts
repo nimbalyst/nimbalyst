@@ -1,8 +1,8 @@
-import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { prepareShellContentBaseline, SHELL_BASELINE_CAPTURE_MS } from './ShellContentBaseline';
 import { contentFingerprint } from '../../file/knownFileWrites';
+import { runGit } from '../git/runGit';
 
 export interface CheckoutCandidate { filePath: string; fingerprint: string | null }
 export interface ShellCheckoutBaseline {
@@ -23,10 +23,7 @@ async function git(cwd: string, args: string[], deadline = Date.now() + SHELL_BA
     // shared capture deadline across sequential or parallel Git queries.
     const timeout = Math.max(1, Math.floor(remaining / (attempt === 0 ? 2 : 1)));
     try {
-      return await new Promise<string>((resolve, reject) => {
-        execFile('git', ['-C', cwd, ...args], { windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
-          (error, stdout) => error ? reject(error) : resolve(stdout));
-      });
+      return (await runGit(['-C', cwd, ...args], { timeout, maxBuffer: 4 * 1024 * 1024 })).stdout;
     } catch (error) {
       const failure = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
       const timedOut = failure.code === 'ETIMEDOUT' || (failure.killed && failure.signal === 'SIGTERM');

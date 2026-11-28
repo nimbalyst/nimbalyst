@@ -253,6 +253,7 @@ import { configureMcpServers } from '@nimbalyst/runtime/ai/server';
 import { matchesAllowPattern } from '@nimbalyst/runtime/ai/server/permissions/toolPermissionHelpers';
 import { resolveCodexPreEditHookScriptPath } from './services/ai/codexPreEditHookPath';
 import {configureCodexShellTracking} from './services/ai/codexShellTrackingHost';
+import { configureGitRunner, shutdownGitRunner } from './services/git/gitRunnerService';
 import {configureClaudeShellTracking, registerClaudeShellSession, releaseClaudeShellSession} from './services/ai/claudeShellTrackingHost';
 import {setShellWindowLifecycle} from './services/ai/HooklessAgentFileWatcher';
 import { createGrokAskUserQuestionHandler } from './services/ai/grokAskUserQuestionHandler';
@@ -1513,6 +1514,10 @@ BrowserWindow.prototype.focus = function(this: BrowserWindow) {
 app.whenReady().then(ownerOnly('app initialisation', async () => {
     workspaceBackendLifecycle.observeModuleStarts();
     checkpoint('app-ready');
+
+    // Git child processes start in the git runner utility process from here
+    // on, so main does not pay the fork. It starts on the first git call.
+    configureGitRunner();
 
     // Windows opened from here on are revealed without activating; the app is
     // foregrounded exactly once, after the last of them is on screen.
@@ -3420,6 +3425,10 @@ app.on('before-quit', ownerOnly('quit cleanup', async (event) => {
 
     // Mark app as quitting to prevent interval operations
     isAppQuitting = true;
+
+    // Past the cancellable dialog: stop the git runner. Calls still pending
+    // finish in process, and later ones run in process.
+    shutdownGitRunner();
 
     // Start stopping extension-started commands now (the quit can no longer be
     // cancelled) so their grace period overlaps the rest of the cleanup instead
