@@ -27,7 +27,7 @@ vi.mock('child_process', async (importOriginal) => {
   const execFile = vi.fn((...args: unknown[]) => {
     if (typeof args[0] === 'string' && Array.isArray(args[1])) {
       const options = typeof args[2] === 'object' && args[2] ? { ...(args[2] as Record<string, unknown>) } : {};
-      spawns.push({ file: args[0], args: [...(args[1] as string[])], options, inRunner: side.inRunner });
+      spawns.push({ file: args[0], args: [...(args[1] as string[])], options, inRunner: side.inRunner, at: performance.now() });
     }
     return (actual.execFile as (...a: unknown[]) => unknown)(...args);
   });
@@ -120,17 +120,30 @@ describe.skipIf(!posix)('migrated call sites through the runner', () => {
     const repo = makeRepo('slow', { commit: true });
     vi.stubEnv('PATH', `${fakeDir}${path.delimiter}${process.env.PATH ?? ''}`);
     vi.stubEnv('FAKE_GIT_HANG_ON', 'worktree');
+    // The baseline budgets with Date.now. A monotonic stand-in keeps a step of
+    // the wall clock (this machine's steps back about 2.9 s every ~32 s) out
+    // of the budget.
+    const wallStart = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => Math.floor(wallStart + performance.now()));
     const h = startHarnessRunner(side);
     await h.up();
     spawns.length = 0;
     const started = performance.now();
     await expect(prepareShellCheckoutBaseline(repo)).rejects.toThrow(/^git worktree timed out \(2 attempts\): Command failed: git -C /);
-    expect(performance.now() - started).toBeLessThan(1250 + 1000);
+    // Main's backstop (timeout + 2 s) would fire no earlier than 625 + 2000 ms.
+    expect(performance.now() - started).toBeLessThan(625 + 2000);
     const timeouts = runnerSpawns().map((s) => s.options.timeout as number);
     expect(timeouts).toHaveLength(2);
-    expect(timeouts[0]).toBe(625);
-    expect(timeouts[1]).toBeGreaterThan(400);
-    expect(timeouts[1]).toBeLessThanOrEqual(625);
+    // Half the 1250 ms budget, less the milliseconds a loaded machine spends
+    // between setting the deadline and starting the first attempt.
+    expect(timeouts[0]).toBeGreaterThanOrEqual(600);
+    expect(timeouts[0]).toBeLessThanOrEqual(625);
+    // The retry gets what is left of the shared budget, never more. It is
+    // computed before the retry spawns, so it is at least the budget less the
+    // time to that spawn (2 ms for rounding to whole milliseconds).
+    const retryAt = runnerSpawns()[1].at! - started;
+    expect(timeouts[1]).toBeGreaterThanOrEqual(Math.max(1, 1250 - retryAt - 2));
+    expect(timeouts[0] + timeouts[1]).toBeLessThanOrEqual(1250);
     expect(mainSpawns()).toHaveLength(0);
     h.runner.stop();
   });

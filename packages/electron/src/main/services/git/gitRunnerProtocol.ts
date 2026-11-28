@@ -52,6 +52,31 @@ export interface SerializedGitError {
   props: Record<string, unknown>;
   stdout?: string;
   stderr?: string;
+  /** For an EBADF: the runner's open fd count when it failed (null when unknown). */
+  openFdCount?: number | null;
+}
+
+/** On a rebuilt runner error that carried `openFdCount`. Not an own string key, so the shape stays `execFile`'s. */
+const RUNNER_OPEN_FD_COUNT = Symbol.for('nimbalyst.gitRunner.openFdCount');
+
+/**
+ * Give a git error the `stdout` and `stderr` the promisified `execFile` adds.
+ * They are not enumerable, so logging the error does not print git's output
+ * (up to 10,000 characters of it).
+ */
+export function attachGitOutput<T extends object>(error: T, stdout: string | undefined, stderr: string | undefined): T {
+  if (stdout !== undefined) Object.defineProperty(error, 'stdout', { value: stdout, writable: true, configurable: true, enumerable: false });
+  if (stderr !== undefined) Object.defineProperty(error, 'stderr', { value: stderr, writable: true, configurable: true, enumerable: false });
+  return error;
+}
+
+/**
+ * For an error from a spawn in the runner, the runner's open fd count at the
+ * failure (null when it could not count); undefined for any other error.
+ */
+export function gitRunnerOpenFdCount(error: unknown): number | null | undefined {
+  if (typeof error !== 'object' || error === null || !(RUNNER_OPEN_FD_COUNT in error)) return undefined;
+  return (error as { [RUNNER_OPEN_FD_COUNT]: number | null })[RUNNER_OPEN_FD_COUNT];
 }
 
 /**
@@ -87,21 +112,46 @@ export function serializeGitError(error: unknown, stdout: string | undefined, st
   return { name: error.name, message: error.message, stack: error.stack, props, stdout, stderr };
 }
 
+const nodeErrorPrototypes = new Map<ErrorConstructor, object>();
+
+/**
+ * Node's own errors (`code` `ERR_*`) print as `RangeError [ERR_X]: message`,
+ * from a `toString` on a prototype between the error and its class's.
+ */
+function nodeErrorPrototype(Ctor: ErrorConstructor): object {
+  let prototype = nodeErrorPrototypes.get(Ctor);
+  if (!prototype) {
+    prototype = Object.create(Ctor.prototype, {
+      constructor: { value: Ctor, writable: true, configurable: true },
+      toString: {
+        value(this: Error & { code?: unknown }) { return `${this.name} [${String(this.code)}]: ${this.message}`; },
+        writable: true,
+        configurable: true,
+      },
+    }) as object;
+    nodeErrorPrototypes.set(Ctor, prototype);
+  }
+  return prototype;
+}
+
 /** Rebuild the Error a runner failure stands for, with the properties in `execFile`'s order. */
 export function deserializeGitError(serialized: SerializedGitError): Error {
   const Ctor = serialized.name === 'RangeError' ? RangeError : serialized.name === 'TypeError' ? TypeError : Error;
   const error = new Ctor(serialized.message);
+  const { code } = serialized.props;
+  if (typeof code === 'string' && code.startsWith('ERR_')) Object.setPrototypeOf(error, nodeErrorPrototype(Ctor));
   if (serialized.stack !== undefined) error.stack = serialized.stack;
   Object.assign(error, serialized.props);
-  if (serialized.stdout !== undefined) Object.assign(error, { stdout: serialized.stdout });
-  if (serialized.stderr !== undefined) Object.assign(error, { stderr: serialized.stderr });
+  attachGitOutput(error, serialized.stdout, serialized.stderr);
+  if (serialized.openFdCount !== undefined) {
+    Object.defineProperty(error, RUNNER_OPEN_FD_COUNT, { value: serialized.openFdCount, configurable: true });
+  }
   return error;
 }
 
 /** The error `execFile` gives when it kills git at `timeout`, for a call that never got an answer. */
 export function gitTimeoutError(args: readonly string[]): Error {
   const cmd = ['git', ...args].join(' ');
-  return Object.assign(new Error(`Command failed: ${cmd}\n`), {
-    code: null, killed: true, signal: 'SIGTERM', cmd, stdout: '', stderr: '',
-  });
+  const error = Object.assign(new Error(`Command failed: ${cmd}\n`), { code: null, killed: true, signal: 'SIGTERM', cmd });
+  return attachGitOutput(error, '', '');
 }

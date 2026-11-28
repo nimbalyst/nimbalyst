@@ -16,7 +16,7 @@
  * loadable without Electron (unit tests, the runner itself).
  */
 import { execFile } from 'child_process';
-import { gitExecOptions, type GitRunOptions, type GitRunResult } from './gitRunnerProtocol';
+import { attachGitOutput, gitExecOptions, type GitRunOptions, type GitRunResult } from './gitRunnerProtocol';
 
 export type { GitRunOptions, GitRunResult } from './gitRunnerProtocol';
 
@@ -45,9 +45,7 @@ export function runGitInProcess(args: string[], options: GitRunOptions = {}): Pr
         return;
       }
       // What the promisified execFile adds; a test double may pass neither.
-      if (stdout !== undefined) Object.assign(error, { stdout });
-      if (stderr !== undefined) Object.assign(error, { stderr });
-      reject(error);
+      reject(attachGitOutput(error, stdout, stderr));
     });
   });
 }

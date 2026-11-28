@@ -20,10 +20,25 @@ import { setGitRunTransport } from '../runGit';
 import { startGitRunner } from '../gitRunnerRuntime';
 
 /** Set while a message is handed to the runner module, so a `child_process` spy can tell who spawned. */
-export interface SpawnSide { inRunner: boolean }
+export interface SpawnSide {
+  inRunner: boolean;
+  /**
+   * The env the runner was forked with, set with `inRunner`. A utility
+   * process's env is fixed at fork, so a spy can hand it to a runner spawn
+   * that passes no env instead of main's live `process.env`.
+   */
+  runnerEnv?: NodeJS.ProcessEnv;
+}
 
 /** One `execFile` call seen by a test's `child_process` spy. */
-export interface RecordedSpawn { file: string; args: string[]; options: Record<string, unknown>; inRunner: boolean }
+export interface RecordedSpawn {
+  file: string;
+  args: string[];
+  options: Record<string, unknown>;
+  inRunner: boolean;
+  /** `performance.now()` when the spy saw the call, for spies that record it. */
+  at?: number;
+}
 
 const realSetTimeout = globalThis.setTimeout;
 let pidSeq = 7000;
@@ -49,6 +64,8 @@ export class HarnessChild extends EventEmitter implements SupervisedChild {
   private upPaused = false;
   private held: unknown[] = [];
   private listener?: (event: { data: unknown }) => void;
+  /** `utilityProcess.fork` gives the child main's `process.env` as it is at fork. */
+  private readonly forkEnv: NodeJS.ProcessEnv = { ...process.env };
 
   constructor(private readonly side: SpawnSide, behaviour: HarnessBehaviour = {}) {
     super();
@@ -74,7 +91,8 @@ export class HarnessChild extends EventEmitter implements SupervisedChild {
     setImmediate(() => {
       if (!this.alive || !this.listener) return;
       this.side.inRunner = true;
-      try { this.listener({ data: copy }); } finally { this.side.inRunner = false; }
+      this.side.runnerEnv = this.forkEnv;
+      try { this.listener({ data: copy }); } finally { this.side.inRunner = false; this.side.runnerEnv = undefined; }
     });
   }
 

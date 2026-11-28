@@ -9,6 +9,7 @@
  * Kept apart from the entry file so tests can run it behind a fake port.
  */
 import { execFile } from 'child_process';
+import { readdirSync } from 'fs';
 import type { ChildConnection } from '../../utilityProcess/childConnection';
 import {
   GIT_RUNNER_PROTOCOL_VERSION,
@@ -16,7 +17,23 @@ import {
   serializeGitError,
   type GitRunReply,
   type GitRunRequest,
+  type SerializedGitError,
 } from './gitRunnerProtocol';
+
+/** This process's open fd count, as `getOpenFdCount` in gitUtils counts main's. */
+function openFdCount(): number | null {
+  if (process.platform === 'win32') return null;
+  try {
+    return readdirSync('/dev/fd').length - 1;
+  } catch {
+    return null;
+  }
+}
+
+/** An EBADF is diagnosed by the fd count of the process that spawned, which is this one. */
+function withFdCount(error: SerializedGitError): SerializedGitError {
+  return error.message.includes('EBADF') ? { ...error, openFdCount: openFdCount() } : error;
+}
 
 export function startGitRunner(connection: ChildConnection): void {
   const reply = (message: GitRunReply) => connection.postMessage(message);
@@ -26,12 +43,12 @@ export function startGitRunner(connection: ChildConnection): void {
     const { id, args } = message;
     try {
       execFile('git', args, { windowsHide: true, encoding: 'utf8', ...gitExecOptions(message.options ?? {}) }, (error, stdout, stderr) => {
-        if (error) reply({ type: 'failure', id, error: serializeGitError(error, stdout, stderr) });
+        if (error) reply({ type: 'failure', id, error: withFdCount(serializeGitError(error, stdout, stderr)) });
         else reply({ type: 'result', id, stdout, stderr });
       });
     } catch (error) {
       // execFile throws synchronously on invalid arguments, as it would in main.
-      reply({ type: 'failure', id, error: serializeGitError(error, undefined, undefined) });
+      reply({ type: 'failure', id, error: withFdCount(serializeGitError(error, undefined, undefined)) });
     }
   });
   connection.ready(GIT_RUNNER_PROTOCOL_VERSION);

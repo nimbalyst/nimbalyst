@@ -16,10 +16,13 @@ const { side, spawns } = vi.hoisted(() => ({
   spawns: [] as RecordedSpawn[],
 }));
 
-vi.mock('electron', () => ({
-  app: { isReady: vi.fn(() => true) },
-  utilityProcess: { fork: vi.fn() },
-}));
+vi.mock('electron', async () => {
+  const { EventEmitter } = await import('node:events');
+  return {
+    app: Object.assign(new EventEmitter(), { isReady: vi.fn(() => true) }),
+    utilityProcess: { fork: vi.fn() },
+  };
+});
 vi.mock('../../../utils/logger', () => ({
   logger: { main: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } },
 }));
@@ -109,5 +112,19 @@ describe('git runner wiring', () => {
     expect(spawns.filter((s) => !s.inRunner)).toHaveLength(2);
     expect(logger.main.warn).not.toHaveBeenCalled();
     expect(logger.main.error).not.toHaveBeenCalled();
+  });
+
+  it('ADV-T-3: a quit that skips before-quit (quit-and-install, app.exit) still stops the runner, so its exit is not logged as a crash', async () => {
+    configureGitRunner({});
+    await version();
+    await until(() => vi.mocked(logger.main.info).mock.calls.some(([line]) => String(line).includes('[GitRunner] ready')), 'the runner');
+    // Electron emits quit on every path, then the runner's exit reaches JS.
+    app.emit('quit');
+    children[0].exit(0);
+    expect(logger.main.warn).not.toHaveBeenCalled();
+    spawns.length = 0;
+    await version();
+    expect(spawns.map((s) => s.inRunner)).toEqual([false]);
+    expect(utilityProcess.fork).toHaveBeenCalledTimes(1);
   });
 });

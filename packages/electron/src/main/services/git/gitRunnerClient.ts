@@ -60,7 +60,7 @@ export const DEFAULT_GIT_RUNNER_TIMING: GitRunnerTiming = {
   deadlineLateMs: 100,
 };
 
-/** Node clamps longer timers to 1 ms. */
+/** Node clamps longer timers to 1 ms, so longer deadlines are chained. */
 const MAX_TIMER_MS = 2_147_483_647;
 
 export function isGitRunnerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -74,6 +74,11 @@ export interface CreateGitRunnerOptions {
   /** Defaults to `gitRunner.js` next to the main bundle. */
   resolveEntry?: () => string;
   timing?: Partial<GitRunnerTiming>;
+  /**
+   * Milliseconds on a monotonic clock, for the client and its supervisor.
+   * The wall clock can step (NTP, a VM resync) in the middle of a main stall
+   * and hide how late a timer fired.
+   */
   now?: () => number;
   platform?: NodeJS.Platform;
   killProcess?: (pid: number, signal: NodeJS.Signals) => void;
@@ -90,6 +95,7 @@ export interface GitRunner {
 interface PendingCall {
   id: number;
   args: string[];
+  /** The caller's options, with the env that was sent to the runner. */
   options: GitRunOptions;
   token: ChildToken;
   startedAt: number;
@@ -100,6 +106,16 @@ interface PendingCall {
   reject: (error: unknown) => void;
 }
 
+/**
+ * The env as `execFile` reads it, inherited keys included. Structured clone
+ * keeps only own keys.
+ */
+function flatEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const flat: NodeJS.ProcessEnv = {};
+  for (const key in env) flat[key] = env[key];
+  return flat;
+}
+
 function timeoutOf(options: GitRunOptions): number | undefined {
   const { timeout } = options;
   return typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0 ? timeout : undefined;
@@ -107,7 +123,7 @@ function timeoutOf(options: GitRunOptions): number | undefined {
 
 export function createGitRunner(options: CreateGitRunnerOptions): GitRunner {
   const timing: GitRunnerTiming = { ...DEFAULT_GIT_RUNNER_TIMING, ...options.timing };
-  const now = options.now ?? Date.now;
+  const now = options.now ?? (() => performance.now());
   const pending = new Map<number, PendingCall>();
   // Unique across restarts of the runner process, so a late reply can never
   // match a newer call.
@@ -166,7 +182,14 @@ export function createGitRunner(options: CreateGitRunnerOptions): GitRunner {
 
   function armDeadline(call: PendingCall, delay: number): void {
     call.dueAt = now() + delay;
-    call.timer = setTimeout(() => onDeadline(call), Math.min(delay, MAX_TIMER_MS));
+    scheduleDeadline(call, delay);
+  }
+
+  function scheduleDeadline(call: PendingCall, delay: number): void {
+    call.timer = setTimeout(() => {
+      if (delay > MAX_TIMER_MS) scheduleDeadline(call, delay - MAX_TIMER_MS);
+      else onDeadline(call);
+    }, Math.min(delay, MAX_TIMER_MS));
   }
 
   function onDeadline(call: PendingCall): void {
@@ -191,11 +214,15 @@ export function createGitRunner(options: CreateGitRunnerOptions): GitRunner {
         id,
         args: [...args],
         // git gets the env main would have used for this call.
-        options: { ...gitExecOptions(callOptions), env: callOptions.env ?? { ...process.env } },
+        options: { ...gitExecOptions(callOptions), env: callOptions.env ? flatEnv(callOptions.env) : { ...process.env } },
       };
       return new Promise<GitRunResult>((resolve, reject) => {
         const call: PendingCall = {
-          id, args: request.args, options: { ...callOptions }, token, startedAt: now(), dueAt: 0, rearmed: false, resolve, reject,
+          id,
+          args: request.args,
+          // A re-run in process uses the env git was sent, not process.env at re-run time.
+          options: { ...callOptions, env: request.options.env },
+          token, startedAt: now(), dueAt: 0, rearmed: false, resolve, reject,
         };
         // Registered before the send: a runner that dies before main sees the
         // send fail still settles the call through onLost.

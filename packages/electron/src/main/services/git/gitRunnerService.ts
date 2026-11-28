@@ -1,7 +1,9 @@
 /**
  * Electron wiring of the git runner: `index.ts` calls `configureGitRunner` when
- * the app is ready and `shutdownGitRunner` once quit is committed. Nothing else
- * imports this module, so the git call sites stay free of Electron.
+ * the app is ready and `shutdownGitRunner` once quit is committed. Quits that
+ * skip the `before-quit` handler (quit-and-install, `app.exit`) still emit
+ * `quit` before the runner's exit reaches main, so that stops it too. Nothing
+ * else imports this module, so the git call sites stay free of Electron.
  */
 import { app, utilityProcess } from 'electron';
 import { logger } from '../../utils/logger';
@@ -23,10 +25,12 @@ export function configureGitRunner(env: NodeJS.ProcessEnv = process.env): void {
     log: logger.main,
   });
   setGitRunTransport(runner.transport);
+  app.on('quit', shutdownGitRunner);
 }
 
 /** Kill the runner. Calls still pending finish in process; later calls run in process. */
 export function shutdownGitRunner(): void {
+  app.removeListener('quit', shutdownGitRunner);
   setGitRunTransport(null);
   runner?.stop();
   runner = null;

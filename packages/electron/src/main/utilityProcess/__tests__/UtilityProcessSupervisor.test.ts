@@ -182,6 +182,36 @@ describe('UtilityProcessSupervisor start', () => {
     expect(s.launch).toHaveBeenCalledTimes(2);
   });
 
+  it('ADV-T-2: a ready timer that fires late because main stalled re-arms instead of failing a healthy start', () => {
+    const s = setup();
+    s.sup.acquire();
+    s.children[0].spawned();
+    // Main blocks for 21 s right after the fork: the child's ready is queued behind the stall.
+    vi.setSystemTime(Date.now() + 21_000);
+    vi.advanceTimersByTime(TIMING.readyTimeoutMs);
+    expect(s.sup.state).toBe('starting');
+    s.children[0].ready();
+    expect(s.sup.state).toBe('ready');
+    expect(s.children[0].kills).toBe(0);
+    expect(s.log.warn).not.toHaveBeenCalled();
+  });
+
+  it('ADV-T-2: the ready timer re-arms once: a child still not ready when it fires again is a failed start', () => {
+    const s = setup();
+    s.sup.acquire();
+    s.children[0].spawned();
+    vi.setSystemTime(Date.now() + 21_000);
+    vi.advanceTimersByTime(TIMING.readyTimeoutMs);
+    expect(s.sup.state).toBe('starting');
+    vi.setSystemTime(Date.now() + 21_000);
+    vi.advanceTimersByTime(TIMING.readyTimeoutMs - 1);
+    expect(s.sup.state).toBe('starting');
+    vi.advanceTimersByTime(1);
+    expect(s.children[0].kills).toBe(1);
+    expect(s.lost).toEqual([{ instance: 1, reason: expect.stringContaining('no ready message') }]);
+    expect(s.sup.state).toBe('restarting');
+  });
+
   it('PM-13: a ready message with another protocol version counts as a failed start', () => {
     const s = setup();
     s.sup.acquire();
@@ -370,6 +400,80 @@ describe('UtilityProcessSupervisor watchdog', () => {
     expect(s.lost).toEqual([]);
     // No crash was charged: the state is still ready.
     expect(s.sup.state).toBe('ready');
+  });
+
+  it('ADV-T-1: silence is counted across idle gaps, so a child that never answers is killed when work comes in short bursts', () => {
+    const s = setup();
+    const child = startReady(s);
+    const token = s.sup.acquire()!;
+    const send = () => {
+      expect(s.sup.post(token, { type: 'run' })).toBe(true);
+      s.state.busy = true;
+      s.sup.workStarted();
+    };
+    // One call every 6.6 s; the owner's own deadline settles each after 2.625 s, unanswered.
+    for (let burst = 0; burst < 2; burst++) {
+      send();
+      vi.advanceTimersByTime(2_625);
+      s.state.busy = false;
+      s.sup.workFinished();
+      vi.advanceTimersByTime(6_600 - 2_625);
+    }
+    expect(s.lost).toEqual([]);
+    send();
+    vi.advanceTimersByTime(TIMING.pingIntervalMs - 1);
+    expect(s.lost).toEqual([]);
+    // 13.2 s after the first unanswered ping, at 2 s.
+    vi.advanceTimersByTime(1);
+    expect(s.lost).toEqual([{ instance: 1, reason: 'unresponsive: no answer for 13200 ms' }]);
+    expect(child.kills).toBe(1);
+    // The next child starts with a clean count.
+    vi.advanceTimersByTime(250);
+    const next = s.children[1];
+    next.spawned();
+    next.ready();
+    expect(s.sup.post(s.sup.acquire()!, { type: 'run' })).toBe(true);
+    s.sup.workStarted();
+    vi.advanceTimersByTime(TIMING.pingTimeoutMs - 1);
+    expect(s.lost).toHaveLength(1);
+  });
+
+  it('ADV-T-1: any message from the child clears the carried silence', () => {
+    const s = setup();
+    const child = startReady(s);
+    const token = s.sup.acquire()!;
+    s.sup.post(token, { type: 'run', id: 1 });
+    s.state.busy = true;
+    s.sup.workStarted();
+    vi.advanceTimersByTime(2_625);
+    s.state.busy = false;
+    s.sup.workFinished();
+    // The late answer arrives while nothing is pending.
+    child.send({ type: 'result', id: 1 });
+    vi.advanceTimersByTime(60_000);
+    s.sup.post(token, { type: 'run', id: 2 });
+    s.state.busy = true;
+    s.sup.workStarted();
+    vi.advanceTimersByTime(TIMING.pingTimeoutMs - 1);
+    expect(s.lost).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(s.lost).toEqual([{ instance: 1, reason: 'unresponsive: no answer for 10000 ms' }]);
+  });
+
+  it('ADV-T-1: only an unanswered ping carries silence, not a message the child need not answer', () => {
+    const s = setup();
+    startReady(s);
+    const token = s.sup.acquire()!;
+    // A one-way message while nothing is pending, such as a watcher host's configuration.
+    expect(s.sup.post(token, { type: 'configure' })).toBe(true);
+    vi.advanceTimersByTime(60_000);
+    expect(s.sup.post(token, { type: 'run' })).toBe(true);
+    s.state.busy = true;
+    s.sup.workStarted();
+    vi.advanceTimersByTime(TIMING.pingTimeoutMs - 1);
+    expect(s.lost).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(s.lost).toEqual([{ instance: 1, reason: 'unresponsive: no answer for 10000 ms' }]);
   });
 
   it('stops pinging once the owner reports no pending work', () => {

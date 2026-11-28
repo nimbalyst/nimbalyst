@@ -13,7 +13,9 @@
  *   next `acquire()` retries once;
  * - a ping watchdog while the owner has work pending, measured in
  *   main-observed time: a ping timer that fires late means main stalled, so
- *   the deadline is reset rather than the child blamed;
+ *   the deadline is reset rather than the child blamed. A child that has
+ *   sent nothing since a ping went unanswered is measured from that ping,
+ *   even across idle gaps between bursts of work;
  * - `stop()` for app quit.
  *
  * This module must not import `electron`: the launcher and the readiness check
@@ -54,7 +56,10 @@ export interface SupervisorTiming {
   crashWindowMs: number;
   /** How long the child stays down once the budget is spent. */
   coolOffMs: number;
-  /** A child that has not sent `ready` by then is killed and counts as a failed start. */
+  /**
+   * A child that has not sent `ready` by then is killed and counts as a failed
+   * start. A ready timer that fires late (main stalled) re-arms once.
+   */
   readyTimeoutMs: number;
   pingIntervalMs: number;
   /** No message from the child for this long, while work is pending, kills it. */
@@ -118,6 +123,8 @@ interface ChildRecord {
   pid: number | undefined;
   ready: boolean;
   exited: boolean;
+  /** When main sent the first ping still unanswered: no message from the child since. */
+  owedSince?: number;
   readyTimer?: ReturnType<typeof setTimeout>;
   killTimer?: ReturnType<typeof setTimeout>;
 }
@@ -205,7 +212,8 @@ export class UtilityProcessSupervisor {
   /** The owner has work in flight: run the watchdog. */
   workStarted(): void {
     if (this.currentState !== 'ready' || this.pingTimer || !this.options.hasPendingWork()) return;
-    this.lastHeardAt = this.now();
+    // A child that stopped answering during an earlier burst is still silent.
+    this.lastHeardAt = this.current!.owedSince ?? this.now();
     this.schedulePing();
   }
 
@@ -260,8 +268,18 @@ export class UtilityProcessSupervisor {
     child.stderr?.on('data', (chunk: Buffer | string) => {
       this.options.log.warn(`[${name}] stderr: ${chunk.toString().trimEnd()}`);
     });
+    this.armReadyTimer(record, false);
+  }
+
+  private armReadyTimer(record: ChildRecord, rearmed: boolean): void {
+    const dueAt = this.now() + this.timing.readyTimeoutMs;
     record.readyTimer = setTimeout(() => {
       record.readyTimer = undefined;
+      if (!rearmed && this.now() - dueAt > this.timing.lateTimerMs) {
+        // Main was stalled; the child's ready may be queued behind the stall.
+        this.armReadyTimer(record, true);
+        return;
+      }
       this.lose(record, `no ready message within ${this.timing.readyTimeoutMs} ms`);
     }, this.timing.readyTimeoutMs);
   }
@@ -270,6 +288,7 @@ export class UtilityProcessSupervisor {
     // A replaced child's queued messages (ready, pongs, replies) are not ours.
     if (this.current !== record) return;
     this.lastHeardAt = this.now();
+    record.owedSince = undefined;
     const message = raw as { type?: unknown; protocol?: unknown } | null;
     if (message?.type === 'pong') return;
     if (message?.type === 'ready') {
@@ -386,7 +405,7 @@ export class UtilityProcessSupervisor {
       this.lose(record, `unresponsive: no answer for ${now - this.lastHeardAt} ms`);
       return;
     }
-    this.post(record.token, { type: 'ping', seq: ++this.pingSeq } satisfies UtilityPingMessage);
+    if (this.post(record.token, { type: 'ping', seq: ++this.pingSeq } satisfies UtilityPingMessage)) record.owedSince ??= now;
     this.schedulePing();
   }
 }

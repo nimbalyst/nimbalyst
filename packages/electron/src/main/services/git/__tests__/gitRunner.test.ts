@@ -10,27 +10,34 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { inspect } from 'node:util';
 import { Worker } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { runGit, runGitInProcess, setGitRunTransport } from '../runGit';
 import { GIT_RUNNER_PROTOCOL_VERSION, type GitRunOptions } from '../gitRunnerProtocol';
 import type { SupervisedChild } from '../../../utilityProcess/UtilityProcessSupervisor';
 import { gitSandboxEnv } from '../../testSupport/gitTestSandbox';
+import { logEbadfDiagnostic } from '../../../utils/gitUtils';
 import {
   errorShape, flushPorts, makeFakeGitDir, startHarnessRunner, until,
   type RecordedSpawn, type SpawnSide,
 } from './gitRunnerHarness';
 
-const { side, spawns } = vi.hoisted(() => ({
+const { side, spawns, hooks } = vi.hoisted(() => ({
   side: { inRunner: false } as SpawnSide,
   spawns: [] as RecordedSpawn[],
+  hooks: { beforeRunnerSpawn: undefined as undefined | (() => void) },
 }));
 
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>();
   const execFile = vi.fn((file: string, args: string[], options: Record<string, unknown>, callback: unknown) => {
     spawns.push({ file, args: [...args], options: { ...options }, inRunner: side.inRunner });
-    return (actual.execFile as (...a: unknown[]) => unknown)(file, args, options, callback);
+    if (side.inRunner) hooks.beforeRunnerSpawn?.();
+    // A utility process's env is fixed at fork: a runner spawn that passes no
+    // env sees that one, not main's live process.env.
+    const effective = side.inRunner && options.env === undefined ? { ...options, env: side.runnerEnv } : options;
+    return (actual.execFile as (...a: unknown[]) => unknown)(file, args, effective, callback);
   });
   return { ...actual, execFile };
 });
@@ -61,6 +68,8 @@ afterEach(() => {
   setGitRunTransport(null);
   vi.useRealTimers();
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  hooks.beforeRunnerSpawn = undefined;
   spawns.length = 0;
 });
 
@@ -114,6 +123,8 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
       expect(mainSpawns()).toHaveLength(0);
       expect(errorShape(inProcess)).toEqual(errorShape(expected));
       expect(errorShape(viaRunner)).toEqual(errorShape(expected));
+      expect(String(inProcess)).toBe(String(expected));
+      expect(String(viaRunner)).toBe(String(expected));
       expect(viaRunner).toBeInstanceOf(Error);
       expect(viaRunner instanceof RangeError).toBe(expected instanceof RangeError);
       expect(typeof (viaRunner as { stdout: unknown }).stdout).toBe('string');
@@ -131,6 +142,23 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
       expect('killed' in error).toBe(false);
       expect('signal' in error).toBe(false);
       h.runner.stop();
+    });
+
+    it('N-5: a failed call keeps git\'s stdout and stderr readable but out of the logged error, on both paths', async () => {
+      const args = ['bytes', '300000'];
+      const options = { env: fakeEnv, maxBuffer: 100_000 };
+      const inProcess = await runGitInProcess(args, options).catch((e: unknown) => e) as Record<string, unknown>;
+      const h = startHarnessRunner(side);
+      await h.up();
+      const viaRunner = await runGit(args, options).catch((e: unknown) => e) as Record<string, unknown>;
+      h.runner.stop();
+      for (const error of [inProcess, viaRunner]) {
+        expect(error.stdout).toBe('a'.repeat(100_000));
+        expect(error.stderr).toBe('');
+        // console.error prints an error with util.inspect.
+        expect(inspect(error)).not.toContain('a'.repeat(100));
+        expect(inspect(error)).toContain('ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+      }
     });
   });
 
@@ -188,7 +216,8 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
 
   it('PM-8: a deadline timer that fires late re-arms once, and rejects when it fires late again', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-    const h = startHarnessRunner(side);
+    // The client's clock is injected as the faked Date so setSystemTime can model the stall.
+    const h = startHarnessRunner(side, { now: () => Date.now() });
     const child = await h.up();
     child.pauseUp();
     const { state, done } = settleOf(runGit(['sleep-print', '0', 'x'], { env: fakeEnv, timeout: 5000 }));
@@ -201,6 +230,27 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
     // The re-armed timer fires late too: no second re-arm.
     vi.setSystemTime(Date.now() + 3000);
     vi.advanceTimersByTime(2000);
+    await done;
+    expect((state.error as { killed?: boolean }).killed).toBe(true);
+    h.runner.stop();
+  });
+
+  it('FU-3: a deadline longer than the longest Node timer still waits its full length', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const longest = 2_147_483_647;
+    // No watchdog verdict in this test: it would advance in 2 s steps through 24.8 days.
+    const h = startHarnessRunner(side, { now: () => Date.now(), timing: { pingIntervalMs: longest, pingTimeoutMs: Infinity } });
+    const child = await h.up();
+    child.pauseUp();
+    const { state, done } = settleOf(runGit(['sleep-print', '0', 'x'], { env: fakeEnv, timeout: longest }));
+    await until(() => child.heldCount === 1, 'the runner reply');
+    vi.advanceTimersByTime(longest);
+    await flushPorts();
+    expect(state.count).toBe(0);
+    vi.advanceTimersByTime(2000 - 1);
+    await flushPorts();
+    expect(state.count).toBe(0);
+    vi.advanceTimersByTime(1);
     await done;
     expect((state.error as { killed?: boolean }).killed).toBe(true);
     h.runner.stop();
@@ -241,7 +291,7 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
 
   it('PM-12: calls in flight when the runner dies re-run in process within their remaining deadline', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const h = startHarnessRunner(side, { timing: FAST });
+    const h = startHarnessRunner(side, { timing: FAST, now: () => Date.now() });
     const child = await h.up();
     const status = runGit(['sleep-print', '0.3', 'status'], { env: fakeEnv, timeout: 5000 });
     const lsFiles = runGit(['sleep-print', '0.3', 'ls-files'], { env: fakeEnv });
@@ -305,12 +355,15 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
   });
 
   it('PM-15 (Q2): calls between crashes run in process, the 6th crash stops respawning, and the runner returns after the cool-off', async () => {
-    // The supervisor's clock is Date. Holding it still keeps the burst below
-    // inside the cool-off however long 100 git spawns take on a loaded machine.
+    // The supervisor's clock is the faked Date. It moves only when the test
+    // moves it, which keeps the burst below inside the cool-off however long
+    // 100 git spawns take on a loaded machine. It steps 100 ms between crashes,
+    // so the cool-off has to start at the 6th crash, not the first.
     vi.useFakeTimers({ toFake: ['Date'] });
     const coolOffMs = 1500;
-    const h = startHarnessRunner(side, { timing: { ...FAST, coolOffMs } });
+    const h = startHarnessRunner(side, { timing: { ...FAST, coolOffMs }, now: () => Date.now() });
     for (let crash = 1; crash <= 6; crash++) {
+      if (crash > 1) vi.setSystemTime(Date.now() + 100);
       const child = await h.up();
       spawns.length = 0;
       await runGit(['sleep-print', '0', 'runner'], { env: fakeEnv });
@@ -361,6 +414,57 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
     expect(runnerSpawns()).toHaveLength(3);
     expect(mainSpawns()).toHaveLength(0);
     h.runner.stop();
+  });
+
+  it('N-2: a caller env whose variables are inherited reaches git through the runner as it does in process', async () => {
+    const env = Object.create({ PATH: fakeEnv.PATH, FAKE_GIT_MARK: 'inherited' }) as NodeJS.ProcessEnv;
+    expect((await runGitInProcess(['env-mark'], { env })).stdout).toBe('inherited');
+    const h = startHarnessRunner(side);
+    await h.up();
+    expect(await runGit(['env-mark'], { env }).catch((e: unknown) => e)).toEqual({ stdout: 'inherited', stderr: '' });
+    expect(runnerSpawns()).toHaveLength(1);
+    h.runner.stop();
+  });
+
+  it('N-3: a call re-run in process after the runner dies uses the env it was sent with', async () => {
+    vi.stubEnv('PATH', fakeEnv.PATH!);
+    vi.stubEnv('FAKE_GIT_MARK', 'at call time');
+    const h = startHarnessRunner(side, { timing: { respawnBackoffMs: [60_000] } });
+    const child = await h.up();
+    child.dieSilently();
+    const call = runGit(['env-mark']);
+    vi.stubEnv('FAKE_GIT_MARK', 'changed later');
+    await until(() => child.runIds().length === 1, 'the call to be posted');
+    child.crash(1);
+    await expect(call).resolves.toEqual({ stdout: 'at call time', stderr: '' });
+    expect(mainSpawns()).toHaveLength(1);
+    h.runner.stop();
+  });
+
+  it('N-4: an EBADF from a spawn in the runner is logged with the runner\'s open fd count, not main\'s', async () => {
+    const h = startHarnessRunner(side);
+    await h.up();
+    hooks.beforeRunnerSpawn = () => {
+      throw Object.assign(new Error('spawn EBADF'), { errno: -9, code: 'EBADF', syscall: 'spawn' });
+    };
+    const error = await runGit(['status'], { env: fakeEnv }).catch((e: unknown) => e);
+    hooks.beforeRunnerSpawn = undefined;
+    h.runner.stop();
+    expect(errorShape(error).props).toMatchObject({ message: 'spawn EBADF', code: 'EBADF', syscall: 'spawn' });
+    const runnerFds = fs.readdirSync('/dev/fd').length - 1;
+    // Main now holds 50 more descriptors than the runner did when its spawn failed.
+    const held = Array.from({ length: 50 }, () => fs.openSync(os.devNull, 'r'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      logEbadfDiagnostic('GitStatusService', error);
+    } finally {
+      for (const fd of held) fs.closeSync(fd);
+    }
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    const line = String(consoleError.mock.calls[0][0]);
+    const count = /^\[GitStatusService\] EBADF detected in the git runner process - open fd count there: (\d+)$/.exec(line)?.[1];
+    expect(count, line).toBeDefined();
+    expect(Math.abs(Number(count) - runnerFds)).toBeLessThan(25);
   });
 
   it('PM-18: the runner and the in-process path both pass windowsHide and utf8', async () => {
@@ -450,11 +554,13 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
   it('PM-25: stop() kills the runner, settles pending calls in process, and never forks again', async () => {
     const h = startHarnessRunner(side, { timing: FAST });
     const child = await h.up();
-    const pending = runGit(['sleep-print', '0.3', 'pending at quit'], { env: fakeEnv, timeout: 5000 });
+    // The pending git takes 1 s, so a stop() that waited for it could not
+    // return inside the bound below; starting its re-run in process can.
+    const pending = runGit(['sleep-print', '1', 'pending at quit'], { env: fakeEnv, timeout: 5000 });
     await until(() => runnerSpawns().length === 1, 'the runner to start git');
     const started = performance.now();
     h.runner.stop();
-    expect(performance.now() - started).toBeLessThan(50);
+    expect(performance.now() - started).toBeLessThan(1000);
     expect(child.kills).toBe(1);
     await expect(pending).resolves.toEqual({ stdout: 'pending at quit', stderr: '' });
     await flushPorts();
@@ -478,6 +584,31 @@ describe.skipIf(!posix)('git runner protocol (harness)', () => {
     spawns.length = 0;
     await runGit(['sleep-print', '0', 'next'], { env: fakeEnv });
     expect(runnerSpawns()).toHaveLength(1);
+    h.runner.stop();
+  });
+
+  it('ADV-T-1: a runner that stops answering is killed even when every call has a timeout and calls come in short bursts', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const h = startHarnessRunner(side, { now: () => Date.now() });
+    const child = await h.up();
+    // Stopped or wedged: no pong, no reply, no exit.
+    child.dieSilently();
+    const outcomes: string[] = [];
+    // The shell baseline's first call (timeout 625 ms) every 6.6 s. Main's
+    // deadline settles each one after 2.625 s, so work is never pending for 10 s.
+    for (let i = 0; i < 3; i++) {
+      const call = runGit(['sleep-print', '0', 'x'], { env: fakeEnv, timeout: 625 })
+        .then(() => 'ok', (e: { killed?: boolean }) => (e.killed ? 'timeout' : 'error'));
+      await vi.advanceTimersByTimeAsync(2_700);
+      outcomes.push(await Promise.race([call, Promise.resolve('pending')]));
+      await vi.advanceTimersByTimeAsync(3_900);
+    }
+    expect(outcomes).toEqual(['timeout', 'timeout', 'timeout']);
+    expect(child.kills).toBe(1);
+    expect(h.log.warn.mock.calls.filter(([line]) => String(line).includes('unresponsive'))).toHaveLength(1);
+    await until(() => h.children.length === 2 && h.runner.supervisor.state === 'ready', 'the next runner');
+    await expect(runGit(['sleep-print', '0', 'after'], { env: fakeEnv, timeout: 625 })).resolves.toEqual({ stdout: 'after', stderr: '' });
+    expect(h.children[1].runIds()).toHaveLength(1);
     h.runner.stop();
   });
 });
@@ -533,6 +664,32 @@ describe('PM-8: main stalls past the deadline with the reply queued', () => {
     await new Promise<void>((resolve) => setImmediate(() => {
       const started = performance.now();
       const blocked = () => performance.now() - started;
+      while (blocked() < 100 + 200 + 1000 || (Atomics.load(replied, 0) === 0 && blocked() < 8000)) { /* main thread blocked */ }
+      resolve();
+    }));
+    expect(Atomics.load(replied, 0)).toBe(1);
+    await call.done;
+    expect(call.state.error).toBeUndefined();
+    expect(call.state.value).toEqual({ stdout: 'from runner', stderr: '' });
+    h.runner.stop();
+  });
+
+  it('R2-N1: with the default clock, a wall-clock step back during the stall does not hide the late deadline', async () => {
+    const replied = new Int32Array(new SharedArrayBuffer(4));
+    const wallNow = Date.now.bind(Date);
+    let stepMs = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => wallNow() - stepMs);
+    // No `now` option: the client's production default.
+    const h = startHarnessRunner(side, { launch: () => new WorkerChild(50, replied), timing: { deadlineMarginMs: 200 } });
+    await h.up();
+    const call = settleOf(runGit(['status', '--porcelain'], { timeout: 100 }));
+    // The stall of the test above, with the step this machine's wall clock
+    // takes about every 32 s (2.93 s back) half-way through it.
+    await new Promise<void>((resolve) => setImmediate(() => {
+      const started = performance.now();
+      const blocked = () => performance.now() - started;
+      while (blocked() < 650) { /* main thread blocked */ }
+      stepMs = 2933;
       while (blocked() < 100 + 200 + 1000 || (Atomics.load(replied, 0) === 0 && blocked() < 8000)) { /* main thread blocked */ }
       resolve();
     }));
